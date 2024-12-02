@@ -14,9 +14,9 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
-#include <limits.h>
-#include <stdint.h>
+#include <cassert>
+#include <climits>
+#include <cstdint>
 
 #include <algorithm>
 #include <cctype>
@@ -42,7 +42,7 @@
 #endif
 
 #ifdef BENCHDNN_MEMORY_CHECK
-#include <stdlib.h>
+#include <cstdlib>
 #include <unistd.h>
 #include <sys/mman.h>
 #endif

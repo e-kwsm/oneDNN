@@ -15,7 +15,7 @@
 *******************************************************************************/
 
 #include <memory>
-#include <stdlib.h>
+#include <cstdlib>
 #include <vector>
 #ifndef _WIN32
 #include <sys/time.h>
