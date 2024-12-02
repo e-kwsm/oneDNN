@@ -14,12 +14,12 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <float.h>
-#include <math.h>
+#include <cfloat>
+#include <cmath>
 #include <random>
 #include <set>
-#include <stdio.h>
-#include <stdlib.h>
+#include <cstdio>
+#include <cstdlib>
 
 #include "oneapi/dnnl/dnnl.h"
 
