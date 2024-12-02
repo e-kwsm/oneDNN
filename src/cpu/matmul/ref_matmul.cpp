@@ -14,9 +14,9 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
-#include <float.h>
-#include <math.h>
+#include <cassert>
+#include <cfloat>
+#include <cmath>
 
 #include <algorithm>
 #include "common/c_types_map.hpp"
