@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
-#include <float.h>
+#include <cassert>
+#include <cfloat>
 
 #include "common/c_types_map.hpp"
 #include "common/dnnl_thread.hpp"
