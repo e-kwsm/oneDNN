@@ -16,7 +16,7 @@
 
 #include <string>
 
-#include <assert.h>
+#include <cassert>
 
 #include "c_types_map.hpp"
 #include "engine.hpp"

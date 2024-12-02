@@ -18,7 +18,7 @@
 #include "common/engine.hpp"
 #include "common/memory.hpp"
 
-#include <assert.h>
+#include <cassert>
 
 namespace dnnl {
 namespace impl {

@@ -20,7 +20,7 @@
 
 // clang-format off
 
-#include <assert.h>
+#include <cassert>
 
 #include "oneapi/dnnl/dnnl_debug.h"
 #include "oneapi/dnnl/dnnl_types.h"
