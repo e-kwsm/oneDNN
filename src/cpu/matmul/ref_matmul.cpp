@@ -15,9 +15,9 @@
 *******************************************************************************/
 
 #include <algorithm>
-#include <assert.h>
-#include <float.h>
-#include <math.h>
+#include <cassert>
+#include <cfloat>
+#include <cmath>
 
 #include "common/c_types_map.hpp"
 #include "common/compiler_workarounds.hpp"

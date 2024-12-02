@@ -16,9 +16,9 @@
 
 #include <atomic>
 
-#include <assert.h>
-#include <float.h>
-#include <math.h>
+#include <cassert>
+#include <cfloat>
+#include <cmath>
 
 #include "common/c_types_map.hpp"
 #include "common/dnnl_thread.hpp"
