@@ -21,7 +21,7 @@
 #include <sstream>
 #include <type_traits>
 
-#include <stdlib.h>
+#include <cstdlib>
 #ifndef _WIN32
 #include <sys/time.h>
 #else
