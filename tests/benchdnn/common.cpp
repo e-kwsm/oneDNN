@@ -14,9 +14,9 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
-#include <limits.h>
-#include <stdint.h>
+#include <cassert>
+#include <climits>
+#include <cstdint>
 
 #include <algorithm>
 #include <cctype>

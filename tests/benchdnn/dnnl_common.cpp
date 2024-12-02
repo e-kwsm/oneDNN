@@ -23,7 +23,7 @@
 #include <utility> // for std::pair
 #include <vector> // for std::vector
 
-#include <assert.h>
+#include <cassert>
 
 #include "oneapi/dnnl/dnnl.hpp"
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL

@@ -17,7 +17,7 @@
 #include <algorithm>
 #include <cstring>
 
-#include <stdlib.h>
+#include <cstdlib>
 
 #include "oneapi/dnnl/dnnl.h"
 

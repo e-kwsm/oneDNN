@@ -15,7 +15,7 @@
 *******************************************************************************/
 
 #include <limits>
-#include <math.h>
+#include <cmath>
 
 #include "utils/parallel.hpp"
 

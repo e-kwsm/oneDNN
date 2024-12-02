@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 #include "cpu/x64/jit_uni_i8i8_pooling.hpp"
-#include <math.h>
+#include <cmath>
 
 #include "common/dnnl_thread.hpp"
 #include "common/math_utils.hpp"

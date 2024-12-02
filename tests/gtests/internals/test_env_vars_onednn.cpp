@@ -18,7 +18,7 @@
 #include <windows.h>
 #endif
 
-#include "stdlib.h"
+#include <cstdlib>
 
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"

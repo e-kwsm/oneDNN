@@ -16,8 +16,8 @@
 
 #include <sstream>
 
-#include <assert.h>
-#include <stdlib.h>
+#include <cassert>
+#include <cstdlib>
 
 #include "lrn/lrn.hpp"
 

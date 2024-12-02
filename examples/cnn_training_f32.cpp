@@ -25,9 +25,9 @@
 ///
 /// @include cnn_training_f32.cpp
 
-#include <assert.h>
+#include <cassert>
 
-#include <math.h>
+#include <cmath>
 
 #include "oneapi/dnnl/dnnl.hpp"
 

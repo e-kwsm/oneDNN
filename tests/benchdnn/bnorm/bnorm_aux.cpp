@@ -16,8 +16,8 @@
 
 #include <sstream>
 
-#include <assert.h>
-#include <stdlib.h>
+#include <cassert>
+#include <cstdlib>
 
 #include "bnorm/bnorm.hpp"
 

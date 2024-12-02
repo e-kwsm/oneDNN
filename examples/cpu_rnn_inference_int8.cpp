@@ -35,11 +35,11 @@
 ///  - the attention mechanism is implemented separately as there is no support
 ///    for the context vectors in oneDNN yet
 
-#include <assert.h>
+#include <cassert>
 
 #include <cstring>
 #include <iostream>
-#include <math.h>
+#include <cmath>
 #include <numeric>
 #include <string>
 

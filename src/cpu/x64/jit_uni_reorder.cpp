@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
+#include <cassert>
 #include <numeric>
 
 #include "oneapi/dnnl/dnnl_debug.h"

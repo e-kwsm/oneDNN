@@ -16,11 +16,11 @@
 
 #include <sstream>
 
-#include <float.h>
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cfloat>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "oneapi/dnnl/dnnl.h"
 
