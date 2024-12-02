@@ -26,7 +26,7 @@
 #include <sys/mman.h>
 #endif
 
-#include <assert.h>
+#include <cassert>
 
 #include "dnnl_thread.hpp"
 #include "nstl.hpp"
