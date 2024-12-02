@@ -18,10 +18,10 @@
 #include <algorithm>
 #include <random>
 
-#include <float.h>
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <cfloat>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 #include "oneapi/dnnl/dnnl.h"
 

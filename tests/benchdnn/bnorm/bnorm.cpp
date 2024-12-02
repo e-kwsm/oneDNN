@@ -14,11 +14,11 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <float.h>
-#include <math.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <cfloat>
+#include <cmath>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 
 #include <random>
 #include <sstream>

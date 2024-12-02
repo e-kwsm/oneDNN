@@ -14,9 +14,9 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 
 #include <sstream>
 

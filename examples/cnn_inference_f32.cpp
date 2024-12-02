@@ -40,7 +40,7 @@
 /// The example implements the AlexNet layers
 /// as numbered primitives (for example, conv1, pool1, conv2).
 
-#include <assert.h>
+#include <cassert>
 
 #include <chrono>
 #include <vector>

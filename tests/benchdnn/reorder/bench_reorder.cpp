@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <string.h>
+#include <cstring>
 
 #include "dnnl_common.hpp"
 #include "utils/parser.hpp"
