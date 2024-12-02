@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
+#include <cassert>
 
 #include "common/type_helpers.hpp"
 
