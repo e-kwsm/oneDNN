@@ -14,9 +14,9 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
+#include <cassert>
 #include <cinttypes>
-#include <stdio.h>
+#include <cstdio>
 
 #include "oneapi/dnnl/dnnl_debug.h"
 #include "oneapi/dnnl/dnnl_types.h"
