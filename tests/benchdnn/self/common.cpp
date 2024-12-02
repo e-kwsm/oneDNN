@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <stdlib.h>
-#include <string.h>
+#include <cstdlib>
+#include <cstring>
 
 #include "common.hpp"
 #include "dnn_types.hpp"

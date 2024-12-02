@@ -16,7 +16,7 @@
 
 #include <algorithm>
 
-#include <assert.h>
+#include <cassert>
 
 #include "prelu/prelu.hpp"
 #include "utils/parallel.hpp"
