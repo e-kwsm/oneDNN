@@ -14,10 +14,10 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <float.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cfloat>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "dnnl_common.hpp"
 #include "oneapi/dnnl/dnnl.h"

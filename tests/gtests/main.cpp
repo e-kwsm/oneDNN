@@ -16,7 +16,7 @@
 
 #include "gtest/gtest.h"
 
-#include <assert.h>
+#include <cassert>
 #include <atomic>
 #include <string>
 

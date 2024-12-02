@@ -26,7 +26,7 @@
 /// @include rnn_training_f32.cpp
 
 #include <cstring>
-#include <math.h>
+#include <cmath>
 #include <numeric>
 #include <utility>
 

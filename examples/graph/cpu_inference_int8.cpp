@@ -48,7 +48,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include <assert.h>
+#include <cassert>
 
 #include "oneapi/dnnl/dnnl_graph.hpp"
 
