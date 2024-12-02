@@ -14,9 +14,9 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
 
 #include "oneapi/dnnl/dnnl.h"
 

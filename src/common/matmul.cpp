@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
+#include <cassert>
 #include "opdesc.hpp"
 #include "primitive_desc_iface.hpp"
 
