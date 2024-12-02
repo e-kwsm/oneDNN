@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <math.h>
+#include <cmath>
 
 #include "common/c_types_map.hpp"
 #include "common/compiler_workarounds.hpp"
