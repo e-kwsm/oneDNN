@@ -15,7 +15,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
+#include <cassert>
 #include <limits>
 
 #include "common/c_types_map.hpp"

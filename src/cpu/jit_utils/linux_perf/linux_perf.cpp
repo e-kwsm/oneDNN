@@ -30,7 +30,7 @@
 #include <sys/types.h>
 
 #include <elf.h>
-#include <errno.h>
+#include <cerrno>
 #include <fcntl.h>
 #include <syscall.h>
 #include <unistd.h>
