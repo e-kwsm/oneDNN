@@ -58,7 +58,7 @@ class Error : public std::exception {
 public:
   explicit Error(int err);
   operator int() const { return err_; }
-  const char *what() const throw() { return msg_; }
+  const char *what() const noexcept { return msg_; }
 };
 
 inline const char *ConvertErrorToString(const Error &err) { return err.what(); }
