@@ -230,9 +230,9 @@ public:
         error_number_ = static_cast<int>(result);
     }
 
-    virtual ~rocblas_error() throw() {}
+    virtual ~rocblas_error() noexcept {}
 
-    virtual int get_error_number() const throw() { return error_number_; }
+    virtual int get_error_number() const noexcept { return error_number_; }
 };
 
 inline status_t rocblas_to_dnnl_status(rocblas_status rocblas_status) {
@@ -266,9 +266,9 @@ public:
         error_number_ = static_cast<int>(result);
     }
 
-    virtual ~hip_error() throw() {}
+    virtual ~hip_error() noexcept {}
 
-    virtual int get_error_number() const throw() { return error_number_; }
+    virtual int get_error_number() const noexcept { return error_number_; }
 };
 
 static status_t miopen_to_dnnl_status(miopenStatus_t miopen_status) {
@@ -419,9 +419,9 @@ public:
         error_number_ = static_cast<int>(result);
     }
 
-    virtual ~miopen_error() throw() {}
+    virtual ~miopen_error() noexcept {}
 
-    virtual int get_error_number() const throw() { return error_number_; }
+    virtual int get_error_number() const noexcept { return error_number_; }
 };
 
 inline bool attr_post_ops_ok(
