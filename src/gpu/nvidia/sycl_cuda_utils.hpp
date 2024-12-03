@@ -288,9 +288,9 @@ public:
         error_number_ = static_cast<int>(result);
     }
 
-    virtual ~cublas_error() throw() {}
+    virtual ~cublas_error() noexcept {}
 
-    virtual int get_error_number() const throw() { return error_number_; }
+    virtual int get_error_number() const noexcept { return error_number_; }
 };
 
 class cuda_error : virtual public std::runtime_error {
@@ -323,9 +323,9 @@ public:
                   (message + std::to_string(static_cast<int>(result)))) {
         error_number_ = static_cast<int>(result);
     }
-    virtual ~cuda_error() throw() {}
+    virtual ~cuda_error() noexcept {}
 
-    virtual int get_error_number() const throw() { return error_number_; }
+    virtual int get_error_number() const noexcept { return error_number_; }
 };
 
 class cudnn_error : virtual public std::runtime_error {
@@ -368,9 +368,9 @@ public:
         error_number_ = static_cast<int>(result);
     }
 
-    virtual ~cudnn_error() throw() {}
+    virtual ~cudnn_error() noexcept {}
 
-    virtual int get_error_number() const throw() { return error_number_; }
+    virtual int get_error_number() const noexcept { return error_number_; }
 };
 
 template <typename T>

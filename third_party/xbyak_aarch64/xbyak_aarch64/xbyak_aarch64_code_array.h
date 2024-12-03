@@ -37,7 +37,7 @@ inline void AlignedFree(void *p) {
 #endif
 }
 
-template <class To, class From> inline const To CastTo(From p) throw() { return (const To)(size_t)(p); }
+template <class To, class From> inline const To CastTo(From p) noexcept { return (const To)(size_t)(p); }
 
 struct Allocator {
   virtual uint32_t *alloc(size_t size) { return reinterpret_cast<uint32_t *>(AlignedMalloc(size, inner::getPageSize())); }
