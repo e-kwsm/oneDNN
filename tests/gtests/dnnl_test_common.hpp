@@ -368,12 +368,12 @@ void check_zero_tail(int set_zero_flag, const memory &src) {
 
     for (memory::dim i = 0; i < nelems; ++i) {
         memory::dim off = 0;
-        bool flag = 0;
+        bool flag = false;
         for (int j = 0; j < ndims; ++j) {
             off += idx[j] * str[j];
-            if (idx[j] >= dims[ndims - j - 1]) flag = 1;
+            if (idx[j] >= dims[ndims - j - 1]) flag = true;
         }
-        if (flag == 1) {
+        if (flag) {
             memory::dim blk_off = mdw.off_l(off, true);
             if (set_zero_flag) {
                 src_data[blk_off] = 0.0;
