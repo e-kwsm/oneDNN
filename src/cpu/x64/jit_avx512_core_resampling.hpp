@@ -35,7 +35,7 @@ struct jit_resampling_args_t;
 struct jit_avx512_core_resampling_kernel_base_t : public jit_generator {
     jit_avx512_core_resampling_kernel_base_t(
             const resampling_pd_t *pd, const char *name);
-    virtual ~jit_avx512_core_resampling_kernel_base_t() = default;
+    ~jit_avx512_core_resampling_kernel_base_t() override = default;
 
 protected:
     const resampling_pd_t *pd_;
@@ -55,7 +55,7 @@ struct jit_avx512_core_resampling_bwd_t : public primitive_t {
     };
 
     jit_avx512_core_resampling_bwd_t(const pd_t *apd) : primitive_t(apd) {}
-    ~jit_avx512_core_resampling_bwd_t();
+    ~jit_avx512_core_resampling_bwd_t() override;
 
     status_t init(engine_t *engine) override;
 

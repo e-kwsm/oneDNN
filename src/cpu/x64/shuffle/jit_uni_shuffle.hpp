@@ -51,7 +51,7 @@ struct jit_uni_shuffle_t : public primitive_t {
 
     jit_uni_shuffle_t(const pd_t *apd);
 
-    ~jit_uni_shuffle_t();
+    ~jit_uni_shuffle_t() override;
 
     status_t init(engine_t *engine) override;
 
