@@ -31,7 +31,7 @@ typedef enum { // NOLINT(modernize-use-using)
     __itt_task_level_none = 0,
     __itt_task_level_low,
     __itt_task_level_high
-} __itt_task_level;
+};
 
 struct itt_task_level_t {
     int level;
