@@ -385,8 +385,8 @@ public:
     using iterator = typename std::map<Key, T>::iterator;
     using const_iterator = typename std::map<Key, T>::const_iterator;
     using size_type = typename std::map<Key, T>::size_type;
-    map() {}
-    ~map() {}
+    map() = default;
+    ~map() = default;
     size_type size() const { return _impl.size(); }
     T &operator[](const Key &k) { return _impl[k]; }
     const T &operator[](const Key &k) const { return _impl[k]; }
