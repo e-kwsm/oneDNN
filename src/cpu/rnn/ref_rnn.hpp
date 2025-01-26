@@ -114,15 +114,15 @@ struct _ref_rnn_common_t : public primitive_t {
     using ref_rnn_brgemm_t = x64::rnn_brgemm_utils::rnn_brgemm_t<aprop>;
 #endif
 
-    typedef rnn_cell_execution_sig((class_name::*cell_execution_f));
-    typedef rnn_grid_execution_sig((class_name::*grid_execution_f));
-    typedef rnn_merged_layer_execution_sig(
-            (class_name::*merged_layer_execution_f));
+    using cell_execution_f = rnn_cell_execution_sig((class_name::*));
+    using grid_execution_f = rnn_grid_execution_sig((class_name::*));
+    using merged_layer_execution_f
+            = rnn_merged_layer_execution_sig((class_name::*));
 
-    typedef rnn_gemm_sig((class_name::*gemm_t));
-    typedef rnn_bias_prepare_sig((class_name::*bias_prepare_t));
-    typedef rnn_bias_finalize_sig((class_name::*bias_finalize_t));
-    typedef rnn_weights_assign_sig((class_name::*weights_assign_t));
+    using gemm_t = rnn_gemm_sig((class_name::*));
+    using bias_prepare_t = rnn_bias_prepare_sig((class_name::*));
+    using bias_finalize_t = rnn_bias_finalize_sig((class_name::*));
+    using weights_assign_t = rnn_weights_assign_sig((class_name::*));
 
     using base_pd_t =
             typename utils::conditional<false || aprop == prop_kind::forward,
