@@ -36,7 +36,7 @@ dnnl_status_t gemm_driver(const char *transA, const char *transB,
         const b_type *b, const dim_t *ldb, const b_type *ob, const float *beta,
         c_type *c, const dim_t *ldc, const c_type *oc,
         const bool force_jit_nocopy_gemm, pack_type packing = pack_type::none,
-        gemm_pack_storage_t *pack_dst = NULL, bool measure_only = false);
+        gemm_pack_storage_t *pack_dst = nullptr, bool measure_only = false);
 
 void prep_ref_gemm_s8u8s32_pack(
         bool do_a, dim_t rows, dim_t cols, gemm_pack_storage_t *pack_dst);

@@ -108,14 +108,14 @@ struct gemm_pack_storage_t {
 
     template <typename data_type>
     data_type *row_sums(int ithr, dim_t r0, dim_t cblock) const {
-        if (!has_row_sums()) return NULL;
+        if (!has_row_sums()) return nullptr;
         auto id = thread_to_slice(ithr);
         return get_block<data_type>(sums_header->slice[id], r0, cblock);
     }
 
     template <typename data_type>
     data_type *col_sums(int ithr, dim_t rblock, dim_t c0) const {
-        if (!has_col_sums()) return NULL;
+        if (!has_col_sums()) return nullptr;
         auto id = thread_to_slice(ithr);
         return get_block<data_type>(sums_header->slice[id], rblock, c0);
     }
