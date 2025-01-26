@@ -121,7 +121,6 @@ public:
 private:
     void kernel(const int ithr, const int nthr) const;
 
-private:
     const ref_rnn_brgemm_t &rnn_brgemm_;
     const rnn_utils::rnn_conf_t &rnn_;
     const int proj_desc_idx_;
