@@ -113,7 +113,7 @@ inline int handle_example_errors(
 
     try {
         example();
-    } catch (example_allows_unimplemented &e) {
+    } catch (example_allows_unimplemented_t &e) {
         std::cout << e.message << std::endl;
         exit_code = 0;
     } catch (dnnl::error &e) {

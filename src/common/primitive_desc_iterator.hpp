@@ -32,7 +32,7 @@ namespace impl {
 
 struct primitive_desc_t;
 
-struct primitive_desc_iterator_t : public c_compatible {
+struct primitive_desc_iterator_t : public c_compatible_t {
     primitive_desc_iterator_t(engine_t *engine, const op_desc_t *op_desc,
             const primitive_attr_t *attr, const primitive_desc_t *hint_fwd_pd,
             int skip_idx = -1)
