@@ -139,7 +139,7 @@ public:
             const eltwise_injector::static_params_t &eltwise_static_params,
             const lambda_jit_injectors_t &lambda_jit_injectors);
 
-    virtual ~jit_uni_postops_injector_t() = default;
+    ~jit_uni_postops_injector_t() override = default;
 
     // See `jit_uni_postops_injector_base_t::compute_vector_range(...)`
     void compute_vector_range(const injector_utils::vmm_index_set_t &vmm_idxs,
