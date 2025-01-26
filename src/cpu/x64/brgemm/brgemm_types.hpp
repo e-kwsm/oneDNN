@@ -572,8 +572,8 @@ struct jit_brdgmm_kernel_base_t;
 class jit_generator;
 
 struct brgemm_kernel_t {
-    brgemm_kernel_t() {};
-    virtual ~brgemm_kernel_t() {};
+    brgemm_kernel_t() = default;
+    virtual ~brgemm_kernel_t() = default;
     virtual status_t create_kernel() = 0;
     virtual void operator()(brgemm_kernel_params_t *) const = 0;
     virtual const jit_generator *get_jit_generator() const = 0;
