@@ -206,7 +206,7 @@ struct DNNL_API brgemm_attr_t {
 };
 
 struct brgemm_desc_t {
-    brgemm_desc_t() {}
+    brgemm_desc_t() = default;
     brgemm_desc_t(const brgemm_desc_t &other);
     DNNL_API ~brgemm_desc_t();
 
