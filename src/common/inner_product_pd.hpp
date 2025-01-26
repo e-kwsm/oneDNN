@@ -195,8 +195,8 @@ protected:
 };
 
 struct inner_product_fwd_pd_t : public inner_product_pd_t {
-    typedef inner_product_fwd_pd_t base_class;
-    typedef inner_product_fwd_pd_t hint_class;
+    using base_class = inner_product_fwd_pd_t;
+    using hint_class = inner_product_fwd_pd_t;
 
     arg_usage_t arg_usage(int arg) const override {
         if (utils::one_of(arg, DNNL_ARG_SRC, DNNL_ARG_WEIGHTS))
@@ -265,8 +265,8 @@ protected:
 };
 
 struct inner_product_bwd_data_pd_t : public inner_product_pd_t {
-    typedef inner_product_bwd_data_pd_t base_class;
-    typedef inner_product_fwd_pd_t hint_class;
+    using base_class = inner_product_bwd_data_pd_t;
+    using hint_class = inner_product_fwd_pd_t;
 
     arg_usage_t arg_usage(int arg) const override {
         if (utils::one_of(arg, DNNL_ARG_WEIGHTS, DNNL_ARG_DIFF_DST))
@@ -331,8 +331,8 @@ protected:
 };
 
 struct inner_product_bwd_weights_pd_t : public inner_product_pd_t {
-    typedef inner_product_bwd_weights_pd_t base_class;
-    typedef inner_product_fwd_pd_t hint_class;
+    using base_class = inner_product_bwd_weights_pd_t;
+    using hint_class = inner_product_fwd_pd_t;
 
     arg_usage_t arg_usage(int arg) const override {
         if (utils::one_of(arg, DNNL_ARG_SRC, DNNL_ARG_DIFF_DST))
