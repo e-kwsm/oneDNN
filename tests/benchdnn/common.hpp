@@ -168,7 +168,7 @@ const char *bool2str(bool value);
 bool match_regex(const char *str, const char *pattern);
 bool skip_start(res_t *res, int idx = benchdnn_stat.tests);
 
-typedef int (*bench_f)(int argc, char **argv);
+using bench_f = int (*)(int argc, char **argv);
 std::string locate_file(const std::string &fname);
 int batch(const char *fname, bench_f bench);
 
