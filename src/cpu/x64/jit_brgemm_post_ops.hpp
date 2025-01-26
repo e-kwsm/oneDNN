@@ -283,7 +283,7 @@ private:
     }
 
     template <typename T>
-    const T maybe_mask(const T vmm_in, bool mask_flag, bool store,
+    T maybe_mask(const T vmm_in, bool mask_flag, bool store,
             Xbyak::Opmask ktail_mask) {
         assert(IMPLICATION(mask_flag, isa_has_masks(brg_.isa_impl)));
         return mask_flag
