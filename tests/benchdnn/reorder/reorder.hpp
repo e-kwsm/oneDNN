@@ -45,7 +45,7 @@ struct dt_conf_s {
     float min;
     float max;
 };
-typedef const dt_conf_s *dt_conf_t;
+using dt_conf_t = const dt_conf_s *;
 dt_conf_t dt2cfg(dnnl_data_type_t dt);
 dnnl_data_type_t cfg2dt(dt_conf_t cfg);
 
