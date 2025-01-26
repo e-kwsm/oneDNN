@@ -488,7 +488,7 @@ struct jit_avx512_core_amx_bwd_data_kernel_t : public jit_generator {
         CHECK(bwd_data_copy_kernel_->create_kernel());
         return status::success;
     }
-    ~jit_avx512_core_amx_bwd_data_kernel_t() = default;
+    ~jit_avx512_core_amx_bwd_data_kernel_t() override = default;
 
     static bool post_ops_ok(const jit_conv_conf_t &jcp, primitive_attr_t &attr);
 
