@@ -43,7 +43,7 @@ struct gemm_slice_t {
 };
 
 struct gemm_threading_t {
-    gemm_threading_t() {};
+    gemm_threading_t() = default;
 
     int nthrs_m, nthrs_n, nthrs_k;
     dim_t block_m, block_n, block_k; // Blocking sizes (-1 = default)
