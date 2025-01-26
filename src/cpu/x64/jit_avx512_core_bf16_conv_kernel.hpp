@@ -485,7 +485,7 @@ struct jit_avx512_core_bf16_conv_bwd_weights_kernel_f32 : public jit_generator {
         }
     }
 
-    ~jit_avx512_core_bf16_conv_bwd_weights_kernel_f32() = default;
+    ~jit_avx512_core_bf16_conv_bwd_weights_kernel_f32() override = default;
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(
             jit_avx512_core_bf16_conv_bwd_weights_kernel_f32)

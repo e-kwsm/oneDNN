@@ -34,7 +34,7 @@ namespace cpu {
 struct cpu_stream_t : public stream_t {
     cpu_stream_t(engine_t *engine, impl::stream_impl_t *stream_impl)
         : stream_t(engine, stream_impl) {}
-    virtual ~cpu_stream_t() = default;
+    ~cpu_stream_t() override = default;
 
     dnnl::impl::status_t wait() override {
         // CPU execution is synchronous so return immediately
