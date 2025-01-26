@@ -460,7 +460,7 @@ struct isa_hints_t {
     cpu_hints_t hints_;
     isa_hints_t(cpu_hints_t hints) : hints_(hints) {}
 
-    cpu_hints_t get() { return hints_; }
+    cpu_hints_t get() const { return hints_; }
 
     static std::string hints2str(const isa_hints_t &isa_hints) {
         switch (isa_hints.hints_) {
