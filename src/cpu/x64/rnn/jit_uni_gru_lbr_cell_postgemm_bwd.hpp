@@ -33,7 +33,7 @@ struct jit_uni_gru_lbr_cell_postgemm_bwd : public jit_uni_rnn_postgemm {
             const rnn_utils::rnn_conf_t &rnn, const rnn_pd_t *pd)
         : jit_uni_rnn_postgemm(rnn, pd, jit_name()) {}
 
-    ~jit_uni_gru_lbr_cell_postgemm_bwd() {}
+    ~jit_uni_gru_lbr_cell_postgemm_bwd() = default;
 
     status_t init(data_type_t sdt) override {
         CHECK(jit_uni_rnn_postgemm::init(src_data_t));

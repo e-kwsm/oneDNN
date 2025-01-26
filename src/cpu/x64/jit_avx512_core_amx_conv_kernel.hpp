@@ -614,7 +614,7 @@ struct jit_avx512_core_amx_bwd_weights_kernel_t : public jit_generator {
     jit_avx512_core_amx_bwd_weights_kernel_t(const jit_conv_conf_t &ajcp)
         : jit_generator(jit_name(), avx512_core_amx), jcp(ajcp) {}
 
-    ~jit_avx512_core_amx_bwd_weights_kernel_t() {}
+    ~jit_avx512_core_amx_bwd_weights_kernel_t() = default;
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_avx512_core_amx_bwd_weights_kernel_t)
 
@@ -749,7 +749,7 @@ struct jit_avx512_core_amx_bwd_bias_kernel_t : public jit_generator {
     jit_avx512_core_amx_bwd_bias_kernel_t(const jit_conv_conf_t &ajcp)
         : jit_generator(jit_name(), avx512_core_amx), jcp(ajcp) {}
 
-    ~jit_avx512_core_amx_bwd_bias_kernel_t() {}
+    ~jit_avx512_core_amx_bwd_bias_kernel_t() = default;
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_avx512_core_amx_bwd_bias_kernel_t)
 
