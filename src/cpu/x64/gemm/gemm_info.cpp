@@ -88,36 +88,27 @@ gemm_info_t<a_t, b_t, c_t>::gemm_info_t(const char *transA, const char *transB,
         const float *alpha, const a_t *a, const dim_t *lda, const a_t *oa,
         const b_t *b, const dim_t *ldb, const b_t *ob, const float *beta,
         c_t *c, const dim_t *ldc, const c_t *oc, bool force_nocopy,
-        pack_type packing, gemm_pack_storage_t *pack_dst, bool measure_only) {
-
-    this->transa = decode_trans(*transA);
-    this->transb = decode_trans(*transB);
-
-    this->m = *m;
-    this->n = *n;
-    this->k = *k;
-
-    this->a = a;
-    this->b = b;
-    this->c = c;
-
-    this->lda = lda ? *lda : 0;
-    this->ldb = ldb ? *ldb : 0;
-    this->ldc = ldc ? *ldc : 0;
-
-    this->ao = 0;
-    this->bo = 0;
-    this->co = nullptr;
-
-    this->alpha = alpha ? *alpha : 1.0f;
-    this->beta = beta ? *beta : 1.0f;
-
-    this->offsetc = offset_type::none;
-
-    this->packing = packing;
-    this->pack_dst = pack_dst;
-    this->measure_only
-            = measure_only && pack_dst && (packing != pack_type::none);
+        pack_type packing, gemm_pack_storage_t *pack_dst, bool measure_only)
+    : transa(decode_trans(*transA))
+    , transb(decode_trans(*transB))
+    , m(*m)
+    , n(*n)
+    , k(*k)
+    , a(a)
+    , b(b)
+    , c(c)
+    , lda(lda ? *lda : 0)
+    , ldb(ldb ? *ldb : 0)
+    , ldc(ldc ? *ldc : 0)
+    , ao(0)
+    , bo(0)
+    , co(nullptr)
+    , alpha(alpha ? *alpha : 1.0f)
+    , beta(beta ? *beta : 1.0f)
+    , offsetc(offset_type::none)
+    , packing(packing)
+    , pack_dst(pack_dst)
+    , measure_only(measure_only && pack_dst && (packing != pack_type::none)) {
 
     if (this->transa == packed) {
         dim_t cols;
