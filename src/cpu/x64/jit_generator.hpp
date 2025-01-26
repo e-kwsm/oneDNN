@@ -63,9 +63,9 @@ namespace x64 {
 // TODO: move this to jit_generator class?
 namespace {
 
-typedef enum {
+enum max_code_size_t {
     MAX_CODE_SIZE = 256 * 1024,
-} max_code_size_t;
+};
 
 // TODO: move this somewhere else? Although this is only used by jit kernels
 // (Roma)
