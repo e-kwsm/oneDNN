@@ -126,7 +126,7 @@ private:
     void apply_postops(const int load_loop_blk, const int ur);
     void generate() override;
     static void balance(jit_1x1_conv_conf_t &jcp, int nthreads);
-    inline bool is_bcast_layout_nxc() {
+    inline bool is_bcast_layout_nxc() const {
         switch (jcp.prop_kind) {
             case prop_kind::forward_training:
             case prop_kind::forward_inference:
@@ -142,13 +142,13 @@ private:
             default: assert(!"invalid prop_kind"); return false;
         }
     }
-    inline bool is_load_layout_nxc() {
+    inline bool is_load_layout_nxc() const {
         return jcp.prop_kind == prop_kind::backward_weights
                 && jcp.uses_permw_transposition
                 && utils::one_of(jcp.dst_tag, format_tag::ndhwc,
                         format_tag::nhwc, format_tag::nwc);
     }
-    inline bool is_out_layout_nxc() {
+    inline bool is_out_layout_nxc() const {
         switch (jcp.prop_kind) {
             case prop_kind::forward_training:
             case prop_kind::forward_inference:

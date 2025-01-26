@@ -39,7 +39,7 @@ struct float16_t {
     float16_t &operator=(float f);
 
     operator float() const;
-    float f() { return (float)(*this); }
+    float f() const { return (float)(*this); }
 
     float16_t &operator+=(float16_t a) {
         (*this) = float(f() + a.f());
