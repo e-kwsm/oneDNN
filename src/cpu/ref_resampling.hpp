@@ -67,7 +67,7 @@ struct ref_resampling_fwd_t : public primitive_t {
     };
 
     ref_resampling_fwd_t(const pd_t *apd);
-    ~ref_resampling_fwd_t();
+    ~ref_resampling_fwd_t() override;
 
     status_t init(engine_t *engine) override {
         ref_post_ops_
@@ -114,7 +114,7 @@ struct ref_resampling_bwd_t : public primitive_t {
     };
 
     ref_resampling_bwd_t(const pd_t *apd);
-    ~ref_resampling_bwd_t();
+    ~ref_resampling_bwd_t() override;
 
     status_t execute(const exec_ctx_t &ctx) const override {
         execute_backward(ctx);

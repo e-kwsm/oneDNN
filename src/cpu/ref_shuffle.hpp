@@ -92,7 +92,7 @@ struct ref_shuffle_t : public primitive_t {
         return dnnl_success;
     }
 
-    ~ref_shuffle_t() { free(rev_transposed_); }
+    ~ref_shuffle_t() override { free(rev_transposed_); }
 
     status_t execute(const exec_ctx_t &ctx) const override {
         const memory_desc_wrapper src_d(
