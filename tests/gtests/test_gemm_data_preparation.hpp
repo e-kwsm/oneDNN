@@ -53,12 +53,7 @@ static constexpr int N_test_max = 53;
  * a surjective function from {0, ..., dim-1} onto {0, ..., dim_test-1}.
  */
 struct mapper_t {
-    mapper_t(const mapper_t &other)
-        : dim_(other.dim_)
-        , dim_test_(other.dim_test_)
-        , gen_(other.gen_)
-        , gen_start_(other.gen_start_)
-        , mapper_(other.mapper_) {}
+    mapper_t(const mapper_t &other) = default;
 
     mapper_t(mapper_t &&other) noexcept
         : dim_(other.dim_)
