@@ -113,7 +113,6 @@ private:
     void init_masks(int tail_length);
     void generate() override;
 
-private:
     void horizontal_sum(Xbyak::Xmm src);
     void horizontal_sum(Xbyak::Ymm src, Xbyak::Ymm workspace);
     void horizontal_sum(Xbyak::Zmm src, Xbyak::Zmm workspace);
