@@ -33,7 +33,7 @@ struct jit_uni_lstm_cell_projection_postgemm_fwd : public jit_uni_rnn_postgemm {
             const rnn_utils::rnn_conf_t &rnn, const rnn_pd_t *pd)
         : jit_uni_rnn_postgemm(rnn, pd, jit_name()) {}
 
-    ~jit_uni_lstm_cell_projection_postgemm_fwd() {}
+    ~jit_uni_lstm_cell_projection_postgemm_fwd() override {}
 
     status_t init(data_type_t sdt) override {
         jit_uni_rnn_postgemm::init(src_data_t);
@@ -51,7 +51,7 @@ protected:
     const size_t hstate_dt_size = types::data_type_size(src_data_t);
     const size_t scratch_dt_size = types::data_type_size(scratch_data_t);
 
-    void generate() {
+    void generate() override {
         using namespace Xbyak;
 
         // Labels declaration
