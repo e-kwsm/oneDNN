@@ -297,7 +297,7 @@ struct jit_blk_reorder_t : public primitive_t {
     status_t execute(const exec_ctx_t &ctx) const override;
 
     jit_blk_reorder_t(const pd_t *apd);
-    ~jit_blk_reorder_t();
+    ~jit_blk_reorder_t() override;
 
 private:
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }

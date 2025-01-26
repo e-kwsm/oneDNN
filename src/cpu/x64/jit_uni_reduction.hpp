@@ -49,7 +49,7 @@ struct jit_uni_reduction_t : public primitive_t {
     };
 
     jit_uni_reduction_t(const pd_t *apd) : primitive_t(apd) {}
-    virtual ~jit_uni_reduction_t() = default;
+    ~jit_uni_reduction_t() override = default;
 
     status_t init(engine_t *engine) override;
     status_t execute(const exec_ctx_t &ctx) const override;
