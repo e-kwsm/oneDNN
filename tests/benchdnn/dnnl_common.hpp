@@ -653,9 +653,8 @@ void check_correctness(const prb_t *prb, const std::vector<data_kind_t> &kinds,
     }
 }
 
-typedef std::function<dnnl_status_t(
-        const dnnl_stream_t &, const std::vector<dnnl_exec_arg_t> &)>
-        perf_function_t;
+using perf_function_t = std::function<dnnl_status_t(
+        const dnnl_stream_t &, const std::vector<dnnl_exec_arg_t> &)>;
 
 int execute_and_wait(perf_function_t &exec_func, const dnnl_engine_t &engine,
         const args_t &args, res_t *res = nullptr);
