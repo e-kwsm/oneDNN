@@ -565,7 +565,8 @@ inline dnnl_status_t get_conv_impl_status(
         const_dnnl_primitive_desc_t pd, const char *match_str) {
     const char *conv_str = query_impl_info(pd);
 
-    if (strstr(conv_str, match_str) != NULL) return dnnl_status_t::dnnl_success;
+    if (strstr(conv_str, match_str) != nullptr)
+        return dnnl_status_t::dnnl_success;
     return dnnl_status_t::dnnl_unimplemented;
 };
 
@@ -784,7 +785,7 @@ static char *test_malloc(size_t size) {
 #else
     int rc = ::posix_memalign(&ptr, align, padded_size);
 #endif /* _WIN32 */
-    return rc == 0 ? (char *)ptr + TEST_MALLOC_OFFSET : 0;
+    return rc == 0 ? (char *)ptr + TEST_MALLOC_OFFSET : nullptr;
 }
 
 static void test_free(char *ptr) {
