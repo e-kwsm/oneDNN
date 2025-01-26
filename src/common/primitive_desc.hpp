@@ -47,7 +47,7 @@ static int po_inputs(const post_ops_t &post_ops, const primitive_kind_t kind) {
 struct impl_list_item_t;
 struct primitive_t;
 // Primitive descriptor implementation
-struct primitive_desc_t : public c_compatible {
+struct primitive_desc_t : public c_compatible_t {
     primitive_desc_t(const primitive_attr_t *attr, primitive_kind_t kind)
         : attr_(*attr), kind_(kind), pd_iterator_offset_(0), skip_idx_(-1) {
         is_initialized_ = is_initialized_ && attr_.is_initialized();
@@ -139,11 +139,11 @@ struct primitive_desc_t : public c_compatible {
     }
 
     virtual bool has_runtime_dims_or_strides() const {
-        return memory_desc_wrapper(invariant_src_md())
+        return memory_desc_wrapper_t(invariant_src_md())
                        .has_runtime_dims_or_strides()
-                || memory_desc_wrapper(invariant_wei_md())
+                || memory_desc_wrapper_t(invariant_wei_md())
                            .has_runtime_dims_or_strides()
-                || memory_desc_wrapper(invariant_dst_md())
+                || memory_desc_wrapper_t(invariant_dst_md())
                            .has_runtime_dims_or_strides();
     };
 

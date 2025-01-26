@@ -68,12 +68,12 @@ enum { CRIT = 1, WARN = 2 };
     do { \
         int status__ = (f); \
         if (status__ != OK) { \
-            if (s == CRIT || s == WARN) { \
+            if ((s) == CRIT || (s) == WARN) { \
                 BENCHDNN_PRINT(0, \
                         "Error: Function '%s' at (%s:%d) returned '%d'\n", \
                         __FUNCTION__, __FILE__, __LINE__, status__); \
                 fflush(0); \
-                if (s == CRIT) exit(1); \
+                if ((s) == CRIT) exit(1); \
             } \
             return status__; \
         } \
@@ -110,7 +110,7 @@ extern std::string driver_name;
 
 #define BENCHDNN_DISALLOW_COPY_AND_ASSIGN(T) \
     T(const T &) = delete; \
-    T &operator=(const T &) = delete;
+    (T) &operator=(const T &) = delete;
 
 /* perf */
 extern double max_ms_per_prb; // max time spend per prb in ms

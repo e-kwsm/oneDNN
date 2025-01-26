@@ -62,7 +62,7 @@ status_t safe_ptr_assign(
 }
 
 template <typename T, typename U>
-struct is_subset {
+struct is_subset_t {
     static constexpr bool value = false;
 };
 template <typename T>
@@ -71,7 +71,8 @@ struct is_subset<T, T> {
 };
 template <typename T>
 struct is_subset<T,
-        typename utils::enable_if<nstl::is_integral<T>::value, float>::type> {
+        typename utils::enable_if_t<nstl::is_integral_t<T>::value,
+                float>::type> {
     static constexpr bool value = true;
 };
 #define ISSPEC(t1, t2) \

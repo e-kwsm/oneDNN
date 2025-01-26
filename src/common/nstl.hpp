@@ -55,7 +55,7 @@ void *malloc(size_t size, int alignment);
 #endif
 void free(void *p);
 
-struct c_compatible {
+struct c_compatible_t {
     enum { default_alignment = 64 };
     static void *operator new(size_t sz) {
         return MALLOC(sz, default_alignment);
@@ -351,12 +351,12 @@ public:
     using iterator = typename std::vector<T>::iterator;
     using const_iterator = typename std::vector<T>::const_iterator;
     using size_type = typename std::vector<T>::size_type;
-    vector() = default;
-    vector(size_type n) : _impl(n) {}
-    vector(size_type n, const T &value) : _impl(n, value) {}
+    vector_t() = default;
+    vector_t(size_type n) : _impl(n) {}
+    vector_t(size_type n, const T &value) : _impl(n, value) {}
     template <typename input_iterator>
-    vector(input_iterator first, input_iterator last) : _impl(first, last) {}
-    ~vector() = default;
+    vector_t(input_iterator first, input_iterator last) : _impl(first, last) {}
+    ~vector_t() = default;
     size_type size() const { return _impl.size(); }
     T &operator[](size_type i) { return _impl[i]; }
     const T &operator[](size_type i) const { return _impl[i]; }
@@ -385,8 +385,8 @@ public:
     using iterator = typename std::map<Key, T>::iterator;
     using const_iterator = typename std::map<Key, T>::const_iterator;
     using size_type = typename std::map<Key, T>::size_type;
-    map() = default;
-    ~map() = default;
+    map_t() = default;
+    ~map_t() = default;
     size_type size() const { return _impl.size(); }
     T &operator[](const Key &k) { return _impl[k]; }
     const T &operator[](const Key &k) const { return _impl[k]; }
@@ -410,16 +410,16 @@ struct make_index_sequence_helper // NOLINT(readability-identifier-naming)
 
 template <size_t... Next>
 struct make_index_sequence_helper<0, Next...> {
-    using type = index_sequence<Next...>;
+    using type = index_sequence_t<Next...>;
 };
 
 // Generator of compile-time sequence of indices
 template <size_t N>
-using make_index_sequence = typename make_index_sequence_helper<N>::type;
+using make_index_sequence = typename make_index_sequence_helper_t<N>::type;
 
 template <class T, std::size_t N, std::size_t... I>
 constexpr std::array<typename std::remove_cv<T>::type, N> to_array_impl(
-        T (&a)[N], index_sequence<I...>) {
+        T (&a)[N], index_sequence_t<I...>) {
     return {{a[I]...}};
 }
 
@@ -431,7 +431,7 @@ constexpr std::array<typename std::remove_cv<T>::type, N> to_array(T (&a)[N]) {
 
 template <class T, std::size_t N, std::size_t... I>
 constexpr std::array<typename std::remove_cv<T>::type, N> to_array_impl(
-        T(&&a)[N], index_sequence<I...>) {
+        T (&&a)[N], index_sequence_t<I...>) {
     return {{std::move(a[I])...}};
 }
 

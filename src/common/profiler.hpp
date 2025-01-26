@@ -171,7 +171,7 @@ private:
         T name;
         prof_time_t time;
         record_t(T name, prof_time_t time) : name(name), time(time) {}
-        record_t(std::pair<T, prof_time_t> record)
+        record_t(const std::pair<T, prof_time_t> &record)
             : name(record.first), time(record.second) {}
         // Reversed time ordering
         bool operator<(const record_t &b) const { return this->time > b.time; }

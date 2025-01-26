@@ -23,7 +23,7 @@
 #define TIME_FUNC(func, res, name) \
     do { \
         if (res) { \
-            auto &t = res->timer_map.get_timer(name); \
+            auto &t = (res)->timer_map.get_timer(name); \
             t.start(); \
             func; \
             t.stamp(); \
