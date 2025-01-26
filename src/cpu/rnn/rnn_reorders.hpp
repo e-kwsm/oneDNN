@@ -61,7 +61,7 @@ template <data_type_t type_i>
 static inline void quantize_igo(int8_t *scratch_quantized,
         const memory_desc_wrapper &src_d, const float *src, int mask,
         float *scales) {
-    typedef typename prec_traits<type_i>::type in_data_t;
+    using in_data_t = typename prec_traits<type_i>::type;
 
     // TODO: trivial strides assumes here.
     //       Use proper strides where appropriate
@@ -87,7 +87,7 @@ template <data_type_t type_i>
 static inline void quantize_goi(int8_t *scratch_quantized,
         const memory_desc_wrapper &src_d, const float *src, int mask,
         float *scales) {
-    typedef typename prec_traits<type_i>::type in_data_t;
+    using in_data_t = typename prec_traits<type_i>::type;
 
     // TODO: trivial strides assumes here.
     //       Use proper strides where appropriate
@@ -232,8 +232,8 @@ struct rnn_data_reorder_t : public primitive_t {
     rnn_data_reorder_t(const pd_t *apd) : primitive_t(apd) {}
 
 private:
-    typedef typename prec_traits<type_i>::type in_data_t;
-    typedef typename prec_traits<type_o>::type out_data_t;
+    using in_data_t = typename prec_traits<type_i>::type;
+    using out_data_t = typename prec_traits<type_o>::type;
 
     bool is_dense() const {
         const memory_desc_wrapper &input_d = pd()->src_md();
