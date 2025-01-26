@@ -128,7 +128,7 @@ template <typename T, typename traits = handle_traits<T>>
 struct handle {
 private:
     static dnnl_status_t dummy_destructor(T) { return dnnl_success; }
-    std::shared_ptr<typename std::remove_pointer<T>::type> data_ {0};
+    std::shared_ptr<typename std::remove_pointer<T>::type> data_ {nullptr};
 
 protected:
     bool operator==(const T other) const { return other == data_.get(); }
