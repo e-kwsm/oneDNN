@@ -428,7 +428,7 @@ struct rnn_weights_reorder_s8_t : public primitive_t {
     rnn_weights_reorder_s8_t(const pd_t *apd) : primitive_t(apd) {}
 
 private:
-    typedef typename prec_traits<type_i>::type in_data_t;
+    using in_data_t = typename prec_traits<type_i>::type;
 
     status_t execute(const exec_ctx_t &ctx) const override {
         // TODO: trivial strides assumed here.
@@ -615,8 +615,8 @@ struct rnn_weights_reorder_t : public primitive_t {
     rnn_weights_reorder_t(const pd_t *apd) : primitive_t(apd) {}
 
 private:
-    typedef typename prec_traits<type_i>::type in_data_t;
-    typedef typename prec_traits<type_o>::type out_data_t;
+    using in_data_t = typename prec_traits<type_i>::type;
+    using out_data_t = typename prec_traits<type_o>::type;
 
     status_t execute(const exec_ctx_t &ctx) const override {
         // TODO: trivial strides assumed here.
@@ -838,8 +838,8 @@ struct rnn_brgemm_weights_reorder_s8_t : public primitive_t {
     rnn_brgemm_weights_reorder_s8_t(const pd_t *apd) : primitive_t(apd) {}
 
 private:
-    typedef typename prec_traits<type_i>::type in_data_t;
-    typedef typename prec_traits<type_o>::type out_data_t;
+    using in_data_t = typename prec_traits<type_i>::type;
+    using out_data_t = typename prec_traits<type_o>::type;
 
     status_t execute(const exec_ctx_t &ctx) const override {
         using namespace format_tag;
