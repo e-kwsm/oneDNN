@@ -80,7 +80,7 @@ struct jit_brgemm_copy_to_coarse_t : public jit_generator {
 
         MAYBE_UNUSED(row_granularity_);
     }
-    ~jit_brgemm_copy_to_coarse_t() {}
+    ~jit_brgemm_copy_to_coarse_t() override {}
 
 private:
     enum {
