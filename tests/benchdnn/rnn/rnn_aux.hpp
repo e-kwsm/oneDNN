@@ -23,22 +23,22 @@
 
 namespace rnn {
 
-typedef enum {
+enum rnn_propagation_t {
     rnn_forward = 0,
     rnn_backward,
-} rnn_propagation_t;
+};
 
-typedef enum {
+enum rnn_iter_direction_t {
     left2right = 0,
     right2left,
-} rnn_iter_direction_t;
+};
 
-typedef enum {
+enum rnn_layer_direction_t {
     bottom2top = 0,
     top2bottom,
-} rnn_layer_direction_t;
+};
 
-typedef enum { action_copy = 0, action_sum, action_concat } rnn_action_t;
+enum rnn_action_t { action_copy = 0, action_sum, action_concat };
 
 dnnl_status_t init_rnn_fwd_pd(dnnl_primitive_desc_t *pd, dnnl_engine_t engine,
         const prb_t &prb, dnnl_prop_kind_t prop_kind,
