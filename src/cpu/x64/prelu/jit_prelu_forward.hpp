@@ -45,7 +45,7 @@ public:
     };
 
     jit_prelu_fwd_t(const pd_t *apd);
-    ~jit_prelu_fwd_t();
+    ~jit_prelu_fwd_t() override;
     status_t init(engine_t *engine) override;
     status_t execute(const exec_ctx_t &ctx) const override;
 
