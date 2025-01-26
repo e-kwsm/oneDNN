@@ -158,7 +158,7 @@ struct ip_convolution_fwd_t : public primitive_t {
             , ip_pd_(other.ip_pd_->clone())
             , name_(other.name_) {}
 
-        ~pd_t() = default;
+        ~pd_t() override = default;
 
         DECLARE_COMMON_PD_T(name_.c_str(), ip_convolution_fwd_t);
 
@@ -273,7 +273,7 @@ struct ip_convolution_bwd_data_t : public primitive_t {
             , ip_pd_(other.ip_pd_->clone())
             , name_(other.name_) {}
 
-        ~pd_t() = default;
+        ~pd_t() override = default;
 
         DECLARE_COMMON_PD_T(name_.c_str(), ip_convolution_bwd_data_t);
 
@@ -385,7 +385,7 @@ struct ip_convolution_bwd_weights_t : public primitive_t {
             , ip_pd_(other.ip_pd_->clone())
             , name_(other.name_) {}
 
-        ~pd_t() = default;
+        ~pd_t() override = default;
 
         DECLARE_COMMON_PD_T(name_.c_str(), ip_convolution_bwd_weights_t);
 
