@@ -132,7 +132,7 @@ struct jit_diff_wei_trans_to_vnni_t : public jit_generator {
         , oc_block_(oc_block)
         , nb_ic_(nb_ic) {}
 
-    ~jit_diff_wei_trans_to_vnni_t() {}
+    ~jit_diff_wei_trans_to_vnni_t() override {}
 
     status_t create_kernel() override { return jit_generator::create_kernel(); }
 
