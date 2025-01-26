@@ -116,7 +116,7 @@ struct prb_t : public prb_dims_t {
             const auto val = dt[0]; // Need a copy here.
             this->dt.assign(2, val);
         }
-        if (tag.size() == 1) { this->tag.push_back(tag::any); }
+        if (tag.size() == 1) { this->tag.emplace_back(tag::any); }
         repro = set_repro_line(); // must be last in ctor to collect right info
     }
 
