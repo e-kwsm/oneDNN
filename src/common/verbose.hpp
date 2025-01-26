@@ -57,7 +57,7 @@ inline constexpr size_t get_file_name_offset(T (&str)[1]) {
     return 0;
 }
 template <typename T, T v>
-struct const_expr_value {
+struct const_expr_value_t {
     static constexpr const T value = v;
 };
 

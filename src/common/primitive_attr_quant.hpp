@@ -41,7 +41,7 @@ const primitive_attr_t &default_attr();
 struct runtime_scales_t;
 const runtime_scales_t &default_runtime_scale();
 
-struct runtime_scales_t : public c_compatible {
+struct runtime_scales_t : public c_compatible_t {
     runtime_scales_t() = default;
 
     runtime_scales_t &operator=(const runtime_scales_t &rhs) {
@@ -87,7 +87,7 @@ struct runtime_scales_t : public c_compatible {
     data_type_t data_type_ = data_type::f32;
 };
 
-struct arg_scales_t : public c_compatible {
+struct arg_scales_t : public c_compatible_t {
     arg_scales_t() = default;
 
     const runtime_scales_t &get(int arg) const {
@@ -222,7 +222,7 @@ private:
     }
 };
 
-struct zero_points_t : public c_compatible {
+struct zero_points_t : public c_compatible_t {
     bool operator==(const zero_points_t &rhs) const {
         return mask_src == rhs.mask_src && mask_wei == rhs.mask_wei
                 && mask_dst == rhs.mask_dst && is_set_src == rhs.is_set_src
@@ -324,7 +324,7 @@ private:
             case DNNL_ARG_SRC: arg_is_set = is_set_src; break;
             case DNNL_ARG_WEIGHTS: arg_is_set = is_set_wei; break;
             case DNNL_ARG_DST: arg_is_set = is_set_dst; break;
-            default: arg_is_set = 0;
+            default: arg_is_set = false;
         }
         return arg_is_set;
     }

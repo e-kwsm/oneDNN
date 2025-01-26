@@ -62,7 +62,7 @@ status_t safe_ptr_assign(
 }
 
 template <typename T, typename U>
-struct is_subset {
+struct is_subset_t {
     static constexpr bool value = false;
 };
 template <typename T>
@@ -71,7 +71,8 @@ struct is_subset<T, T> {
 };
 template <typename T>
 struct is_subset<T,
-        typename utils::enable_if<nstl::is_integral<T>::value, float>::type> {
+        typename utils::enable_if_t<nstl::is_integral_t<T>::value,
+                float>::type> {
     static constexpr bool value = true;
 };
 #define ISSPEC(t1, t2) \
@@ -624,7 +625,7 @@ inline bool operator!=(const memory_desc_t &lhs, const memory_desc_t &rhs) {
 #define DEREF_AND_COMPARE_DESC_MEMBERS(m) *lhs.m == *rhs.m
 #define COMPARE_FLOAT_DESC_MEMBERS(m) utils::equal_with_nan(lhs.m, rhs.m)
 #define COMPARE_FLOAT_DESC_ARRAY_MEMBERS(m, s) \
-    !std::memcmp(lhs.m, rhs.m, sizeof(float) * s)
+    !std::memcmp(lhs.m, rhs.m, sizeof(float) * (s))
 
 // clang-format off
 inline bool operator==(const batch_normalization_desc_t &lhs,
@@ -990,7 +991,8 @@ inline bool operator==(const sdpa_desc_t &lhs, const sdpa_desc_t &rhs) {
 #undef COMPARE_FLOAT_DESC_MEMBERS
 #undef COMPARE_FLOAT_DESC_ARRAY_MEMBERS
 
-inline bool is_dense_format_kind(const std::vector<const memory_desc_t *> mds) {
+inline bool is_dense_format_kind(
+        const std::vector<const memory_desc_t *> &mds) {
 #ifdef DNNL_EXPERIMENTAL_SPARSE
     for (const auto *md : mds)
         if (md->format_kind == format_kind::sparse) return false;

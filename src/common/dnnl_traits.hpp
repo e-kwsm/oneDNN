@@ -32,11 +32,11 @@ namespace impl {
 template <data_type_t>
 struct prec_traits {}; /* ::type -> float */
 template <typename>
-struct data_traits {}; /* ::data_type -> f32 */
+struct data_traits_t {}; /* ::data_type -> f32 */
 template <int>
-struct typesize_traits {}; /* ::data_type_size -> f32 */
+struct typesize_traits_t {}; /* ::data_type_size -> f32 */
 template <primitive_kind_t>
-struct pkind_traits {}; /* ::desc_type, ::query_d */
+struct pkind_traits_t {}; /* ::desc_type, ::query_d */
 
 template <>
 struct prec_traits<data_type::f4_e3m0> {

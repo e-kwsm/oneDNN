@@ -30,6 +30,7 @@
 #include <memory>
 #include <string>
 #include <tuple>
+#include <utility>
 
 #define MSAN_ENABLED 0
 #define ATTR_NO_MSAN
@@ -52,17 +53,17 @@ namespace impl {
 
 #define DNNL_SHORT_CIRCUIT_SELF_ASSIGN(other) \
     do { \
-        if (this == &other) return *this; \
+        if (this == &(other)) return *this; \
     } while (0)
 
 #define DNNL_SHORT_CIRCUIT_SELF_COMPARISON(other) \
     do { \
-        if (this == &other) return true; \
+        if (this == &(other)) return true; \
     } while (0)
 
 #define DNNL_DISALLOW_COPY_AND_ASSIGN(T) \
     T(const T &) = delete; \
-    T &operator=(const T &) = delete;
+    (T) &operator=(const T &) = delete;
 
 // Sanity check for 64 bits
 static_assert(sizeof(void *) == 8, "oneDNN supports 64-bit architectures only");
@@ -104,7 +105,7 @@ namespace utils {
 
 /* SFINAE helper -- analogue to std::enable_if */
 template <bool expr, class T = void>
-struct enable_if {};
+struct enable_if_t {};
 template <class T>
 struct enable_if<true, T> {
     using type = T;
@@ -112,7 +113,7 @@ struct enable_if<true, T> {
 
 /* analogue std::conditional */
 template <bool, typename, typename>
-struct conditional {};
+struct conditional_t {};
 template <typename T, typename F>
 struct conditional<true, T, F> {
     using type = T;
@@ -123,7 +124,7 @@ struct conditional<false, T, F> {
 };
 
 template <bool, typename, bool, typename, typename>
-struct conditional3 {};
+struct conditional3_t {};
 template <typename T, typename FT, typename FF>
 struct conditional3<true, T, false, FT, FF> {
     using type = T;
@@ -138,7 +139,7 @@ struct conditional3<false, T, false, FT, FF> {
 };
 
 template <bool, typename U, U, U>
-struct conditional_v {};
+struct conditional_v_t {};
 template <typename U, U t, U f>
 struct conditional_v<true, U, t, f> {
     static constexpr U value = t;
@@ -149,7 +150,7 @@ struct conditional_v<false, U, t, f> {
 };
 
 template <typename T>
-struct remove_reference {
+struct remove_reference_t {
     using type = T;
 };
 template <typename T>
@@ -162,17 +163,17 @@ struct remove_reference<T &&> {
 };
 
 template <typename T>
-inline T &&forward(typename utils::remove_reference<T>::type &t) {
+inline T &&forward(typename utils::remove_reference_t<T>::type &t) {
     return static_cast<T &&>(t);
 }
 template <typename T>
-inline T &&forward(typename utils::remove_reference<T>::type &&t) {
+inline T &&forward(typename utils::remove_reference_t<T>::type &&t) {
     return static_cast<T &&>(t);
 }
 
 template <typename T>
-inline typename remove_reference<T>::type zero() {
-    auto zero = typename remove_reference<T>::type();
+inline typename remove_reference_t<T>::type zero() {
+    auto zero = typename remove_reference_t<T>::type();
     return zero;
 }
 
@@ -182,21 +183,21 @@ std::unique_ptr<T> make_unique(Args &&...args) {
 }
 
 template <typename T, typename P>
-constexpr bool everyone_is(T val, P item) {
+constexpr bool everyone_is(T val, const P &item) {
     return val == item;
 }
 template <typename T, typename P, typename... Args>
-constexpr bool everyone_is(T val, P item, Args... item_others) {
-    return val == item && everyone_is(val, item_others...);
+constexpr bool everyone_is(T val, const P &item, Args... item_others) {
+    return val == item && everyone_is(val, std::move(item_others)...);
 }
 
 template <typename T, typename P>
-constexpr bool one_of(T val, P item) {
+constexpr bool one_of(T val, const P &item) {
     return val == item;
 }
 template <typename T, typename P, typename... Args>
-constexpr bool one_of(T val, P item, Args... item_others) {
-    return val == item || one_of(val, item_others...);
+constexpr bool one_of(T val, const P &item, Args... item_others) {
+    return val == item || one_of(val, std::move(item_others)...);
 }
 
 template <typename T, typename P>
@@ -251,22 +252,22 @@ inline void array_set(T *arr, const U &val, size_t size) {
 
 namespace product_impl {
 template <size_t>
-struct int2type {};
+struct int2type_t {};
 
 template <typename T>
-constexpr int product_impl(const T *arr, int2type<0>) {
+constexpr int product_impl(const T *arr, int2type_t<0>) {
     return arr[0];
 }
 
 template <typename T, size_t num>
-constexpr T product_impl(const T *arr, int2type<num>) {
-    return arr[0] * product_impl(arr + 1, int2type<num - 1>());
+constexpr T product_impl(const T *arr, int2type_t<num>) {
+    return arr[0] * product_impl(arr + 1, int2type_t<num - 1>());
 }
 } // namespace product_impl
 
 template <size_t num, typename T>
 constexpr T array_product(const T *arr) {
-    return product_impl::product_impl(arr, product_impl::int2type<num - 1>());
+    return product_impl::product_impl(arr, product_impl::int2type_t<num - 1>());
 }
 
 template <typename T, typename R = T>
@@ -331,24 +332,24 @@ constexpr const T &saturate(const T &low, const T &upper, const T &a) {
 }
 
 template <typename T, typename U>
-inline typename remove_reference<T>::type div_up(const T a, const U b) {
+inline typename remove_reference_t<T>::type div_up(const T a, const U b) {
     assert(b);
-    return static_cast<typename remove_reference<T>::type>((a + b - 1) / b);
+    return static_cast<typename remove_reference_t<T>::type>((a + b - 1) / b);
 }
 
 template <typename T, typename U>
-inline typename remove_reference<T>::type rnd_up(const T a, const U b) {
-    return static_cast<typename remove_reference<T>::type>(div_up(a, b) * b);
+inline typename remove_reference_t<T>::type rnd_up(const T a, const U b) {
+    return static_cast<typename remove_reference_t<T>::type>(div_up(a, b) * b);
 }
 
 template <typename T, typename U>
-constexpr typename remove_reference<T>::type rnd_dn(const T a, const U b) {
-    return static_cast<typename remove_reference<T>::type>((a / b) * b);
+constexpr typename remove_reference_t<T>::type rnd_dn(const T a, const U b) {
+    return static_cast<typename remove_reference_t<T>::type>((a / b) * b);
 }
 
 template <typename T>
-inline typename remove_reference<T>::type rnd_up_pow2(const T a) {
-    using R = typename remove_reference<T>::type;
+inline typename remove_reference_t<T>::type rnd_up_pow2(const T a) {
+    using R = typename remove_reference_t<T>::type;
     if (a <= 0)
         return static_cast<R>(1);
     else {
@@ -360,24 +361,25 @@ inline typename remove_reference<T>::type rnd_up_pow2(const T a) {
 }
 
 template <typename T>
-inline typename remove_reference<T>::type rnd_down_pow2(const T a) {
+inline typename remove_reference_t<T>::type rnd_down_pow2(const T a) {
     auto ret = rnd_up_pow2(a);
     return ret == a ? ret : ret / 2;
 }
 
 template <typename T, typename U>
-inline typename remove_reference<T>::type max_div(const T a, const U b) {
+inline typename remove_reference_t<T>::type max_div(const T a, const U b) {
     U div = b;
     while (div > 1) {
         if (a % div == 0) return div;
         div--;
     }
-    return static_cast<typename remove_reference<T>::type>(div);
+    return static_cast<typename remove_reference_t<T>::type>(div);
 }
 
 template <typename T>
-inline typename remove_reference<T>::type max_pow2_div(const T a) {
-    return static_cast<typename remove_reference<T>::type>(((a - 1) & ~a) + 1);
+inline typename remove_reference_t<T>::type max_pow2_div(const T a) {
+    return static_cast<typename remove_reference_t<T>::type>(
+            ((a - 1) & ~a) + 1);
 }
 
 template <typename T>
@@ -386,7 +388,7 @@ T *align_ptr(T *ptr, uintptr_t alignment) {
 }
 
 template <typename T, typename U, typename V>
-inline typename remove_reference<U>::type this_block_size(
+inline typename remove_reference_t<U>::type this_block_size(
         const T offset, const U max, const V block_size) {
     assert(offset < max);
     // TODO (Roma): can't use nstl::max() due to circular dependency... we
@@ -478,14 +480,13 @@ T pick_by_prop_kind(prop_kind_t prop_kind, const T &val_fwd, const T &val_bwd_d,
 }
 
 template <typename Telem, size_t Tdims>
-struct array_offset_calculator {
+struct array_offset_calculator_t {
     template <typename... Targs>
-    array_offset_calculator(Telem *base, Targs... Fargs) : _dims {Fargs...} {
-        _base_ptr = base;
-    }
+    array_offset_calculator_t(Telem *base, Targs... Fargs)
+        : _base_ptr(base), _dims {Fargs...} {}
 
     template <typename... Targs>
-    array_offset_calculator(std::nullptr_t, Targs... Fargs) = delete;
+    array_offset_calculator_t(std::nullptr_t, Targs... Fargs) = delete;
 
     template <typename... Targs>
     inline Telem &operator()(Targs... Fargs) const {
@@ -823,16 +824,10 @@ using maybe_unique_ptr = std::unique_ptr<T, nop_deleter_t>;
 struct nibble2_t {
 
     // constructs a nibble pair from a pair of uint8_t values
-    nibble2_t(uint8_t low_, uint8_t high_) {
-        low = low_;
-        high = high_;
-    }
+    nibble2_t(uint8_t low_, uint8_t high_) : low(low_), high(high_) {}
 
     // constructs a nibble pairs from an uin8_t, taking its low and high part
-    nibble2_t(uint8_t pack_) {
-        low = pack_ & 0xf;
-        high = (pack_ >> 4) & 0xf;
-    }
+    nibble2_t(uint8_t pack_) : low(pack_ & 0xf), high((pack_ >> 4) & 0xf) {}
 
     // sets low (idx=0) or high (idx=1)  nibble.
     inline void set(uint8_t val, int idx) {
@@ -868,7 +863,7 @@ static_assert(sizeof(nibble2_t) == 1, "nibble2_t must be 1 byte");
 ///     printf("%d\t", idx);
 /// }
 /// output: 0  2  3
-class mask_iterator {
+class mask_iterator_t {
     int mask_;
     int index_;
 
@@ -878,14 +873,14 @@ public:
     using value_type = int;
     using pointer = value_type *;
     using reference = value_type &;
-    mask_iterator() : mask_(0), index_(0) {}
-    mask_iterator(int mask) : mask_(mask), index_(0) {
+    mask_iterator_t() : mask_(0), index_(0) {}
+    mask_iterator_t(int mask) : mask_(mask), index_(0) {
         if ((mask_ & 0x1) == 0) { ++(*this); }
     }
-    mask_iterator &begin() { return *this; }
-    mask_iterator end() const { return 0; }
+    mask_iterator_t &begin() { return *this; }
+    mask_iterator_t end() const { return 0; }
     value_type operator*() const { return index_; }
-    mask_iterator &operator++() {
+    mask_iterator_t &operator++() {
         do {
             index_++;
             mask_ >>= 1;
@@ -893,7 +888,7 @@ public:
         if (mask_ == 0) { index_ = 0; }
         return *this;
     }
-    bool operator!=(const mask_iterator &other) const {
+    bool operator!=(const mask_iterator_t &other) const {
         return mask_ != other.mask_ || index_ != other.index_;
     }
 };

@@ -282,7 +282,7 @@ status_t memory_desc_permute_axes(memory_desc_t &out_memory_desc,
 // dimensions themselves, plus information about elements type and memory
 // format. Additionally, contains format-specific descriptions of the data
 // layout.
-struct dnnl_memory_desc : public dnnl::impl::c_compatible {
+struct dnnl_memory_desc : public dnnl::impl::c_compatible_t {
     dnnl_memory_desc()
         : ndims(0)
         , dims {}
@@ -291,8 +291,7 @@ struct dnnl_memory_desc : public dnnl::impl::c_compatible {
         , padded_offsets {}
         , offset0(0)
         , format_kind(dnnl::impl::format_kind::undef)
-        , format_desc {}
-        , extra {} {}
+        , format_desc {} {}
     // Number of dimensions
     int ndims;
     // Dimensions in the following order:
