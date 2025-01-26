@@ -239,8 +239,7 @@ public:
     // By default it assumes to be called after the prologue
     // Note: that we cannot use RBP inside as we override it in preamble
     // for address computation in EVEX instructions
-    inline const Xbyak::RegExp get_stack_params_address(
-            bool after_prolog = true) {
+    inline Xbyak::RegExp get_stack_params_address(bool after_prolog = true) {
         int saved_regs_size = after_prolog ? get_size_of_abi_save_regs() : 0;
 #ifdef _WIN32
         // Using stack layout described in MS ABI
