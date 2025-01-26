@@ -194,7 +194,7 @@ private:
     template <typename T>
     inline static void reader_function(json_reader_t *reader, void *addr);
     /*! \brief callback type to reader function */
-    typedef void (*readfunc)(json_reader_t *reader, void *addr);
+    using readfunc = void (*)(json_reader_t *reader, void *addr);
     /*! \brief data entry */
     struct entry_t {
         readfunc func;
