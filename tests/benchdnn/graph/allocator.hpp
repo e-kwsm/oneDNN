@@ -67,7 +67,7 @@ public:
 
 private:
     graph_mem_manager_t() : need_mem_check_(false) {}
-    ~graph_mem_manager_t() {};
+    ~graph_mem_manager_t() = default;
 
 #ifdef DNNL_WITH_SYCL
     void *default_sycl_malloc(

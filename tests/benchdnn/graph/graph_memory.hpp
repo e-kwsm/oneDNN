@@ -112,7 +112,7 @@ private:
     graph_memory_req_args_t() {
         req_ = std::vector<std::vector<size_t>>(2, std::vector<size_t>(3, 0));
     }
-    ~graph_memory_req_args_t() {};
+    ~graph_memory_req_args_t() = default;
     BENCHDNN_DISALLOW_COPY_AND_ASSIGN(graph_memory_req_args_t);
 
     // The detailed memory size requrest for specific path and devices.
