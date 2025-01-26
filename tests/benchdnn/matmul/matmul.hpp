@@ -33,7 +33,7 @@
 
 namespace matmul {
 
-typedef std::bitset<DNNL_MAX_NDIMS> dims_mask_t;
+using dims_mask_t = std::bitset<DNNL_MAX_NDIMS>;
 
 struct settings_t : public base_settings_t {
     settings_t() = default;
