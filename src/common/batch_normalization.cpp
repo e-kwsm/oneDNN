@@ -55,7 +55,7 @@ status_t bnrm_desc_init(batch_normalization_desc_t *bnrm_desc,
     VCHECK_BNORM(IMPLICATION(!is_fwd, !any_null(diff_src_desc, diff_dst_desc)),
             VERBOSE_NULL_ARG);
     VCHECK_BNORM(
-            IMPLICATION(is_fwd, !memory_desc_wrapper(src_desc).format_any()),
+            IMPLICATION(is_fwd, !memory_desc_wrapper_t(src_desc).format_any()),
             VERBOSE_UNSUPPORTED_TAG_S, "src");
 
     unsigned bnorm_flags = normalization_flags::use_global_stats
@@ -69,15 +69,16 @@ status_t bnrm_desc_init(batch_normalization_desc_t *bnrm_desc,
     bd.prop_kind = prop_kind;
 
     bool runtime_dims_or_strides
-            = memory_desc_wrapper(src_desc).has_runtime_dims_or_strides();
+            = memory_desc_wrapper_t(src_desc).has_runtime_dims_or_strides();
     if (is_fwd) {
         runtime_dims_or_strides = runtime_dims_or_strides
-                || memory_desc_wrapper(dst_desc).has_runtime_dims_or_strides();
+                || memory_desc_wrapper_t(dst_desc)
+                           .has_runtime_dims_or_strides();
     } else {
         runtime_dims_or_strides = runtime_dims_or_strides
-                || memory_desc_wrapper(diff_src_desc)
+                || memory_desc_wrapper_t(diff_src_desc)
                            .has_runtime_dims_or_strides()
-                || memory_desc_wrapper(diff_dst_desc)
+                || memory_desc_wrapper_t(diff_dst_desc)
                            .has_runtime_dims_or_strides();
     }
     VCHECK_BNORM_UNIMPL(
