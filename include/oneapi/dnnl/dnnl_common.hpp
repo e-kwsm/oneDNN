@@ -376,35 +376,35 @@ struct stream : public handle<dnnl_stream_t> {
                 static_cast<unsigned>(lhs) | static_cast<unsigned>(rhs)); \
     } \
 \
-    inline enum_name operator&(enum_name lhs, enum_name rhs) { \
+    inline(enum_name) operator&(enum_name lhs, enum_name rhs) { \
         return static_cast<enum_name>( \
                 static_cast<unsigned>(lhs) & static_cast<unsigned>(rhs)); \
     } \
 \
-    inline enum_name operator^(enum_name lhs, enum_name rhs) { \
+    inline(enum_name) operator^(enum_name lhs, enum_name rhs) { \
         return static_cast<enum_name>( \
                 static_cast<unsigned>(lhs) ^ static_cast<unsigned>(rhs)); \
     } \
 \
-    inline enum_name &operator|=(enum_name &lhs, enum_name rhs) { \
+    inline(enum_name) &operator|=((enum_name) & lhs, enum_name rhs) { \
         lhs = static_cast<enum_name>( \
                 static_cast<unsigned>(lhs) | static_cast<unsigned>(rhs)); \
         return lhs; \
     } \
 \
-    inline enum_name &operator&=(enum_name &lhs, enum_name rhs) { \
+    inline(enum_name) &operator&=((enum_name) & lhs, enum_name rhs) { \
         lhs = static_cast<enum_name>( \
                 static_cast<unsigned>(lhs) & static_cast<unsigned>(rhs)); \
         return lhs; \
     } \
 \
-    inline enum_name &operator^=(enum_name &lhs, enum_name rhs) { \
+    inline(enum_name) &operator^=((enum_name) & lhs, enum_name rhs) { \
         lhs = static_cast<enum_name>( \
                 static_cast<unsigned>(lhs) ^ static_cast<unsigned>(rhs)); \
         return lhs; \
     } \
 \
-    inline enum_name operator~(enum_name rhs) { \
+    inline(enum_name) operator~(enum_name rhs) { \
         return static_cast<enum_name>(~static_cast<unsigned>(rhs)); \
     }
 //NOLINTEND(bugprone-macro-parentheses)
