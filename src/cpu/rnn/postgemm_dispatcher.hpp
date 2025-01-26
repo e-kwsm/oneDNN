@@ -63,7 +63,7 @@ struct rnn_postgemm_dispatcher {
 
     using class_name
             = rnn_postgemm_dispatcher<aprop, src_type, scratch_type, acc_type>;
-    typedef rnn_postgemm_sig((class_name::*postgemm_f));
+    using postgemm_f = rnn_postgemm_sig((class_name::*));
 
     rnn_postgemm_dispatcher(
             const rnn_utils::rnn_conf_t &rnn, const rnn_pd_t *pd)
