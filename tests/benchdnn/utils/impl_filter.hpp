@@ -21,7 +21,7 @@
 #include <vector>
 
 struct impl_filter_t {
-    impl_filter_t() {};
+    impl_filter_t() = default;
     impl_filter_t(const std::vector<std::string> &impl_names, bool use_impl)
         : impl_names_(impl_names), use_impl_(use_impl) {}
 
