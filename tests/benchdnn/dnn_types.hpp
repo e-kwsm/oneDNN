@@ -92,7 +92,7 @@ struct attr_t {
 
             bool is_def() const {
                 return policy == COMMON && value == 0 && dt == dnnl_s32
-                        && groups.size() == 0;
+                        && groups.empty();
             }
 
             policy_t policy = COMMON;
@@ -156,7 +156,7 @@ struct attr_t {
 
             bool is_def() const {
                 return policy == COMMON && scale == 1.f && dt == dnnl_f32
-                        && groups.size() == 0;
+                        && groups.empty();
             }
 
             policy_t policy = COMMON;
