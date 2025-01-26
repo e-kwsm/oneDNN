@@ -4201,7 +4201,7 @@ struct primitive_attr : public handle<dnnl_primitive_attr_t> {
     /// Returns post-ops previously set via set_post_ops().
     ///
     /// @returns Post-ops.
-    const post_ops get_post_ops() const {
+    post_ops get_post_ops() const {
         const_dnnl_post_ops_t const_c_post_ops;
         error::wrap_c_api(
                 dnnl_primitive_attr_get_post_ops(get(), &const_c_post_ops),
