@@ -281,7 +281,7 @@ public:
 
     // Initialize an empty fusion info object and return its key
     int64_t init_info() {
-        data_.emplace_back(fusion_info_t());
+        data_.emplace_back();
         return static_cast<int64_t>(data_.size() - 1);
     }
 
