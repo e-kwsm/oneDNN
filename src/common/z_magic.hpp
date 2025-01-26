@@ -36,7 +36,7 @@
 #define PRAGMA_MACRO(x) PRAGMA_MACRo(x)
 #endif
 
-#define UNUSED(x) ((void)x)
+#define UNUSED(x) ((void)(x))
 #define MAYBE_UNUSED(x) UNUSED(x)
 
 #if defined(_WIN32) && !defined(__GNUC__)

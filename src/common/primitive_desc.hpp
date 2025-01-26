@@ -47,7 +47,7 @@ static int po_inputs(const post_ops_t &post_ops, const primitive_kind_t kind) {
 struct impl_list_item_t;
 struct primitive_t;
 // Primitive descriptor implementation
-struct primitive_desc_t : public c_compatible {
+struct primitive_desc_t : public c_compatible_t {
     primitive_desc_t(const primitive_attr_t *attr, primitive_kind_t kind)
         : attr_(*attr), kind_(kind), pd_iterator_offset_(0), skip_idx_(-1) {
         is_initialized_ = is_initialized_ && attr_.is_initialized();
@@ -80,7 +80,7 @@ struct primitive_desc_t : public c_compatible {
     //     doesn't require any special handling since `get_verbose` is `false`.
     std::string info_with_runtime_dims(engine_t *engine,
             const memory_desc_t *src_md, const memory_desc_t *wei_md,
-            const memory_desc_t *bia_md, const memory_desc_t *dst_md) {
+            const memory_desc_t *bia_md, const memory_desc_t *dst_md) const {
         std::string info_str = info(engine);
 
         // Matmul and reorder are the only primitives supporting runtime dims.
@@ -139,11 +139,11 @@ struct primitive_desc_t : public c_compatible {
     }
 
     virtual bool has_runtime_dims_or_strides() const {
-        return memory_desc_wrapper(invariant_src_md())
+        return memory_desc_wrapper_t(invariant_src_md())
                        .has_runtime_dims_or_strides()
-                || memory_desc_wrapper(invariant_wei_md())
+                || memory_desc_wrapper_t(invariant_wei_md())
                            .has_runtime_dims_or_strides()
-                || memory_desc_wrapper(invariant_dst_md())
+                || memory_desc_wrapper_t(invariant_dst_md())
                            .has_runtime_dims_or_strides();
     };
 
@@ -456,11 +456,11 @@ protected:
         /** the only reason why this class is here is the inability of
          * utils::make_unique() to operate on protected parent classes
          * of the derivative pd_t's; compilers should optimize it out */
-        class pd_t_compat : public pd_t {
+        class pd_t_compat_t : public pd_t {
         public:
-            pd_t_compat(Args &&...args) : pd_t(std::forward<Args>(args)...) {}
+            pd_t_compat_t(Args &&...args) : pd_t(std::forward<Args>(args)...) {}
         };
-        return utils::make_unique<pd_t_compat>(std::forward<Args>(args)...);
+        return utils::make_unique<pd_t_compat_t>(std::forward<Args>(args)...);
     }
 
     template <typename pd_t>

@@ -53,7 +53,7 @@ using namespace dnnl::impl::utils;
 #ifndef NDEBUG
 #define DEBUG_PRINT_ERROR(message) \
     do { \
-        std::cout << message << std::endl; \
+        std::cout << (message) << std::endl; \
     } while (0)
 #else
 #define DEBUG_PRINT_ERROR(message)

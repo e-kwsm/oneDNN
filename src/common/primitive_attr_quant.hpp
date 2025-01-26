@@ -258,7 +258,7 @@ private:
     }
 };
 
-struct zero_points_t : public c_compatible {
+struct zero_points_t : public c_compatible_t {
     bool operator==(const zero_points_t &rhs) const {
         return mask_src == rhs.mask_src && mask_wei == rhs.mask_wei
                 && mask_dst == rhs.mask_dst && is_set_src == rhs.is_set_src

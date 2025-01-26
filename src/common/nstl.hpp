@@ -55,7 +55,7 @@ void *malloc(size_t size, int alignment);
 #endif
 void free(void *p);
 
-struct c_compatible {
+struct c_compatible_t {
     enum { default_alignment = 64 };
     static void *operator new(size_t sz) {
         return MALLOC(sz, default_alignment);
@@ -84,14 +84,14 @@ protected:
 namespace nstl {
 
 template <typename T>
-constexpr const T abs(const T &a) {
+constexpr T abs(const T &a) {
     return a >= 0 ? a : -a;
 }
 
 // Computes the modulus and returns the result as the least positive residue
 // when the divisor > 0.
 template <typename T>
-inline const T modulo(const T &dividend, const T &divisor) {
+inline T modulo(const T &dividend, const T &divisor) {
     static_assert(std::is_integral<T>::value, "T must be an integer type.");
     assert(divisor > 0);
     T result = dividend % divisor;
@@ -101,7 +101,7 @@ inline const T modulo(const T &dividend, const T &divisor) {
 // Computes the additive inverse modulus and returns the result as the least
 // positive residue when the divisor > 0.
 template <typename T>
-inline const T additive_inverse_modulo(const T &dividend, const T &divisor) {
+inline T additive_inverse_modulo(const T &dividend, const T &divisor) {
     static_assert(std::is_integral<T>::value, "T must be an integer type.");
     assert(divisor > 0);
     T result = modulo(dividend, divisor);
@@ -286,7 +286,7 @@ struct numeric_limits<int4_t> {
 };
 
 template <typename T>
-struct is_integral {
+struct is_integral_t {
     static constexpr bool value = false;
 };
 template <>
@@ -315,7 +315,7 @@ struct is_integral<uint4_t> {
 };
 
 template <typename T, typename U>
-struct is_same {
+struct is_same_t {
     static constexpr bool value = false;
 };
 template <typename T>
@@ -343,7 +343,7 @@ struct is_same<T, T> {
 enum nstl_status_t { success = 0, out_of_memory };
 
 template <typename T>
-class vector : public c_compatible {
+class vector_t : public c_compatible_t {
 private:
     std::vector<T> _impl;
 
@@ -351,12 +351,12 @@ public:
     using iterator = typename std::vector<T>::iterator;
     using const_iterator = typename std::vector<T>::const_iterator;
     using size_type = typename std::vector<T>::size_type;
-    vector() = default;
-    vector(size_type n) : _impl(n) {}
-    vector(size_type n, const T &value) : _impl(n, value) {}
+    vector_t() = default;
+    vector_t(size_type n) : _impl(n) {}
+    vector_t(size_type n, const T &value) : _impl(n, value) {}
     template <typename input_iterator>
-    vector(input_iterator first, input_iterator last) : _impl(first, last) {}
-    ~vector() = default;
+    vector_t(input_iterator first, input_iterator last) : _impl(first, last) {}
+    ~vector_t() = default;
     size_type size() const { return _impl.size(); }
     T &operator[](size_type i) { return _impl[i]; }
     const T &operator[](size_type i) const { return _impl[i]; }
@@ -377,7 +377,7 @@ public:
 };
 
 template <typename Key, typename T>
-class map : public c_compatible {
+class map_t : public c_compatible_t {
 private:
     std::map<Key, T> _impl;
 
@@ -385,8 +385,8 @@ public:
     using iterator = typename std::map<Key, T>::iterator;
     using const_iterator = typename std::map<Key, T>::const_iterator;
     using size_type = typename std::map<Key, T>::size_type;
-    map() = default;
-    ~map() = default;
+    map_t() = default;
+    ~map_t() = default;
     size_type size() const { return _impl.size(); }
     T &operator[](const Key &k) { return _impl[k]; }
     const T &operator[](const Key &k) const { return _impl[k]; }
@@ -402,24 +402,24 @@ public:
 
 // Compile-time sequence of indices (part of C++14)
 template <size_t... Ints>
-struct index_sequence {};
+struct index_sequence_t {};
 
 template <size_t N, size_t... Next>
-struct make_index_sequence_helper
-    : public make_index_sequence_helper<N - 1, N - 1, Next...> {};
+struct make_index_sequence_helper_t
+    : public make_index_sequence_helper_t<N - 1, N - 1, Next...> {};
 
 template <size_t... Next>
 struct make_index_sequence_helper<0, Next...> {
-    using type = index_sequence<Next...>;
+    using type = index_sequence_t<Next...>;
 };
 
 // Generator of compile-time sequence of indices
 template <size_t N>
-using make_index_sequence = typename make_index_sequence_helper<N>::type;
+using make_index_sequence = typename make_index_sequence_helper_t<N>::type;
 
 template <class T, std::size_t N, std::size_t... I>
 constexpr std::array<typename std::remove_cv<T>::type, N> to_array_impl(
-        T (&a)[N], index_sequence<I...>) {
+        T (&a)[N], index_sequence_t<I...>) {
     return {{a[I]...}};
 }
 
@@ -431,7 +431,7 @@ constexpr std::array<typename std::remove_cv<T>::type, N> to_array(T (&a)[N]) {
 
 template <class T, std::size_t N, std::size_t... I>
 constexpr std::array<typename std::remove_cv<T>::type, N> to_array_impl(
-        T(&&a)[N], index_sequence<I...>) {
+        T (&&a)[N], index_sequence_t<I...>) {
     return {{std::move(a[I])...}};
 }
 
