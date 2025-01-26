@@ -297,7 +297,7 @@ struct jit_avx512_core_bf16_reorder_s16c_to_S16c2s_t : public jit_generator {
     jit_avx512_core_bf16_reorder_s16c_to_S16c2s_t(int in_stride)
         : jit_generator(jit_name()), simd_w_(16), in_stride_(in_stride) {}
 
-    ~jit_avx512_core_bf16_reorder_s16c_to_S16c2s_t() override {}
+    ~jit_avx512_core_bf16_reorder_s16c_to_S16c2s_t() override = default;
 
     void generate() override {
         preamble();

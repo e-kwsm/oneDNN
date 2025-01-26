@@ -2709,7 +2709,7 @@ public:
                   /*allocator=*/this)
         , max_cpu_isa_(max_cpu_isa) {}
 
-    ~jit_generator() override {}
+    virtual ~jit_generator() override = default;
 
     virtual const char *name() const = 0;
     virtual const char *source_file() const = 0;
