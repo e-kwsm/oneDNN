@@ -480,9 +480,8 @@ T pick_by_prop_kind(prop_kind_t prop_kind, const T &val_fwd, const T &val_bwd_d,
 template <typename Telem, size_t Tdims>
 struct array_offset_calculator {
     template <typename... Targs>
-    array_offset_calculator(Telem *base, Targs... Fargs) : _dims {Fargs...} {
-        _base_ptr = base;
-    }
+    array_offset_calculator(Telem *base, Targs... Fargs)
+        : _base_ptr(base), _dims {Fargs...} {}
 
     template <typename... Targs>
     array_offset_calculator(std::nullptr_t, Targs... Fargs) = delete;
@@ -823,16 +822,10 @@ using maybe_unique_ptr = std::unique_ptr<T, nop_deleter_t>;
 struct nibble2_t {
 
     // constructs a nibble pair from a pair of uint8_t values
-    nibble2_t(uint8_t low_, uint8_t high_) {
-        low = low_;
-        high = high_;
-    }
+    nibble2_t(uint8_t low_, uint8_t high_) : low(low_), high(high_) {}
 
     // constructs a nibble pairs from an uin8_t, taking its low and high part
-    nibble2_t(uint8_t pack_) {
-        low = pack_ & 0xf;
-        high = (pack_ >> 4) & 0xf;
-    }
+    nibble2_t(uint8_t pack_) : low(pack_ & 0xf), high((pack_ >> 4) & 0xf) {}
 
     // sets low (idx=0) or high (idx=1)  nibble.
     inline void set(uint8_t val, int idx) {
