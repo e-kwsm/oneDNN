@@ -86,8 +86,7 @@ std::set<size_t> op_schema_t::get_num_outputs() const {
 op_schema_t &op_schema_t::set_input(
         size_t in_offset, std::string &&in_name, std::string &&dtype_string) {
     verify_input_(in_offset);
-    inputs_.emplace_back(
-            op_parameter_t(std::move(in_name), std::move(dtype_string)));
+    inputs_.emplace_back(std::move(in_name), std::move(dtype_string));
     return *this;
 }
 
@@ -99,8 +98,7 @@ op_schema_t::get_inputs() const {
 op_schema_t &op_schema_t::set_output(
         size_t out_offset, std::string &&out_name, std::string &&dtype_string) {
     verify_output_(out_offset);
-    outputs_.emplace_back(
-            op_parameter_t(std::move(out_name), std::move(dtype_string)));
+    outputs_.emplace_back(std::move(out_name), std::move(dtype_string));
     return *this;
 }
 
