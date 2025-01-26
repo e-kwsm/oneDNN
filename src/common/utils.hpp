@@ -30,6 +30,7 @@
 #include <memory>
 #include <string>
 #include <tuple>
+#include <utility>
 
 #define MSAN_ENABLED 0
 #define ATTR_NO_MSAN
@@ -171,17 +172,17 @@ struct remove_reference<T &&> {
 };
 
 template <typename T>
-inline T &&forward(typename utils::remove_reference<T>::type &t) {
+inline T &&forward(typename utils::remove_reference_t<T>::type &t) {
     return static_cast<T &&>(t);
 }
 template <typename T>
-inline T &&forward(typename utils::remove_reference<T>::type &&t) {
+inline T &&forward(typename utils::remove_reference_t<T>::type &&t) {
     return static_cast<T &&>(t);
 }
 
 template <typename T>
-inline typename remove_reference<T>::type zero() {
-    auto zero = typename remove_reference<T>::type();
+inline typename remove_reference_t<T>::type zero() {
+    auto zero = typename remove_reference_t<T>::type();
     return zero;
 }
 
@@ -192,23 +193,23 @@ std::unique_ptr<T> make_unique(Args &&...args) {
 
 // NOLINTBEGIN(performance-unnecessary-value-param)
 template <typename T, typename P>
-constexpr bool everyone_is(T val, P item) {
+constexpr bool everyone_is(T val, const P &item) {
     return val == item;
 }
 template <typename T, typename P, typename... Args>
-constexpr bool everyone_is(T val, P item, Args... item_others) {
-    return val == item && everyone_is(val, item_others...);
+constexpr bool everyone_is(T val, const P &item, Args... item_others) {
+    return val == item && everyone_is(val, std::move(item_others)...);
 }
 // NOLINTEND(performance-unnecessary-value-param)
 
 // NOLINTBEGIN(performance-unnecessary-value-param)
 template <typename T, typename P>
-constexpr bool one_of(T val, P item) {
+constexpr bool one_of(T val, const P &item) {
     return val == item;
 }
 template <typename T, typename P, typename... Args>
-constexpr bool one_of(T val, P item, Args... item_others) {
-    return val == item || one_of(val, item_others...);
+constexpr bool one_of(T val, const P &item, Args... item_others) {
+    return val == item || one_of(val, std::move(item_others)...);
 }
 // NOLINTEND(performance-unnecessary-value-param)
 
