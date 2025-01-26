@@ -185,7 +185,7 @@ struct kernel_t {
     virtual void operator()(const call_param_t *c) const = 0;
     virtual void operator()(const tail_call_param_t *c) const = 0;
     virtual status_t create_kernel() = 0;
-    virtual ~kernel_t() {}
+    virtual ~kernel_t() = default;
 
     /** inits kernel descriptor:
      *      desc            -- kernel descriptor (output)
