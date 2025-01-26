@@ -186,7 +186,7 @@ struct jit_avx512_core_add_cvt_ps_to_bf16_t : public jit_generator {
         UNUSED_STATUS(create_kernel());
     }
 
-    ~jit_avx512_core_add_cvt_ps_to_bf16_t() = default;
+    ~jit_avx512_core_add_cvt_ps_to_bf16_t() override = default;
     DNNL_DISALLOW_COPY_AND_ASSIGN(jit_avx512_core_add_cvt_ps_to_bf16_t)
 
     void generate() override {
@@ -297,7 +297,7 @@ struct jit_avx512_core_bf16_reorder_s16c_to_S16c2s_t : public jit_generator {
     jit_avx512_core_bf16_reorder_s16c_to_S16c2s_t(int in_stride)
         : jit_generator(jit_name()), simd_w_(16), in_stride_(in_stride) {}
 
-    ~jit_avx512_core_bf16_reorder_s16c_to_S16c2s_t() {}
+    ~jit_avx512_core_bf16_reorder_s16c_to_S16c2s_t() override {}
 
     void generate() override {
         preamble();

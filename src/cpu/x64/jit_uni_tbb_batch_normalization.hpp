@@ -62,7 +62,7 @@ struct jit_uni_tbb_batch_normalization_fwd_t : public primitive_t {
     };
 
     jit_uni_tbb_batch_normalization_fwd_t(const pd_t *apd);
-    ~jit_uni_tbb_batch_normalization_fwd_t();
+    ~jit_uni_tbb_batch_normalization_fwd_t() override;
 
     status_t init(engine_t *engine) override;
 
@@ -98,7 +98,7 @@ struct jit_uni_tbb_batch_normalization_bwd_t : public primitive_t {
     };
 
     jit_uni_tbb_batch_normalization_bwd_t(const pd_t *apd);
-    ~jit_uni_tbb_batch_normalization_bwd_t();
+    ~jit_uni_tbb_batch_normalization_bwd_t() override;
 
     status_t init(engine_t *engine) override;
 
