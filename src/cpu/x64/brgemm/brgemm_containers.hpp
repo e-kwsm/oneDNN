@@ -111,7 +111,7 @@ private:
 };
 
 struct brgemm_palette_container_t {
-    typedef std::array<char, AMX_PALETTE_SIZE> S_t;
+    using S_t = std::array<char, AMX_PALETTE_SIZE>;
 
     brgemm_palette_container_t() {}
     brgemm_palette_container_t(size_t ns) { resize(ns); }
