@@ -95,7 +95,7 @@ struct base_settings_t {
     std::vector<thr_ctx_t> ctx_init {default_thr_ctx};
     std::vector<thr_ctx_t> ctx_exe {default_thr_ctx};
     impl_filter_t impl_filter {};
-    const char *pattern = NULL;
+    const char *pattern = nullptr;
     // Non-parsed members
     settings_attributes_t attributes;
 
