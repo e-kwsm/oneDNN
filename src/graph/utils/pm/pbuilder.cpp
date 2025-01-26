@@ -380,9 +380,9 @@ repetition_t::repetition_t(std::shared_ptr<pb_graph_t> p_node, port_map p_map,
     : body_ {std::move(p_node)}
     , port_map_ {std::move(p_map)}
     , min_rep_ {min_rep}
-    , max_rep_ {max_rep} {
+    , max_rep_ {max_rep}
+    , min_op_num_(body_->get_min_op_num() * min_rep_) {
     node_kind_ = pb_node_kind::PB_NODE_KIND_REPETITION;
-    min_op_num_ = body_->get_min_op_num() * min_rep_;
     auto contained_ops = body_->get_contained_ops();
     p_ops_.insert(contained_ops.begin(), contained_ops.end());
 }

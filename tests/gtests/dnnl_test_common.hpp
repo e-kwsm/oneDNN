@@ -314,9 +314,8 @@ struct mapped_ptr_t {
     using nonconst_type = typename std::remove_cv<T>::type;
 
     mapped_ptr_t(std::nullptr_t) : mem_(nullptr), ptr_(nullptr) {}
-    mapped_ptr_t(const memory *mem) : mem_(mem) {
-        ptr_ = mem->map_data<nonconst_type>();
-    }
+    mapped_ptr_t(const memory *mem)
+        : mem_(mem), ptr_(mem->map_data<nonconst_type>()) {}
     mapped_ptr_t(mapped_ptr_t &&other) : mem_(other.mem_), ptr_(other.ptr_) {
         other.mem_ = nullptr;
         other.ptr_ = nullptr;
@@ -607,7 +606,7 @@ struct test_convolution_attr_t {
 
         bool is_def() const { return policy != NONE; }
 
-        scale_t(float s, policy_t p = NONE) : scale(s) { policy = p; }
+        scale_t(float s, policy_t p = NONE) : policy(p), scale(s) {}
 
         policy_t policy;
         float scale;
@@ -799,11 +798,11 @@ static void test_free(char *ptr) {
 
 class test_memory {
 public:
-    test_memory(const memory::desc &d, const dnnl::engine &e) {
+    test_memory(const memory::desc &d, const dnnl::engine &e)
+        : size_(d.get_size()) {
         bool is_cpu_native = (e.get_kind() == dnnl::engine::kind::cpu)
                 && DNNL_CPU_RUNTIME != DNNL_RUNTIME_SYCL;
 
-        size_ = d.get_size();
         if (is_cpu_native) {
             data_.reset(test_malloc(size_), test_free);
             mem_ = test::make_memory(d, e, data_.get());
