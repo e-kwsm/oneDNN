@@ -255,8 +255,8 @@ protected:
 };
 
 struct convolution_fwd_pd_t : public convolution_pd_t {
-    typedef convolution_fwd_pd_t base_class;
-    typedef convolution_fwd_pd_t hint_class;
+    using base_class = convolution_fwd_pd_t;
+    using hint_class = convolution_fwd_pd_t;
 
     arg_usage_t arg_usage(int arg) const override {
         if (utils::one_of(arg, DNNL_ARG_SRC, DNNL_ARG_WEIGHTS))
@@ -335,8 +335,8 @@ protected:
 };
 
 struct convolution_bwd_data_pd_t : public convolution_pd_t {
-    typedef convolution_bwd_data_pd_t base_class;
-    typedef convolution_fwd_pd_t hint_class;
+    using base_class = convolution_bwd_data_pd_t;
+    using hint_class = convolution_fwd_pd_t;
 
     arg_usage_t arg_usage(int arg) const override {
         if (utils::one_of(arg, DNNL_ARG_WEIGHTS, DNNL_ARG_DIFF_DST))
@@ -406,8 +406,8 @@ protected:
 };
 
 struct convolution_bwd_weights_pd_t : public convolution_pd_t {
-    typedef convolution_bwd_weights_pd_t base_class;
-    typedef convolution_fwd_pd_t hint_class;
+    using base_class = convolution_bwd_weights_pd_t;
+    using hint_class = convolution_fwd_pd_t;
 
     convolution_bwd_weights_pd_t(const op_desc_t *adesc,
             const primitive_attr_t *attr,
