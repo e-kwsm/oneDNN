@@ -40,9 +40,10 @@ struct memory_desc_wrapper : public c_compatible {
 
     /** constructor which takes a reference to a constant underlying C memory
      * descriptor \param md */
-    memory_desc_wrapper(const memory_desc_t *md)
+    memory_desc_wrapper_t(const memory_desc_t *md)
         : md_(md ? md : &glob_zero_md) {}
-    memory_desc_wrapper(const memory_desc_t &md) : memory_desc_wrapper(&md) {}
+    memory_desc_wrapper_t(const memory_desc_t &md)
+        : memory_desc_wrapper_t(&md) {}
 
     /* implementing attributes */
     int ndims() const { return md_->ndims; }
@@ -487,14 +488,14 @@ struct memory_desc_wrapper : public c_compatible {
 
     /* comparison section */
 
-    bool operator==(const memory_desc_wrapper &rhs) const {
+    bool operator==(const memory_desc_wrapper_t &rhs) const {
         return *this->md_ == *rhs.md_;
     }
-    bool operator!=(const memory_desc_wrapper &rhs) const {
+    bool operator!=(const memory_desc_wrapper_t &rhs) const {
         return !operator==(rhs);
     }
     bool operator==(const memory_desc_t &rhs) const {
-        return operator==(memory_desc_wrapper(rhs));
+        return operator==(memory_desc_wrapper_t(rhs));
     }
     bool operator!=(const memory_desc_t &rhs) const { return !operator==(rhs); }
 
@@ -506,11 +507,11 @@ struct memory_desc_wrapper : public c_compatible {
      * CAUTION: format kind any and undef are not similar to whatever, hence the
      * following statement might be true: lhs == rhs && !lhs.similar_to(rhs) */
     /* TODO: revise */
-    bool similar_to(const memory_desc_wrapper &rhs, bool with_padding = true,
+    bool similar_to(const memory_desc_wrapper_t &rhs, bool with_padding = true,
             bool with_data_type = true, int dim_start = 0) const;
 
     /** returns true if one memory can be reordered to another */
-    bool consistent_with(const memory_desc_wrapper &rhs) const;
+    bool consistent_with(const memory_desc_wrapper_t &rhs) const;
 
     /** returns true if the memory desc corresponds to the given format tag.
      * @sa memory_desc_matches_tag */
@@ -673,7 +674,7 @@ private:
     }
 };
 
-inline bool memory_desc_wrapper::similar_to(const memory_desc_wrapper &rhs,
+inline bool memory_desc_wrapper_t::similar_to(const memory_desc_wrapper_t &rhs,
         bool with_padding, bool with_data_type, int dim_start) const {
     using namespace utils;
 
@@ -702,8 +703,8 @@ inline bool memory_desc_wrapper::similar_to(const memory_desc_wrapper &rhs,
                                     rhs.padded_offsets() + ds, ndims() - ds));
 }
 
-inline bool memory_desc_wrapper::consistent_with(
-        const memory_desc_wrapper &rhs) const {
+inline bool memory_desc_wrapper_t::consistent_with(
+        const memory_desc_wrapper_t &rhs) const {
     if (ndims() == rhs.ndims()) {
         for (int d = 0; d < ndims(); ++d) {
             if (dims()[d] != rhs.dims()[d]) return false;

@@ -61,7 +61,7 @@ struct rnn_data_qparams_t : public c_compatible {
     float shift_;
 };
 
-struct rnn_tparams_t : public c_compatible {
+struct rnn_tparams_t : public c_compatible_t {
     rnn_tparams_t()
         : test_mode_(false), scales_(nullptr), ngates_(0), cscale_(0.0f) {}
 
@@ -128,7 +128,7 @@ private:
 };
 
 // Note: keep for RNN quantization
-struct rnn_create_time_scales_t : public c_compatible {
+struct rnn_create_time_scales_t : public c_compatible_t {
     rnn_create_time_scales_t() : count_(1), mask_(0), scales_(scales_buf_) {
         set_single_scale(1.f);
     }
@@ -184,7 +184,7 @@ private:
     DNNL_DISALLOW_COPY_AND_ASSIGN(rnn_create_time_scales_t);
 };
 
-struct dropout_t : public c_compatible {
+struct dropout_t : public c_compatible_t {
     dropout_t() = default;
 
     bool has_default_values() const {
@@ -217,7 +217,7 @@ struct dropout_t : public c_compatible {
     bool use_host_scalars_ = false;
 };
 
-struct rnd_mode_t : public c_compatible {
+struct rnd_mode_t : public c_compatible_t {
     rnd_mode_t() = default;
 
     bool has_default_values() const { return rounding_modes_map_.empty(); }
@@ -274,7 +274,7 @@ struct primitive_attr_item_t {
     virtual ~primitive_attr_item_t() = default;
 };
 
-struct fpmath_t : public c_compatible {
+struct fpmath_t : public c_compatible_t {
     fpmath_t(dnnl_fpmath_mode_t mode = fpmath_mode::strict,
             bool apply_to_int = false)
         : mode_(mode), apply_to_int_(apply_to_int) {}
@@ -290,7 +290,7 @@ struct fpmath_t : public c_compatible {
 } // namespace impl
 } // namespace dnnl
 
-struct dnnl_post_ops : public dnnl::impl::c_compatible {
+struct dnnl_post_ops : public dnnl::impl::c_compatible_t {
     struct entry_t {
         entry_t() : kind(dnnl::impl::primitive_kind::undefined) {}
 
@@ -549,7 +549,7 @@ private:
             const dnnl::impl::data_type_t dst_dt, const bool is_int8) const;
 };
 
-struct dnnl_primitive_attr : public dnnl::impl::c_compatible {
+struct dnnl_primitive_attr : public dnnl::impl::c_compatible_t {
     dnnl_primitive_attr()
         : scratchpad_mode_(dnnl::impl::scratchpad_mode::library)
         , fpmath_(dnnl::impl::get_fpmath_mode(), false)
