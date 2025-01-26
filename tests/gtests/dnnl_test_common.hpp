@@ -297,15 +297,15 @@ inline memory::dim right_padding(memory::dim i, memory::dim o, memory::dim k,
 
 template <typename data_t>
 struct acc_t {
-    typedef data_t type;
+    using type = data_t;
 };
 template <>
 struct acc_t<int8_t> {
-    typedef int type;
+    using type = int;
 };
 template <>
 struct acc_t<uint8_t> {
-    typedef int type;
+    using type = int;
 };
 
 // Smart pointer for map/unmap operations with unique_ptr semantics
