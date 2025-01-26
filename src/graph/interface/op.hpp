@@ -500,8 +500,7 @@ public:
         std::for_each(attrs.begin(), attrs.end(),
                 [&copied_attrs](
                         const std::pair<op_attr_t, attribute_value_t> &v) {
-                    copied_attrs.emplace(
-                            std::make_pair(attr2str(v.first), v.second));
+                    copied_attrs.emplace(attr2str(v.first), v.second);
                 });
 
         copied_attrs.erase("op_depth");
