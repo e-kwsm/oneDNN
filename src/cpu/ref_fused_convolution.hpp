@@ -373,7 +373,6 @@ struct ref_fused_convolution_fwd_t : public primitive_t {
                 name_.append(":");
                 name_.append(op_pd->name());
             }
-            return;
         }
     };
 

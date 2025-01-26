@@ -596,7 +596,6 @@ public:
     void deallocate_host(void *ptr) {
         std::lock_guard<std::mutex> pool_guard(pool_lock);
         is_free_ptr_[ptr] = true;
-        return;
     }
     void clear() {
         dnnl::graph::set_compiled_partition_cache_capacity(0);

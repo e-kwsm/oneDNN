@@ -136,8 +136,6 @@ static inline void partition_2d(const int ithr, int *nthrs, const int ithr_i,
         out_m_band = 0;
         out_n_band = 0;
     }
-
-    return;
 }
 
 static inline std::tuple<int, int> partition_2d_minblk_with_primes(dim_t m,
