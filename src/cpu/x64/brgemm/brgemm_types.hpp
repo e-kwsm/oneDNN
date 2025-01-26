@@ -97,10 +97,9 @@ struct brgemm_prf_t {
 };
 
 struct brgemm_batch_element_t {
-    brgemm_batch_element_t() {
+    brgemm_batch_element_t() : has_s8s8_comp_batch_pad(0) {
         ptr.A = ptr.B = nullptr;
         vvpad.top = vvpad.bottom = 0;
-        has_s8s8_comp_batch_pad = 0;
     }
     union {
         struct {
