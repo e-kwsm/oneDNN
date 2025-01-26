@@ -50,7 +50,7 @@ struct jit_uni_brgemm_conv_comp_pad_kernel_t : public jit_generator {
 
     jit_uni_brgemm_conv_comp_pad_kernel_t(const jit_brgemm_conv_conf_t &ajcp);
 
-    ~jit_uni_brgemm_conv_comp_pad_kernel_t() = default;
+    ~jit_uni_brgemm_conv_comp_pad_kernel_t() override = default;
 
 protected:
     static constexpr bool is_ymm_ = std::is_same<Vmm, Xbyak::Ymm>::value;
@@ -143,7 +143,7 @@ struct jit_uni_brgemm_conv_relo_comp_pad_kernel_t : public jit_generator {
 
     jit_uni_brgemm_conv_relo_comp_pad_kernel_t(
             const jit_brgemm_conv_conf_t &ajcp);
-    ~jit_uni_brgemm_conv_relo_comp_pad_kernel_t() = default;
+    ~jit_uni_brgemm_conv_relo_comp_pad_kernel_t() override = default;
 
 protected:
     jit_brgemm_conv_conf_t jcp_ = utils::zero<decltype(jcp_)>();
