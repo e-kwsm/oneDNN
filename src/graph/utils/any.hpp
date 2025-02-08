@@ -62,7 +62,7 @@ public:
         avtable_ = v.avtable_;
         v.avtable_ = nullptr;
     }
-    any_t(const any_t &v) { avtable_ = v.avtable_; }
+    any_t(const any_t &v) : avtable_(v.avtable_) {}
 
     template <typename T,
             typename = enable_if_t<!std::is_same<T, any_t &>::value>>
