@@ -2490,13 +2490,14 @@ struct genindex_executable_t : public op_executable_t {
 
     genindex_executable_t(std::shared_ptr<op_t> &op,
             const dnnl::engine &p_engine, fusion_info_mgr_t &mgr,
-            pd_cache_t &pd_cache) {
+            pd_cache_t &pd_cache)
+        : axis_(op->get_attr<int64_t>(dnnl::impl::graph::op_attr::axis)) {
 
         using ltw = logical_tensor_wrapper_t;
         const auto &input_lt = op->get_input_value(0)->get_logical_tensor();
         nelems_ = ltw(input_lt).nelems();
         ndims_ = ltw(input_lt).ndims();
-        axis_ = op->get_attr<int64_t>(dnnl::impl::graph::op_attr::axis);
+
         const auto &output_lt = op->get_output_value(0)->get_logical_tensor();
         for (int i = 0; i < ndims_; i++) {
             output_dims_[i] = output_lt.dims[i];
