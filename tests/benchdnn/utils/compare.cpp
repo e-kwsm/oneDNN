@@ -20,11 +20,12 @@
 #include <string>
 #include <thread>
 
-#include "utils/parallel.hpp"
-
 #include "common.hpp"
 #include "utils/compare.hpp"
+#include "utils/dnnl_query.hpp"
 #include "utils/norm.hpp"
+#include "utils/parallel.hpp"
+#include "utils/stringstream.hpp"
 
 #include "eltwise/eltwise.hpp"
 
@@ -33,7 +34,7 @@ namespace compare {
 namespace {
 void dump_point_values(
         const std::string &kind_str, const compare_t::dump_point_ctx_t &ctx) {
-    dnnl::impl::stringstream_t ss;
+    stringstream_t ss;
     dims_t l_dims = md2dims(ctx.md);
     dims_t dims_idx = off2dims_idx(l_dims, ctx.l_offset);
     ss << dims_idx;
@@ -255,19 +256,29 @@ int compare_t::compare_p2p(const dnn_mem_t &exp_mem, const dnn_mem_t &got_mem,
     }
     const dnn_mem_t &exp_f32 = exp_f32_plain ? exp_f32_plain : exp_mem;
 
+    // Note: the section below has some adjustable settings but they all seem
+    // to target DST kind_.
+    // TODO: add a list of allowed kinds to get into, and adjust settings to
+    // apply only to kinds they aim. So far, play it safe and remove DST_SCALES
+    // when not applicable.
     const auto dt = got_mem.dt();
-    const bool has_eltwise
-            = attr.post_ops.eltwise_index() != -1 || has_eltwise_post_op_;
-    const std::vector<dnnl_data_type_t> dt_with_nan {
-            dnnl_f16, dnnl_e8m0, dnnl_f8_e5m2, dnnl_f8_e4m3};
+    const bool kind_is_dst_scales = kind_ == DST_SCALES;
+    const bool has_eltwise = !kind_is_dst_scales
+            && (attr.post_ops.eltwise_index() != -1 || has_eltwise_post_op_);
+    // Output fp8 data types expected to have dynamic dst scaling. When such
+    // scaling is enabled, it saturates, doesn't overflow, thus, NaNs are not
+    // expected in the output. No dynamic scaling - NaN may happen.
+    const bool non_scaled_fp8_output
+            = (dt == dnnl_f8_e5m2 || dt == dnnl_f8_e4m3)
+            && !attr.scales.get(DNNL_ARG_DST).is_dynamic();
     const bool output_has_nans = op_output_has_nans_
             || eltwise::eltwise_alg_returns_nan_or_inf(attr)
             || has_binary_po_algs(attr, {attr_t::post_ops_t::kind_t::DIV})
-            || std::any_of(dt_with_nan.begin(), dt_with_nan.end(),
-                    [&](dnnl_data_type_t dt) { return got_mem.dt() == dt; });
-    const bool has_exp_eltwise
-            = attr.post_ops.find(attr_t::post_ops_t::kind_t::EXP) >= 0;
-    const bool has_dst_scale = !attr.scales.get(DNNL_ARG_DST).is_def();
+            || dt == dnnl_f16 || non_scaled_fp8_output;
+    const bool has_exp_eltwise = !kind_is_dst_scales
+            && attr.post_ops.find(attr_t::post_ops_t::kind_t::EXP) >= 0;
+    const auto &dst_scale = attr.scales.get(DNNL_ARG_DST);
+    const bool has_dst_scale = !dst_scale.is_def();
 
     // Idea is to pad nelems to mimic uniform load between available threads.
     // It allows to make a clear assumption when the last element is processed
@@ -339,20 +350,31 @@ int compare_t::compare_p2p(const dnn_mem_t &exp_mem, const dnn_mem_t &got_mem,
                     exp_f32, got_f32, i, dt, trh_, kind_);
 
             if (std::isnan(args.exp_f32) && is_integral_dt(dt)) {
-                // Relax output requirements for this case, since different
-                // backends may implement NaN fp32 -> int32 conversion in a
-                // different manner.
+                // There's no single spec to comply with when it comes to the
+                // implementation of NaN fp32 to int conversion. CPU backend
+                // saturates the value to INT32_MAX, UINT8_MAX, INT8_MIN, while
+                // GPU converts it to 0.
                 ok = true;
                 break;
             }
 
             // Discard tiny values very close to each other. It's impossible to
             // compare them reliably and fit into any criterion.
-            ok = fabsf(args.exp) <= 1e-5f && args.diff < epsilon_dt(dnnl_f32);
+            //
+            // Note: the only exception from this condition is `e8m0` dt since
+            // its minimal value passes this criterion though in the way it's
+            // written. The minimal value must be check for exactness and if it
+            // wasn't, it should be reported. Skipping `e8m0` in this condition
+            // allows to catch the error properly.
+            ok = fabsf(args.exp) <= 1e-5f && args.diff < epsilon_dt(dnnl_f32)
+                    && args.dt != dnnl_e8m0;
             if (ok) break;
 
             // Standard check for relative diff is under set threshold.
-            ok = (fabsf(args.exp) > 1e-5f ? args.rel_diff : args.diff) <= trh_;
+            //
+            // Note: and same limitations for `e8m0`.
+            ok = (fabsf(args.exp) > 1e-5f ? args.rel_diff : args.diff) <= trh_
+                    && args.dt != dnnl_e8m0;
             if (ok) break;
 
             // When NaNs or infinity are allowed for the driver, check
@@ -400,13 +422,14 @@ int compare_t::compare_p2p(const dnn_mem_t &exp_mem, const dnn_mem_t &got_mem,
                     && args.rel_diff <= std::max(epsilon_dt(dt), 5e-6f);
             if (ok) break;
 
-            // Attr dst scale is used as a divisor to quantize data to dt.
+            // f32 dst scale is used as a divisor to quantize data to dt.
             // Implementation might decide to pre-compute inverse value and
             // multiply on it in kernel. This difference might result in a
             // slight error comparing to a division operation.
             const float experimental_dst_scale_trh
                     = std::max(epsilon_dt(dt), 1e-5f);
-            ok = has_dst_scale && args.rel_diff <= experimental_dst_scale_trh;
+            ok = has_dst_scale && dst_scale.dt == dnnl_f32
+                    && args.rel_diff <= experimental_dst_scale_trh;
             if (ok) break;
 
             // Binary MAX, MIN and comparison operations post-ops may return
@@ -439,40 +462,45 @@ int compare_t::compare_p2p(const dnn_mem_t &exp_mem, const dnn_mem_t &got_mem,
                             || args.rel_diff <= binary_comp_po_rdiff_trh);
             if (ok) break;
 
-            // Some drivers (like pooling or resampling) on integer data types
-            // may result in sporadic order of operations. This may cause a
-            // difference around `x.5f` value, and can be rounded either way to
-            // `x` or `x + 1` which can't be fixed by filling.
-            //
+            // A check for `off-by-1` errors for both integral data types and
+            // low-precision floating-point data types.
+            ok = (is_integral_dt(args.dt) || bits_dt(args.dt) <= 8)
+                    && is_off_by_one(args);
+            if (ok) break;
+
             // Another class of `off-by-1` issues coming from optimized
             // reference when transcendental operation present in the chain. In
             // such cases, there's no way to test original output as both
             // outputs would be rounded to integer number.
-            const auto is_int8_round_good = [&]() -> bool {
-                // Check that original value is close to x.5f.
-                static constexpr float small_eps = 9e-6f;
-                const float floor_val = floorf(args.exp_f32);
-                const float ceil_val = ceilf(args.exp_f32);
-                if (fabsf((floor_val + 0.5f) - args.exp_f32) >= small_eps)
-                    return false;
-
-                // If it is, check exp and got values are on opposite sides.
-                if (args.exp == floor_val) {
-                    return got_val == ceil_val;
-                } else if (args.exp == ceil_val) {
-                    return got_val == floor_val;
-                }
-                return false;
-            };
             const auto is_int8_prim_ref_and_transcedental = [&]() -> bool {
                 if (!has_prim_ref_) return false;
                 if (fabsf(args.exp_f32 - got_val) != 1) return false;
                 // TODO: update with transcendental eltwise ops only.
                 return has_eltwise;
             };
+            // There's a class of rounding issues happening around conversion
+            // of NaN values into integer data type (see the first check with
+            // NaNs) with optimized reference involved since it's impossible to
+            // verify the original value against NaN.
+            const auto is_nan_to_int_good = [&]() -> bool {
+                if (!has_prim_ref_) return false;
+                // CPU has prim_ref as well, but it's expected to return same
+                // values.
+                if (got_val != 0) return false;
+                int exp_sat_value = 0;
+                switch (args.dt) {
+                    case dnnl_s32: exp_sat_value = INT_MAX; break;
+                    case dnnl_s8: exp_sat_value = INT8_MIN; break;
+                    case dnnl_u8: exp_sat_value = UINT8_MAX; break;
+                    default: // Gated behind is_integral_dt(args.dt).
+                        assert(!"unexpected data type");
+                }
+                if (fabsf(args.exp_f32 - exp_sat_value) != 0) return false;
+                return true;
+            };
             ok = is_integral_dt(args.dt)
-                    && (is_int8_round_good()
-                            || is_int8_prim_ref_and_transcedental());
+                    && (is_int8_prim_ref_and_transcedental()
+                            || is_nan_to_int_good());
             if (ok) break;
 
             // Nvidia backend with fpmath mode enabled returns not exact output
@@ -603,6 +631,35 @@ void compare_t::dump_p2p_errors() const {
     for (size_t i = 0; i < max_dump_size; i++) {
         dump_point_values(get_kind_str(), p2p_dumps_[i]);
     }
+}
+
+bool compare_t::is_off_by_one(const driver_check_func_args_t &args) const {
+    // Preserve testing floor/ceil for integral types and not a stricter
+    // threshold
+    if (is_integral_dt(args.dt)) {
+        static constexpr float small_eps = 9e-6f;
+        const float floor_val = floorf(args.exp_f32);
+        const float ceil_val = ceilf(args.exp_f32);
+        if (fabsf((floor_val + 0.5f) - args.exp_f32) >= small_eps) return false;
+        if (args.exp == floor_val) return args.got == ceil_val;
+        if (args.exp == ceil_val) return args.got == floor_val;
+        return false;
+    }
+
+    // Low-precision floats (fp8/fp4) use half their epsilon as the window
+    const float half_eps = epsilon_dt(args.dt) / 2.f;
+    const float next
+            = round_to_nearest_representable(args.dt, args.exp_f32 + half_eps);
+    const float prev
+            = round_to_nearest_representable(args.dt, args.exp_f32 - half_eps);
+
+    // Important conditions:
+    // * Expected f32 value shoudn't be equal to expected `float` value.
+    // * Expected and got values should be either `next` or `prev`.
+    // * Got value and expected values are different from one another.
+    if (args.exp_f32 == args.exp) return false;
+    return (args.got == next && args.exp == prev)
+            || (args.got == prev && args.exp == next);
 }
 
 int compare_t::compare(const dnn_mem_t &exp_mem, const dnn_mem_t &got_mem,

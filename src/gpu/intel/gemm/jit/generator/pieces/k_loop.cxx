@@ -1050,22 +1050,20 @@ void Generator<hw>::kLoop(KLoop type, const GEMMProblem &problem, GEMMStrategy &
             return;
 
         int ka = ka_repack(h), kb = kb_load(h);
-        int ha = h % ka;
-        int hb = h % kb;
-        if (problem.backward()) {
-            ha = ka - 1 - ha;
-            hb = kb - 1 - hb;
-        }
 
         auto &layoutA = Ar_layout(h);
         auto &layoutB = Br_layout(h);
         auto &regsA = Ar_regs(h);
         auto &regsB = Br_regs(h);
 
-            outerProduct(h, ha, hb, oc, opRemActive(h), layoutA, layoutB, regsA, regsB, problem, strategy, state);
+            outerProduct(h, ka, kb, oc, opRemActive(h), layoutA, layoutB, regsA, regsB, problem, strategy, state);
 
         if (calcASums && !slmASums && !state.systolicSumA) {
             int ka_sum = (curPhase == LoopSequencer::PhaseMainLoop) ? ka_sumMain : oc;
+            int ha = h % ka;
+            if (problem.backward()) {
+                ha = ka - 1 - ha;
+            }
             int ha0 = ha - oc + minOPCount;
             if (ha0 % ka_sum == 0)
                 accumulateSum(false, regsA, layoutA, state.As_regs, state.As_layout, strategy, state, ha0, ha0 + ka_sum);
@@ -1073,6 +1071,10 @@ void Generator<hw>::kLoop(KLoop type, const GEMMProblem &problem, GEMMStrategy &
 
         if (calcBSums && !slmBSums && !state.systolicSumB) {
             int kb_sum = (curPhase == LoopSequencer::PhaseMainLoop) ? kb_sumMain : oc;
+            int hb = h % kb;
+            if (problem.backward()) {
+                hb = kb - 1 - hb;
+            }
             int hb0 = hb - oc + minOPCount;
             if (hb0 % kb_sum == 0)
                 accumulateSum(true, regsB, layoutB, state.Bs_regs, state.Bs_layout, strategy, state, hb0, hb0 + kb_sum);
@@ -2150,8 +2152,14 @@ void Generator<hw>::kLoopActivateSLMRemainder(bool active, bool preactivate, con
     }
 
     bool mayAccessAllK = (minOPCount > 1) || problem.needsASums() || problem.needsBSums();
-    bool asIfMaskedAi = Ai_lateKRem && state.Ai_strategy.padded;
-    bool asIfMaskedBi = Bi_lateKRem && state.Bi_strategy.padded;
+    // When A/B is early-dequantized through SLM (offset subtracted before use), the raw
+    // padding (typically zero) becomes -zp after dequantization, corrupting any zero-point
+    // sum trick relying on padding being exactly zero. Force remasking in that case even if
+    // the underlying block's own remainder marking says otherwise.
+    bool slmDequantizeA = problem.earlyDequantizeA() && slmA;
+    bool slmDequantizeB = problem.earlyDequantizeB() && slmB;
+    bool asIfMaskedAi = (Ai_lateKRem && state.Ai_strategy.padded) || (slmDequantizeA && problem.needsASums());
+    bool asIfMaskedBi = (Bi_lateKRem && state.Bi_strategy.padded) || (slmDequantizeB && problem.needsBSums());
     slmRemaskA = slmA && mayAccessAllK && !Ai_remIncrCopy && needsRemask(Ta_ext, true,  state.Ai_layoutRem, state.Ai, state.Ai_strategy, asIfMaskedAi);
     slmRemaskB = slmB && mayAccessAllK && !Bi_remIncrCopy && needsRemask(Tb_ext, false, state.Bi_layoutRem, state.Bi, state.Bi_strategy, asIfMaskedBi);
 }

@@ -38,8 +38,6 @@ namespace dnnl_impl {
 using ltw = logical_tensor_wrapper_t;
 struct genindex_t : public kernel_base_t {
 private:
-    allocator_t *g_alloc_ = nullptr;
-
     std::shared_ptr<subgraph_t> subgraph_;
     memory_planner_t memory_planner_;
 
@@ -58,28 +56,30 @@ public:
     void prepare_args_set(const execution_args_set_t *res,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs);
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *g_engine,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *eng,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override;
-    status_t execute_impl(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs) override;
+    status_t execute_impl(stream_t *strm, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf) override;
 #ifdef DNNL_WITH_SYCL
-    status_t sycl_execute_impl(const stream_t *g_stream,
+    status_t sycl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) override;
 #endif
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    status_t ocl_execute_impl(const stream_t *g_stream,
+    status_t ocl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &ocl_deps,
-            cl_event *ocl_event) override;
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &ocl_deps,
+            ocl_event_t &ocl_event) override;
 #endif
     DEF_KERNEL_METHOD_STR(genindex_t)
+    DEF_KERNEL_METHOD_SCRATCHPAD_SIZE()
     DNNL_DISALLOW_COPY_AND_ASSIGN(genindex_t)
 };
 

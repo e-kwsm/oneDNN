@@ -111,8 +111,7 @@ atomic_conf_t::atomic_conf_t(const subproblem_t &subprb, alg_kind_t alg,
     const size_t max_sg_per_wg = utils::div_up(max_wg_size, conf.subgroup_size);
 
     // number of subgroups (threads) to saturate the GPU
-    const int threads_per_eu
-            = compute::device_info_t::threads_per_eu(arch, conf.grf_per_thread);
+    const int threads_per_eu = device_info.threads_per_eu(conf.grf_per_thread);
     const int target_subgroups = eu_count * threads_per_eu;
 
     const dim_t max_local_size
@@ -229,7 +228,7 @@ status_t atomic_conf_t::init_dispatcher(
             dims::inner_group,
             dims::subgroup,
     };
-    compute::named_buffer_t src("SRC");
+    compute::named_buffer_t src(compute::name_id_t::src);
     src.data_type = conf.src_type;
     std::array<dim_t, 6> sizes = {
             outer_block.block,
@@ -249,7 +248,7 @@ status_t atomic_conf_t::init_dispatcher(
     src.format_desc.blocking.strides[src_outer_idx]
             = dim_t(outer_block.stride / conf.vect_size);
 
-    compute::named_buffer_t dst("DST", src);
+    compute::named_buffer_t dst(compute::name_id_t::dst, src);
     dst.data_type = conf.dst_type;
     dst.remove_dim(dims::loop);
     dst.remove_dim(dims::local); // broadcasted
@@ -270,10 +269,12 @@ status_t atomic_conf_t::init_dispatcher(
             engine, std::move(dispatch_dims));
     CHECK(config.register_buffer(src));
     CHECK(config.register_buffer(dst));
-    CHECK(config.define_dim_index("ATOMIC", dims::global, conf.global_acc));
-    CHECK(config.define_dim_index("LOCAL", dims::local, conf.local_acc));
+    CHECK(config.define_dim_index(
+            compute::name_id_t::atomic, dims::global, conf.global_acc));
+    CHECK(config.define_dim_index(
+            compute::name_id_t::local, dims::local, conf.local_acc));
     CHECK(config.use_subgroup(
-            src.get_name(), into<size_t>(conf.subgroup_size)));
+            src.get_name_id(), into<size_t>(conf.subgroup_size)));
 
     compute::reusable_dispatch_t dispatch;
     atomic_lws_strategy_t lws_strat(engine, gpu_attr);
@@ -308,7 +309,7 @@ void atomic_t::pd_t::init_scratchpad() {
     }
 }
 
-status_t atomic_t::pd_t::init_conf(impl::engine_t *engine) {
+status_t atomic_t::pd_t::init_conf(const impl::engine_t *engine) {
     const memory_desc_wrapper src_mdw(src_md());
     const memory_desc_wrapper dst_mdw(dst_md());
     const int ndims = src_mdw.ndims();
@@ -365,7 +366,7 @@ status_t atomic_t::pd_t::init_conf(impl::engine_t *engine) {
     }
 
     const intel::engine_t *intel_engine
-            = utils::downcast<intel::engine_t *>(engine);
+            = utils::downcast<const intel::engine_t *>(engine);
     auto *gpu_attr
             = utils::downcast<gpu_primitive_attr_t *>(attr()->gpu_attr_.get());
 
@@ -430,7 +431,7 @@ status_t atomic_t::pd_t::init_conf(impl::engine_t *engine) {
     return status::success;
 }
 
-status_t atomic_t::pd_t::init_finalization_pd(impl::engine_t *engine) {
+status_t atomic_t::pd_t::init_finalization_pd(const impl::engine_t *engine) {
     eltwise_desc_t eltwise_desc;
     memory_desc_t eltwise_mem_desc(*dst_md());
     // XXX: Just for mean currently
@@ -541,7 +542,7 @@ status_t atomic_t::execute_atomic(const exec_ctx_t &ctx) const {
         arg_list.append(pd()->power);
         arg_list.append(pd()->eps);
         arg_list.append(into<int>(phase.reduction_block.block));
-        arg_list.append(phase.rt_conf.get());
+        append_rt_params(arg_list, phase.rt_conf);
 
         CHECK(parallel_for(ctx, nd_range, kernel, arg_list));
     }

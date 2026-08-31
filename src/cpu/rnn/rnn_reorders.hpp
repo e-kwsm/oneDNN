@@ -72,12 +72,13 @@ static inline void quantize_igo(int8_t *scratch_quantized,
     parallel(0, [=](const int ithr, const int nthr) {
         dim_t start {0}, end {0};
         balance211(L * D * I, nthr, ithr, start, end);
-        for (int ldi = start; ldi < end; ldi++) {
-            for (int go = 0; go < G * O; go++) {
+        for (dim_t ldi = start; ldi < end; ldi++) {
+            for (dim_t go = 0; go < G * O; go++) {
                 const float s = scales[(mask == 0) ? 0 : go];
                 scratch_quantized[ldi * G * O + go]
                         = q10n::qz_b0_t<in_data_t, int8_t>()(
-                                src[ldi * G * O + go], s);
+                                static_cast<in_data_t>(src[ldi * G * O + go]),
+                                s);
             }
         }
     });
@@ -101,7 +102,9 @@ static inline void quantize_goi(int8_t *scratch_quantized,
         for (dim_t i = 0; i < I; i++) {
             scratch_quantized[ld * I * G * O + i * G * O + go]
                     = q10n::qz_b0_t<in_data_t, int8_t>()(
-                            src[ld * G * O * I + go * I + i], s);
+                            static_cast<in_data_t>(
+                                    src[ld * G * O * I + go * I + i]),
+                            s);
         }
     });
 }
@@ -117,8 +120,9 @@ static inline void compensate_igo(float *compensation,
     // We parallelize on LD and GO
     // TODO: maybe restrict parallelism as we might have large
     // parallelisation overhead if dimensions are small
-    const int LD_nthr = nstl::min(L * D, dim_t(nthr));
-    const int GO_nthr = nstl::min(G * O, dim_t(nthr / LD_nthr));
+    const int LD_nthr = static_cast<int>(nstl::min<dim_t>(L * D, nthr));
+    const int GO_nthr
+            = static_cast<int>(nstl::min<dim_t>(G * O, nthr / LD_nthr));
     parallel(nthr, [=](const int ithr, const int nthr) {
         int LD_ithr = -1;
         int GO_ithr = -1;
@@ -132,32 +136,33 @@ static inline void compensate_igo(float *compensation,
         }
         int32_t *compensation_s32
                 = scratch_compensation + ithr * scratch_comp_sz;
-        for (int ld = LD_s; ld < LD_e; ld++) {
+        for (dim_t ld = LD_s; ld < LD_e; ld++) {
             if (I == 1) {
                 PRAGMA_OMP_SIMD()
-                for (int go = GO_s; go < GO_e; go++)
+                for (dim_t go = GO_s; go < GO_e; go++)
                     compensation[ld * G * O + go] = q10n::saturate<float>(
                             scratch_quantized[ld * I * G * O + go]);
             } else {
                 // We split the loop on I in three to avoid conditionals or zeroing compensation
-                int i = 0;
+                dim_t i = 0;
                 PRAGMA_OMP_SIMD()
-                for (int go = GO_s; go < GO_e; go++)
+                for (dim_t go = GO_s; go < GO_e; go++)
                     compensation_s32[go]
                             = scratch_quantized[go + G * O * (i + I * (ld))];
                 // 1 <= i < I-1
                 for (i = 1; i < I - 1; i++) {
                     PRAGMA_OMP_SIMD()
-                    for (int go = GO_s; go < GO_e; go++)
+                    for (dim_t go = GO_s; go < GO_e; go++)
                         compensation_s32[go] += scratch_quantized[go
                                 + G * O * (i + I * (ld))];
                 }
                 // i = I-1
                 PRAGMA_OMP_SIMD()
-                for (int go = GO_s; go < GO_e; go++)
-                    compensation[ld * G * O + go] = q10n::saturate<float>(
-                            compensation_s32[go]
-                            + scratch_quantized[go + G * O * (i + I * (ld))]);
+                for (dim_t go = GO_s; go < GO_e; go++)
+                    compensation[ld * G * O + go] = static_cast<float>(
+                            q10n::saturate<float>(compensation_s32[go]
+                                    + scratch_quantized[go
+                                            + G * O * (i + I * (ld))]));
             }
         }
     });
@@ -181,7 +186,8 @@ static inline void compensate_goi(float *compensation,
         // going to be added to a bias (e.g. like in lstm
         // projection where it is directly added to the s32
         // accumulators)
-        compensation[ld * G * O + go] = q10n::saturate<float>(compensation_s32);
+        compensation[ld * G * O + go]
+                = static_cast<float>(q10n::saturate<float>(compensation_s32));
     });
 }
 
@@ -193,10 +199,10 @@ struct rnn_data_reorder_t : public primitive_t {
         DECLARE_COMMON_PD_T("rnn_data_reorder", rnn_data_reorder_t);
 
     private:
-        static status_t create(reorder_pd_t **reorder_pd, engine_t *engine,
-                const primitive_attr_t *attr, engine_t *src_engine,
-                const memory_desc_t *src_md, engine_t *dst_engine,
-                const memory_desc_t *dst_md) {
+        static status_t create(reorder_pd_t **reorder_pd,
+                const engine_t *engine, const primitive_attr_t *attr,
+                const engine_t *src_engine, const memory_desc_t *src_md,
+                const engine_t *dst_engine, const memory_desc_t *dst_md) {
             using namespace format_tag;
             using namespace status;
             const memory_desc_wrapper id(src_md), od(dst_md);
@@ -263,13 +269,13 @@ private:
         parallel(0, [=](const int ithr, const int nthr) {
             dim_t start {0}, end {0};
             balance211(outer_dim, nthr, ithr, start, end);
-            for (int i = start; i < end; ++i) {
+            for (dim_t i = start; i < end; ++i) {
                 const dim_t off_in = input_d.off_l(i * inner_dim);
                 const dim_t off_out = output_d.off_l(i * inner_dim);
                 const in_data_t *__restrict i_ = input + off_in;
                 out_data_t *__restrict o_ = output + off_out;
                 PRAGMA_OMP_SIMD()
-                for (int j = 0; j < inner_dim; ++j) {
+                for (dim_t j = 0; j < inner_dim; ++j) {
                     const float in = (float)i_[j] * scale + shift;
                     o_[j] = q10n::qz_a1b0_t<float, out_data_t>()(in);
                 }
@@ -320,8 +326,8 @@ struct rnn_weights_reorder_s8_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("rnn_weights_reorder_s8", rnn_weights_reorder_s8_t);
 
-        status_t init(
-                engine_t *engine, engine_t *src_engine, engine_t *dst_engine) {
+        status_t init(const engine_t *engine, const engine_t *src_engine,
+                const engine_t *dst_engine) {
             status_t status
                     = cpu_reorder_pd_t::init(engine, src_engine, dst_engine);
             if (status != status::success) return status;
@@ -339,10 +345,10 @@ struct rnn_weights_reorder_s8_t : public primitive_t {
         gemm_pack_f gemm_pack;
 
     private:
-        static status_t create(reorder_pd_t **reorder_pd, engine_t *engine,
-                const primitive_attr_t *attr, engine_t *src_engine,
-                const memory_desc_t *src_md, engine_t *dst_engine,
-                const memory_desc_t *dst_md) {
+        static status_t create(reorder_pd_t **reorder_pd,
+                const engine_t *engine, const primitive_attr_t *attr,
+                const engine_t *src_engine, const memory_desc_t *src_md,
+                const engine_t *dst_engine, const memory_desc_t *dst_md) {
             using namespace format_tag;
             using namespace rnn_packed_format;
             using namespace status;
@@ -541,8 +547,8 @@ struct rnn_weights_reorder_t : public primitive_t {
 
         format_tag_t itag_;
 
-        status_t init(
-                engine_t *engine, engine_t *src_engine, engine_t *dst_engine) {
+        status_t init(const engine_t *engine, const engine_t *src_engine,
+                const engine_t *dst_engine) {
             status_t status
                     = cpu_reorder_pd_t::init(engine, src_engine, dst_engine);
             if (status != status::success) return status;
@@ -553,10 +559,10 @@ struct rnn_weights_reorder_t : public primitive_t {
         }
 
     private:
-        static status_t create(reorder_pd_t **reorder_pd, engine_t *engine,
-                const primitive_attr_t *attr, engine_t *src_engine,
-                const memory_desc_t *src_md, engine_t *dst_engine,
-                const memory_desc_t *dst_md) {
+        static status_t create(reorder_pd_t **reorder_pd,
+                const engine_t *engine, const primitive_attr_t *attr,
+                const engine_t *src_engine, const memory_desc_t *src_md,
+                const engine_t *dst_engine, const memory_desc_t *dst_md) {
             using namespace format_tag;
             using namespace rnn_packed_format;
             using namespace status;
@@ -733,8 +739,8 @@ struct rnn_brgemm_weights_reorder_s8_t : public primitive_t {
         int nthr_; // To not exceed the limit in execute used for set up.
         size_t thr_scratch_comp_sz_ = 0;
 
-        status_t init(
-                engine_t *engine, engine_t *src_engine, engine_t *dst_engine) {
+        status_t init(const engine_t *engine, const engine_t *src_engine,
+                const engine_t *dst_engine) {
             status_t status
                     = cpu_reorder_pd_t::init(engine, src_engine, dst_engine);
             if (status != status::success) return status;
@@ -746,10 +752,10 @@ struct rnn_brgemm_weights_reorder_s8_t : public primitive_t {
         }
 
     private:
-        static status_t create(reorder_pd_t **reorder_pd, engine_t *engine,
-                const primitive_attr_t *attr, engine_t *src_engine,
-                const memory_desc_t *src_md, engine_t *dst_engine,
-                const memory_desc_t *dst_md) {
+        static status_t create(reorder_pd_t **reorder_pd,
+                const engine_t *engine, const primitive_attr_t *attr,
+                const engine_t *src_engine, const memory_desc_t *src_md,
+                const engine_t *dst_engine, const memory_desc_t *dst_md) {
             using namespace status;
             using namespace format_tag;
             using namespace memory_extra_flags;
@@ -857,7 +863,8 @@ private:
             return status::success;
         }
 
-        const int o_block = dst_d.blocking_desc().inner_blks[0];
+        const int o_block
+                = static_cast<int>(dst_d.blocking_desc().inner_blks[0]);
         static constexpr int i_block = 4;
 
         dim_t L, D, I, G, O;
@@ -925,7 +932,8 @@ private:
             return row + col;
         };
         const auto kernel_plain_to_blocked
-                = [=](const out_data_t *inp, out_data_t *out, int ib, int ob) {
+                = [=](const out_data_t *inp, out_data_t *out, dim_t ib,
+                          dim_t ob) {
             PRAGMA_OMP_SIMD()
             for (int i = 0; i < i_block * o_block; i++)
                 out[i] = 0;

@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2021-2024 Arm Ltd. and affiliates
+* Copyright 2021-2024, 2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -37,10 +38,10 @@ struct acl_indirect_gemm_convolution_fwd_t : public primitive_t {
         DECLARE_COMMON_PD_T("indirect_gemm:acl",
                 acl_indirect_gemm_convolution_fwd_t, USE_GLOBAL_SCRATCHPAD);
 
-        status_t init(engine_t *engine);
+        status_t init(const engine_t *engine);
 
         acl_conv_conf_t acp_ = utils::zero<decltype(acp_)>();
-        acl_post_ops_t post_ops;
+        post_ops_fallback_t post_ops;
 
     private:
         status_t init_conf();
@@ -59,6 +60,7 @@ private:
     status_t execute_forward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
     std::unique_ptr<acl_obj_t<Op>> acl_obj_;
+    post_ops_fallback_t post_ops_;
 };
 
 } // namespace aarch64

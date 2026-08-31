@@ -35,9 +35,7 @@ public:
             impl::engine_t *engine, impl::stream_impl_t *stream_impl);
 
     xpu::ze::context_t &ze_ctx() { return impl()->ze_ctx(); }
-    const xpu::ze::context_t &ze_ctx() const { return impl()->ze_ctx(); }
     xpu::context_t &ctx() override { return impl()->ze_ctx(); }
-    const xpu::context_t &ctx() const override { return impl()->ze_ctx(); }
 
     ze_event_handle_t get_output_event() const {
         return impl()->get_output_event();
@@ -45,6 +43,7 @@ public:
     ze_event_handle_t create_event() const { return impl()->create_event(); }
 
     ze_command_list_handle_t list() const { return impl()->list(); }
+    std::mutex &list_mutex() { return impl()->list_mutex(); }
 
     status_t wait() override { return impl()->wait(); }
     status_t barrier() override { return impl()->barrier(); }
@@ -55,6 +54,9 @@ public:
     status_t reset_profiling() override;
     status_t get_profiling_data(profiling_data_kind_t data_kind,
             int *num_entries, uint64_t *data) const override;
+
+    status_t run_verbose_profiler(const std::string &pd_info, double start_ms,
+            uint64_t component) override;
 
     status_t copy(const impl::memory_storage_t &src,
             const impl::memory_storage_t &dst, size_t size,
@@ -79,6 +81,9 @@ private:
     status_t init();
 
     DNNL_DISALLOW_COPY_AND_ASSIGN(stream_t);
+
+    status_t get_device_properties(ze_device_handle_t dev,
+            double &timer_frequency, uint64_t &max_timestamp_value) const;
 };
 
 } // namespace ze

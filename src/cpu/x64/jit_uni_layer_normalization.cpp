@@ -175,10 +175,10 @@ protected:
 
     io::jit_io_multi_dt_helper_t<Vmm> io_;
     const memory_desc_wrapper src_d_, dst_d_;
-    const size_t simd_w_;
+    const int simd_w_;
     const dim_t C_;
     const dim_t axis_simd_full_;
-    const dim_t axis_simd_tail_;
+    const int axis_simd_tail_;
     const bool use_scale_;
     const bool use_shift_;
     const bool save_stats_;
@@ -192,7 +192,7 @@ protected:
     bool with_src_scales_ = false;
     bool with_dst_scales_ = false;
 
-    std::unique_ptr<injector::jit_uni_postops_injector_t<isa>>
+    std::unique_ptr<injector::jit_uni_postops_injector_t<Vmm>>
             postops_injector_;
 
     const Reg64 reg_param = abi_param1;
@@ -294,7 +294,7 @@ protected:
                 uni_vpxor(Vmm(i), Vmm(i), Vmm(i));
 
             // unrolled loop
-            for (int i = 0; i < axis_simd_full_ / unroll; i++)
+            for (dim_t i = 0; i < axis_simd_full_ / unroll; i++)
                 for (int j = base_idx; j < base_idx + unroll; j += 2) {
                     const bool can_load_two_simdw = base_idx + unroll - j >= 2;
                     if (!can_load_two_simdw)
@@ -318,7 +318,7 @@ protected:
             }
 
             // unrolled loop remainder
-            for (int i = utils::rnd_dn(axis_simd_full_, unroll);
+            for (dim_t i = utils::rnd_dn(axis_simd_full_, unroll);
                     i < axis_simd_full_; i += 2) {
                 const bool can_load_two_simdw = axis_simd_full_ - i >= 2;
                 if (!can_load_two_simdw)
@@ -362,7 +362,7 @@ protected:
                 uni_vpxor(Vmm(i), Vmm(i), Vmm(i));
 
             // unrolled loop
-            for (int i = 0; i < axis_simd_full_ / unroll; i++)
+            for (dim_t i = 0; i < axis_simd_full_ / unroll; i++)
                 for (int j = base_idx; j < base_idx + unroll; j++) {
                     io_[src_d_.data_type()]->load(
                             src_ptr((i * unroll + j - base_idx) * simd_w_),
@@ -379,7 +379,7 @@ protected:
             }
 
             // unrolled loop remainder
-            for (int i = utils::rnd_dn(axis_simd_full_, unroll);
+            for (dim_t i = utils::rnd_dn(axis_simd_full_, unroll);
                     i < axis_simd_full_; i++) {
                 io_[src_d_.data_type()]->load(
                         src_ptr(i * simd_w_), Vmm(base_idx + 1), need_tail);
@@ -522,7 +522,7 @@ protected:
 
     void calculate_dst() {
         if (has_ne_convert_src_xf16_) {
-            for (int i = 0; i < axis_simd_full_; i += 2) {
+            for (dim_t i = 0; i < axis_simd_full_; i += 2) {
                 const bool can_load_two_simdw = axis_simd_full_ - i >= 2;
                 if (can_load_two_simdw)
                     calculate_ne_convert_xf16_dst_body(i * simd_w_);
@@ -530,7 +530,7 @@ protected:
                     calculate_dst_body(i * simd_w_);
             }
         } else {
-            for (int i = 0; i < axis_simd_full_; i++)
+            for (dim_t i = 0; i < axis_simd_full_; i++)
                 calculate_dst_body(i * simd_w_);
         }
         if (axis_simd_tail_)
@@ -538,18 +538,19 @@ protected:
     }
 
     void generate() override {
-        const size_t c_src_size
-                = C_ * types::data_type_size(src_d_.data_type());
-        const size_t c_dst_size
-                = C_ * types::data_type_size(dst_d_.data_type());
-        static const size_t float_size = types::data_type_size(f32);
+        const dim_t c_src_size = C_
+                * static_cast<int>(types::data_type_size(src_d_.data_type()));
+        const dim_t c_dst_size = C_
+                * static_cast<int>(types::data_type_size(dst_d_.data_type()));
+        static const int float_size
+                = static_cast<int>(types::data_type_size(f32));
 
 #define PARAM_OFF(x) offsetof(ker_args_t, x)
         if (with_postops_) {
             static constexpr bool preserve_gpr = true;
             static constexpr bool preserve_vmm = true;
             static constexpr bool use_exact_tail_scalar_bcast = true;
-            static const std::size_t tmp_vmm_injector = this->vmm_tmp.getIdx();
+            static const int tmp_vmm_injector = this->vmm_tmp.getIdx();
 
             const eltwise_injector::static_params_t esp(true /*save_state*/,
                     reg_po_injector_helper_, elt_inj_opmask, true /*is_fwd*/,
@@ -559,15 +560,16 @@ protected:
                     tmp_vmm_injector, this->r14, this->r15, this->r13,
                     preserve_gpr, preserve_vmm,
                     PARAM_OFF(post_ops_binary_rhs_arg_vec), PARAM_OFF(dst),
-                    dst_d_, static_cast<size_t>(axis_simd_tail_), tail_opmask,
+                    dst_d_, axis_simd_tail_, tail_opmask,
                     use_exact_tail_scalar_bcast};
 
             const binary_injector::static_params_t bsp {reg_param,
                     get_supported_bcast_strategies(dst_d_.ndims()), rhs_sp};
 
             postops_injector_ = utils::make_unique<
-                    injector::jit_uni_postops_injector_t<isa>>(
-                    this, pd_->attr()->post_ops_, bsp, esp);
+                    injector::jit_uni_postops_injector_t<Vmm>>(this,
+                    pd_->attr()->post_ops_, bsp, esp,
+                    /* inject_sum = */ false);
         }
         preamble();
 
@@ -595,7 +597,7 @@ protected:
         uni_vmovq(xmm_tmp, reg_tmp);
         uni_vbroadcastss(vmm_ones, xmm_tmp);
 
-        mov(reg_tmp, float2int(C_));
+        mov(reg_tmp, float2int(static_cast<float>(C_)));
         uni_vmovq(xmm_tmp, reg_tmp);
         uni_vbroadcastss(vmm_c, xmm_tmp);
 
@@ -792,10 +794,10 @@ protected:
 
     io::jit_io_multi_dt_helper_t<Vmm> io_;
     const memory_desc_wrapper src_d_, d_dst_d_;
-    const size_t simd_w_;
+    const int simd_w_;
     const dim_t C_;
     const dim_t axis_simd_full_;
-    const dim_t axis_simd_tail_;
+    const int axis_simd_tail_;
     const float eps_;
     const bool skip_mean_;
 
@@ -856,11 +858,12 @@ protected:
     }
 
     void generate() override {
-        const size_t c_src_size
-                = C_ * types::data_type_size(src_d_.data_type());
-        const size_t c_ddst_size
-                = C_ * types::data_type_size(d_dst_d_.data_type());
-        static const size_t float_size = types::data_type_size(f32);
+        const dim_t c_src_size = C_
+                * static_cast<int>(types::data_type_size(src_d_.data_type()));
+        const dim_t c_ddst_size = C_
+                * static_cast<int>(types::data_type_size(d_dst_d_.data_type()));
+        static const int float_size
+                = static_cast<int>(types::data_type_size(f32));
 
         preamble();
 
@@ -893,7 +896,7 @@ protected:
             uni_vmovss(xmm_tmp, dword[reg_inv_sqrtvar]);
             uni_vbroadcastss(vmm_inv_sqrtvar, xmm_tmp);
 
-            for (int i = 0; i < axis_simd_full_; i++)
+            for (dim_t i = 0; i < axis_simd_full_; i++)
                 calculate_diff_scale_shift(i * simd_w_);
             if (axis_simd_tail_)
                 calculate_diff_scale_shift(axis_simd_full_ * simd_w_, true);
@@ -997,10 +1000,10 @@ protected:
 
     io::jit_io_multi_dt_helper_t<Vmm> io_;
     const memory_desc_wrapper src_d_, d_dst_d_, d_src_d_;
-    const size_t simd_w_;
+    const int simd_w_;
     const dim_t C_;
     const dim_t axis_simd_full_;
-    const dim_t axis_simd_tail_;
+    const int axis_simd_tail_;
     const bool use_scale_;
     const bool use_shift_;
     const bool calculate_diff_stats_;
@@ -1088,13 +1091,14 @@ protected:
     }
 
     void generate() override {
-        const size_t c_src_size
-                = C_ * types::data_type_size(src_d_.data_type());
-        const size_t c_ddst_size
-                = C_ * types::data_type_size(d_dst_d_.data_type());
-        const size_t c_dsrc_size
-                = C_ * types::data_type_size(d_src_d_.data_type());
-        static const size_t float_size = types::data_type_size(f32);
+        const dim_t c_src_size = C_
+                * static_cast<int>(types::data_type_size(src_d_.data_type()));
+        const dim_t c_ddst_size = C_
+                * static_cast<int>(types::data_type_size(d_dst_d_.data_type()));
+        const dim_t c_dsrc_size = C_
+                * static_cast<int>(types::data_type_size(d_src_d_.data_type()));
+        static const int float_size
+                = static_cast<int>(types::data_type_size(f32));
 
         preamble();
 
@@ -1114,7 +1118,7 @@ protected:
         mov(reg_block_end, ptr[reg_param + PARAM_OFF(block_size)]);
 #undef PARAM_OFF
 
-        mov(reg_tmp, float2int(C_));
+        mov(reg_tmp, float2int(static_cast<float>(C_)));
         uni_vmovq(xmm_tmp, reg_tmp);
         uni_vbroadcastss(vmm_C, xmm_tmp);
 
@@ -1139,7 +1143,7 @@ protected:
                 uni_vpxor(vmm_dd_scale, vmm_dd_scale, vmm_dd_scale);
                 uni_vpxor(vmm_dd_scale_x, vmm_dd_scale_x, vmm_dd_scale_x);
 
-                for (int i = 0; i < axis_simd_full_; i++)
+                for (dim_t i = 0; i < axis_simd_full_; i++)
                     compute_dd_scales(i * simd_w_);
                 if (axis_simd_tail_)
                     compute_dd_scales(axis_simd_full_ * simd_w_, true);
@@ -1149,7 +1153,7 @@ protected:
                 uni_vmulps(vmm_dd_scale_x, vmm_dd_scale_x, vmm_inv_sqrtvar);
             }
 
-            for (int i = 0; i < axis_simd_full_; i++)
+            for (dim_t i = 0; i < axis_simd_full_; i++)
                 compute_diff_src(i * simd_w_);
             if (axis_simd_tail_)
                 compute_diff_src(axis_simd_full_ * simd_w_, true);
@@ -1214,7 +1218,7 @@ diff_data_kernel_t *diff_data_kernel_t::create(
         return nullptr;
     }
 }
-status_t jit_uni_layer_normalization_fwd_t::pd_t::init(engine_t *engine) {
+status_t jit_uni_layer_normalization_fwd_t::pd_t::init(const engine_t *engine) {
     using namespace data_type;
     using skip_mask_t = primitive_attr_t::skip_mask_t;
     const memory_desc_wrapper src_d(src_md());
@@ -1331,7 +1335,7 @@ status_t jit_uni_layer_normalization_fwd_t::execute_forward(
                 + N_start * C_padded * src_d.data_type_size();
         char *const __restrict dst_ptr = reinterpret_cast<char *>(dst)
                 + N_start * C_padded * dst_d.data_type_size();
-        const int block_size = N_end - N_start;
+        const dim_t block_size = N_end - N_start;
         float *mean_ptr = skip_mean ? nullptr : &mean[N_start];
         float *dst_scales_inv_ptr = nullptr;
         if (!pd()->attr()->scales_.has_default_values(DNNL_ARG_DST)) {
@@ -1400,7 +1404,7 @@ status_t jit_uni_layer_normalization_bwd_t::execute_backward(
     parallel(max_nthr, [= COMPAT_THIS_CAPTURE](int ithr, int nthr) {
         dim_t N_start = 0, N_end = 0;
         balance211(N, nthr, ithr, N_start, N_end);
-        const int block_size = N_end - N_start;
+        const dim_t block_size = N_end - N_start;
         const char *const __restrict src_ptr
                 = reinterpret_cast<const char *>(src)
                 + N_start * C_padded * src_d.data_type_size();
@@ -1433,7 +1437,7 @@ status_t jit_uni_layer_normalization_bwd_t::execute_backward(
     parallel(max_nthr, [= COMPAT_THIS_CAPTURE](int ithr, int nthr) {
         dim_t N_start = 0, N_end = 0;
         balance211(N, nthr, ithr, N_start, N_end);
-        const int block_size = N_end - N_start;
+        const dim_t block_size = N_end - N_start;
         const char *const __restrict src_ptr
                 = reinterpret_cast<const char *>(src)
                 + N_start * C_padded * src_d.data_type_size();

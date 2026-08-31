@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2026 Institute of Software, Chinese Academy of Sciences
+* Copyright 2026 SpacemiT Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -86,7 +87,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
     const VReg v_shift3(21);
     fmv_w_x(f_zero, x0);
 
-    vsetvli(reg_vlmax, x0, SEW::e32, LMUL::m1);
+    vsetvli(reg_vlmax, x0, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     slli(reg_bytes, reg_vlmax, 2);
     slli(reg_bytes4, reg_bytes, 2);
     slli(reg_block, reg_vlmax, 2);
@@ -103,7 +104,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
     vfmv_v_f(v_tmp2, f_zero);
     vfmv_v_f(v_tmp3, f_zero);
 
-    vsetvli(x0, reg_vlmax, SEW::e32, LMUL::m1);
+    vsetvli(x0, reg_vlmax, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     L(mean_main_loop);
     blt(reg_len, reg_block, mean_vec_tail);
     vle32_v(v_in0, reg_src);
@@ -123,7 +124,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
 
     L(mean_vec_tail);
     beqz(reg_len, mean_reduce_loop);
-    vsetvli(reg_vl, reg_len, SEW::e32, LMUL::m1);
+    vsetvli(reg_vl, reg_len, SEW::e32, LMUL::m1, VTA::tu, VMA::ma);
     slli(reg_tmp, reg_vl, 2);
     vle32_v(v_in0, reg_src);
     vfadd_vv(v_tmp0, v_tmp0, v_in0);
@@ -132,7 +133,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
     j_(mean_vec_tail);
 
     L(mean_reduce_loop);
-    vsetvli(x0, reg_vlmax, SEW::e32, LMUL::m1);
+    vsetvli(x0, reg_vlmax, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     vfadd_vv(v_tmp0, v_tmp0, v_tmp1);
     vfadd_vv(v_tmp2, v_tmp2, v_tmp3);
     vfadd_vv(v_tmp0, v_tmp0, v_tmp2);
@@ -153,7 +154,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
     vfmv_v_f(v_tmp1, f_zero);
     vfmv_v_f(v_tmp2, f_zero);
     vfmv_v_f(v_tmp3, f_zero);
-    vsetvli(x0, reg_vlmax, SEW::e32, LMUL::m1);
+    vsetvli(x0, reg_vlmax, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     vfmv_v_f(v_mean, f_mean);
 
     L(var_main_loop);
@@ -179,7 +180,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
 
     L(var_vec_tail);
     beqz(reg_len, var_reduce_loop);
-    vsetvli(reg_vl, reg_len, SEW::e32, LMUL::m1);
+    vsetvli(reg_vl, reg_len, SEW::e32, LMUL::m1, VTA::tu, VMA::ma);
     slli(reg_tmp, reg_vl, 2);
     vle32_v(v_in0, reg_src);
     vfsub_vv(v_in0, v_in0, v_mean);
@@ -189,7 +190,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
     j_(var_vec_tail);
 
     L(var_reduce_loop);
-    vsetvli(x0, reg_vlmax, SEW::e32, LMUL::m1);
+    vsetvli(x0, reg_vlmax, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     vfadd_vv(v_tmp0, v_tmp0, v_tmp1);
     vfadd_vv(v_tmp2, v_tmp2, v_tmp3);
     vfadd_vv(v_tmp0, v_tmp0, v_tmp2);
@@ -202,7 +203,6 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
     ld(reg_len, reg_param, GET_FUSED_OFF(len));
     fcvt_s_l(f_len, reg_len);
     fdiv_s(f_var, f_var_sum, f_len);
-    fmax_s(f_var, f_var, f_zero);
 
     ld(reg_mean_ptr, reg_param, GET_FUSED_OFF(mean));
     beqz(reg_mean_ptr, store_var);
@@ -227,7 +227,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
     ld(reg_shift, reg_param, GET_FUSED_OFF(shift));
     ld(reg_len, reg_param, GET_FUSED_OFF(len));
 
-    vsetvli(reg_vlmax, x0, SEW::e32, LMUL::m1);
+    vsetvli(reg_vlmax, x0, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     slli(reg_bytes, reg_vlmax, 2);
     slli(reg_bytes4, reg_bytes, 2);
     slli(reg_block, reg_vlmax, 2);
@@ -332,7 +332,7 @@ void jit_rvv_layernorm_fused_kernel_t::generate() {
 
     L(data_tail_loop);
     beqz(reg_len, done);
-    vsetvli(reg_vl, reg_len, SEW::e32, LMUL::m1);
+    vsetvli(reg_vl, reg_len, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     slli(reg_tmp, reg_vl, 2);
     vle32_v(v_in0, reg_src);
     vfsub_vv(v_in0, v_in0, v_mean);
@@ -413,7 +413,7 @@ void jit_rvv_layernorm_data_kernel_t::generate() {
     flw(f_mean, reg_param, GET_DATA_OFF(mean));
     flw(f_inv, reg_param, GET_DATA_OFF(inv_std));
 
-    vsetvli(reg_vlmax, x0, SEW::e32, LMUL::m1);
+    vsetvli(reg_vlmax, x0, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     slli(reg_bytes, reg_vlmax, 2);
     slli(reg_bytes4, reg_bytes, 2);
     slli(reg_block, reg_vlmax, 2);
@@ -521,7 +521,7 @@ void jit_rvv_layernorm_data_kernel_t::generate() {
 
     L(tail_loop);
     beqz(reg_len, done);
-    vsetvli(reg_vl, reg_len, SEW::e32, LMUL::m1);
+    vsetvli(reg_vl, reg_len, SEW::e32, LMUL::m1, VTA::ta, VMA::ma);
     slli(reg_tmp, reg_vl, 2);
     vfmv_v_f(v_mean, f_mean);
     vfmv_v_f(v_inv, f_inv);
@@ -558,6 +558,191 @@ void jit_rvv_layernorm_data_kernel_t::generate() {
 
 #undef GET_FUSED_OFF
 #undef GET_DATA_OFF
+
+#define GET_F16_OFF(field) \
+    static_cast<int32_t>(offsetof( \
+            jit_rvv_layernorm_f16_fused_kernel_t::call_params_t, field))
+
+jit_rvv_layernorm_f16_fused_kernel_t::jit_rvv_layernorm_f16_fused_kernel_t(
+        bool with_scale, bool with_shift, bool weights_f16)
+    : jit_generator_t("jit_rvv_layernorm_f16_fused_kernel")
+    , with_scale_(with_scale)
+    , with_shift_(with_shift)
+    , weights_f16_(weights_f16) {
+    create_kernel();
+}
+
+void jit_rvv_layernorm_f16_fused_kernel_t::generate() {
+    const Reg reg_param = a0;
+    const Reg reg_src = a1;
+    const Reg reg_dst = a2;
+    const Reg reg_scale = a3;
+    const Reg reg_shift = a4;
+    const Reg reg_len = a5;
+    const Reg reg_t1 = a6; // remaining element count
+    const Reg reg_ptr = a7; // mean/variance pointer scratch
+    const Reg reg_vl = t0; // current vsetvli element count
+    const Reg reg_tmp = t1;
+    const Reg reg_tmp2 = t2;
+
+    const FReg f_zero = ft0;
+    const FReg f_mean = ft1; // mean (also holds Sx before divide)
+    const FReg f_var_sum = ft2;
+    const FReg f_len = ft3;
+    const FReg f_inv = ft4; // 1/sqrt(var+eps), f32
+    const FReg f_var = ft5;
+    const FReg f_eps = ft6;
+    const FReg d_b = ft8;
+    const FReg d_eps = ft9;
+    const FReg d_one = ft10;
+
+    const VReg v_sum(0); // m8: Sx accumulator
+    const VReg v_sumsq(8); // m8: variance accumulator
+    const VReg v_work(16); // m8: widened x / compute register
+    const VReg v_ld(24); // m4: f16 load temp
+    const VReg v_gamma(24); // m8: widened/loaded gamma
+    const VReg v_gld(8); // m4: gamma f16 load temp
+    const VReg v_beta(8); // m8: widened/loaded beta
+    const VReg v_bld(4); // m4: beta f16 load temp
+
+    fmv_w_x(f_zero, x0);
+
+    Label sum_loop, sum_done, var_loop, var_done, skip_mean, skip_var;
+    Label out_loop, out_done;
+
+    // ---- pass 1: accumulate Sx in f32 ----
+    ld(reg_src, reg_param, GET_F16_OFF(src));
+    ld(reg_t1, reg_param, GET_F16_OFF(len));
+    vsetvli(reg_tmp, x0, SEW::e32, LMUL::m8, VTA::ta, VMA::ma);
+    vmv_v_x(v_sum, x0);
+    vmv_v_x(v_work, x0);
+
+    L(sum_loop);
+    beqz(reg_t1, sum_done);
+    vsetvli(reg_vl, reg_t1, SEW::e16, LMUL::m4, VTA::ta, VMA::ma);
+    sub(reg_t1, reg_t1, reg_vl);
+    vle16_v(v_ld, reg_src);
+    slli(reg_tmp, reg_vl, 1);
+    add(reg_src, reg_src, reg_tmp);
+    vfwcvt_f_f_v(v_work, v_ld); // f16 -> f32, first reg_vl elems
+    vsetvli(reg_tmp, reg_vl, SEW::e32, LMUL::m8, VTA::tu, VMA::ma);
+    vfadd_vv(v_sum, v_sum, v_work);
+    vmv_v_x(v_work, x0); // keep tail zero for next widen
+    j_(sum_loop);
+    L(sum_done);
+
+    // ---- finish mean ----
+    vsetvli(reg_tmp, x0, SEW::e32, LMUL::m8, VTA::ta, VMA::ma);
+    vmv_v_v(v_work, v_sum);
+    vmv_v_x(v_sum, x0); // reuse as reduction init (elem0 = 0)
+    vfredosum_vs(v_work, v_work, v_sum);
+    vfmv_f_s(f_mean, v_work); // Sx
+
+    ld(reg_len, reg_param, GET_F16_OFF(len));
+    fcvt_s_l(f_len, reg_len);
+    fdiv_s(f_mean, f_mean, f_len); // mean
+
+    ld(reg_ptr, reg_param, GET_F16_OFF(mean));
+    beqz(reg_ptr, skip_mean);
+    fsw(f_mean, reg_ptr, 0);
+    L(skip_mean);
+
+    // ---- pass 2: accumulate variance as sum((x - mean)^2) ----
+    ld(reg_src, reg_param, GET_F16_OFF(src));
+    ld(reg_t1, reg_param, GET_F16_OFF(len));
+    vsetvli(reg_tmp, x0, SEW::e32, LMUL::m8, VTA::ta, VMA::ma);
+    vmv_v_x(v_sumsq, x0);
+    vmv_v_x(v_work, x0);
+
+    L(var_loop);
+    beqz(reg_t1, var_done);
+    vsetvli(reg_vl, reg_t1, SEW::e16, LMUL::m4, VTA::ta, VMA::ma);
+    sub(reg_t1, reg_t1, reg_vl);
+    vle16_v(v_ld, reg_src);
+    slli(reg_tmp, reg_vl, 1);
+    add(reg_src, reg_src, reg_tmp);
+    vfwcvt_f_f_v(v_work, v_ld); // f16 -> f32
+    vsetvli(reg_tmp, reg_vl, SEW::e32, LMUL::m8, VTA::tu, VMA::ma);
+    vfsub_vf(v_work, v_work, f_mean);
+    vfmacc_vv(v_sumsq, v_work, v_work);
+    vmv_v_x(v_work, x0); // keep tail zero for next widen
+    j_(var_loop);
+    L(var_done);
+
+    vsetvli(reg_tmp, x0, SEW::e32, LMUL::m8, VTA::ta, VMA::ma);
+    vmv_v_x(v_sum, x0); // reuse as reduction init
+    vfredosum_vs(v_sumsq, v_sumsq, v_sum);
+    vfmv_f_s(f_var_sum, v_sumsq);
+    fdiv_s(f_var, f_var_sum, f_len);
+    ld(reg_ptr, reg_param, GET_F16_OFF(variance));
+    beqz(reg_ptr, skip_var);
+    fsw(f_var, reg_ptr, 0);
+    L(skip_var);
+
+    flw(f_eps, reg_param, GET_F16_OFF(eps));
+    fcvt_d_s(d_b, f_var);
+    fcvt_d_s(d_eps, f_eps);
+    fadd_d(d_b, d_b, d_eps); // var + eps (f64)
+    fsqrt_d(d_b, d_b);
+    li(reg_tmp, 1);
+    fcvt_d_w(d_one, reg_tmp);
+    fdiv_d(d_b, d_one, d_b); // 1/sqrt
+    fcvt_s_d(f_inv, d_b); // inv (f32)
+
+    // ---- pass 3: normalize + affine, write f16 ----
+    ld(reg_src, reg_param, GET_F16_OFF(src));
+    ld(reg_dst, reg_param, GET_F16_OFF(dst));
+    if (with_scale_) ld(reg_scale, reg_param, GET_F16_OFF(scale));
+    if (with_shift_) ld(reg_shift, reg_param, GET_F16_OFF(shift));
+    ld(reg_t1, reg_param, GET_F16_OFF(len));
+
+    L(out_loop);
+    beqz(reg_t1, out_done);
+    vsetvli(reg_vl, reg_t1, SEW::e16, LMUL::m4, VTA::ta, VMA::ma);
+    sub(reg_t1, reg_t1, reg_vl);
+
+    vle16_v(v_ld, reg_src);
+    vfwcvt_f_f_v(v_work, v_ld); // x -> f32
+
+    if (weights_f16_) {
+        if (with_scale_) {
+            vle16_v(v_gld, reg_scale);
+            vfwcvt_f_f_v(v_gamma, v_gld); // gamma -> f32 (v24 m8)
+        }
+        if (with_shift_) {
+            vle16_v(v_bld, reg_shift);
+            vfwcvt_f_f_v(v_beta, v_bld); // beta -> f32 (v8 m8)
+        }
+    } else if (with_scale_ || with_shift_) {
+        vsetvli(reg_tmp, reg_vl, SEW::e32, LMUL::m8, VTA::ta, VMA::ma);
+        if (with_scale_) vle32_v(v_gamma, reg_scale);
+        if (with_shift_) vle32_v(v_beta, reg_shift);
+    }
+
+    vsetvli(reg_tmp, x0, SEW::e32, LMUL::m8, VTA::ta, VMA::ma);
+    vfsub_vf(v_work, v_work, f_mean); // x - mean
+    vfmul_vf(v_work, v_work, f_inv); // * inv
+    if (with_scale_) vfmul_vv(v_work, v_work, v_gamma);
+    if (with_shift_) vfadd_vv(v_work, v_work, v_beta);
+
+    vsetvli(reg_tmp, reg_vl, SEW::e16, LMUL::m4, VTA::ta, VMA::ma);
+    vfncvt_f_f_w(v_ld, v_work); // f32 -> f16
+    vse16_v(v_ld, reg_dst);
+
+    slli(reg_tmp, reg_vl, 1);
+    add(reg_src, reg_src, reg_tmp);
+    add(reg_dst, reg_dst, reg_tmp);
+    if (with_scale_ || with_shift_) {
+        slli(reg_tmp2, reg_vl, weights_f16_ ? 1 : 2);
+        if (with_scale_) add(reg_scale, reg_scale, reg_tmp2);
+        if (with_shift_) add(reg_shift, reg_shift, reg_tmp2);
+    }
+    j_(out_loop);
+    L(out_done);
+    ret();
+}
+
+#undef GET_F16_OFF
 
 } // namespace rv64
 } // namespace cpu

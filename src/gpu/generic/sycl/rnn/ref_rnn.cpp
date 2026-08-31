@@ -141,13 +141,13 @@ status_t ref_rnn_bwd_t::pd_t::set_default_params() {
 // The inputs of create_matmul_pd describe a matmul in column major.
 // Below, we have to transpose the a and b descriptor to describe
 // the matmul as a row major problem.
-status_t create_matmul_pd(impl::engine_t *engine,
+status_t create_matmul_pd(const impl::engine_t *engine,
         std::shared_ptr<primitive_desc_t> &matmul_pd, dim_t m, dim_t n, dim_t k,
         std::pair<dim_t, dim_t> a_strides, std::pair<dim_t, dim_t> b_strides,
         std::pair<dim_t, dim_t> c_strides, data_type_t a_dt, data_type_t b_dt,
         data_type_t c_dt, float beta, fpmath_mode_t fpmath_mode,
         bool deterministic) {
-    memory_desc_t a_md, b_md, c_md, bias_md;
+    memory_desc_t a_md, b_md, c_md;
 
     dims_t a_dims = {n, k}, b_dims = {k, m}, c_dims = {n, m};
 
@@ -164,23 +164,11 @@ status_t create_matmul_pd(impl::engine_t *engine,
     CHECK(attr.set_fpmath_mode(fpmath_mode));
     attr.deterministic_ = deterministic;
 
-    matmul_desc_t matmul_desc;
-    dnnl::impl::matmul_desc_init(&matmul_desc, &a_md, &b_md, &bias_md, &c_md);
-
-    primitive_desc_iterator_t it(engine,
-            reinterpret_cast<op_desc_t *>(&matmul_desc), &attr, nullptr);
-
-    while (++it != it.end()) {
-        if (*it) {
-            matmul_pd = *it;
-            return status::success;
-            break;
-        }
-    }
-    return status::unimplemented;
+    return impl::create_matmul_pd(
+            matmul_pd, engine, &a_md, &b_md, nullptr, &c_md, &attr);
 }
 
-status_t ref_rnn_fwd_t::pd_t::init(impl::engine_t *engine) {
+status_t ref_rnn_fwd_t::pd_t::init(const impl::engine_t *engine) {
     using namespace prop_kind;
     using namespace utils;
     using namespace rnn_utils;
@@ -354,7 +342,7 @@ status_t ref_rnn_fwd_t::pd_t::init(impl::engine_t *engine) {
     return status::success;
 }
 
-status_t ref_rnn_bwd_t::pd_t::init(impl::engine_t *engine) {
+status_t ref_rnn_bwd_t::pd_t::init(const impl::engine_t *engine) {
     using namespace prop_kind;
     using namespace utils;
     using namespace rnn_utils;

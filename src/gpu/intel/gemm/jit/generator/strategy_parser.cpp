@@ -34,6 +34,20 @@ static void unparseAddressBase(std::ostream &s, ngen::AddressBase base);
 static void unparseCaching(HW hw, std::ostream &s, const MatrixAddressingStrategy &astrategy);
 static void unparseTiling(std::ostream &s, const MatrixAddressingStrategy &astrategy);
 
+static HW parseRAHW(const std::string &name) {
+    if (name == "xehpc")
+        return HW::XeHPC;
+
+    stub("Only raxehpc is supported for register allocation override.");
+    return HW::Unknown;
+}
+
+static const char *unparseRAHW(HW hw) {
+    if (hw == HW::XeHPC)
+        return "xehpc";
+    return nullptr;
+}
+
 bool native64Bit(HW hw)
 {
     EmulationStrategy emulate(hw);
@@ -321,7 +335,8 @@ void parseStrategy(const std::string &str, HW hw, const GEMMProblem &problem, GE
         {"int", [](ParserContext& ctx) { ctx.strategy.registerScheme = GEMMStrategy::ABInterleave; }},
         {"nse", [](ParserContext& ctx) { ctx.strategy.registerScheme = GEMMStrategy::NSeparate; }},
         {"vav", [](ParserContext& ctx) { ctx.strategy.registerScheme = GEMMStrategy::VAvoid; }},
-        
+        {"tk", [](ParserContext& ctx) { ctx.strategy.tokenAlloc = true; }},
+
         /* Dispatch Settings */
         {"mnk", [](ParserContext& ctx) {
             ctx.strategy.loopOrder[0] = LoopM;
@@ -508,6 +523,8 @@ void parseStrategy(const std::string &str, HW hw, const GEMMProblem &problem, GE
         } else if (mod.substr(0, 3) == "dot") {
             mod.erase(0,3);
             strategy.dotVL = mod.empty() ? 1 : std::stoi(mod);
+        } else if (mod.substr(0, 2) == "ra") {
+            strategy.raHW = parseRAHW(mod.substr(2));
         } else if (mod.length() >= 2) {
             if (mod.substr(0, 2) == "ms")
                 strategy.mSplitThresh = stoi(mod.substr(2));
@@ -899,7 +916,7 @@ std::string unparseStrategy(HW hw, const GEMMProblem &problem, const GEMMStrateg
         if (strategy.dotVL > 1) s << strategy.dotVL;
     }
 
-    if (strategy.kChain > 1)                s << " kc" << strategy.kChain;
+    if (strategy.kChain > 0)                s << " kc" << strategy.kChain;
 
     if (strategy.atomicFMA)                 s << (strategy.extendedAtomicFMA ? " xaf" : " af");
     if (strategy.stallAfterLoad)            s << " st";
@@ -909,6 +926,9 @@ std::string unparseStrategy(HW hw, const GEMMProblem &problem, const GEMMStrateg
 
     if (strategy.GRFs != 128)
         s << " grf" << strategy.GRFs;
+    if (strategy.raHW != hw)
+        if (auto ra = unparseRAHW(strategy.raHW))
+            s << " ra" << ra;
 
     if (strategy.coopA == CoopSplit::MN)    s << " sm";
     if (strategy.coopA == CoopSplit::FullK) s << " ska";
@@ -947,6 +967,7 @@ std::string unparseStrategy(HW hw, const GEMMProblem &problem, const GEMMStrateg
     if (strategy.scramble[LoopM])           s << " ym";
     if (strategy.scramble[LoopN])           s << " yn";
     if (strategy.tlbWarmup)                 s << " wt";
+    if (strategy.tokenAlloc)                s << " tk";
 
     if (strategy.checkAdd32 && !strategy.emulate.emulate64) s << " ch";
     if (!strategy.checkAdd32 && strategy.emulate.emulate64) s << " nch";
@@ -1066,6 +1087,7 @@ void unparseAddressBase(std::ostream &s, ngen::AddressBase base)
     switch (base.getModel()) {
         case ngen::AddressModel::ModelA64:     s << 'a'; break;
         case ngen::AddressModel::ModelCC:      s << 'c'; break;
+        case ngen::AddressModel::ModelSLM:     s << 'l'; break;
         case ngen::AddressModel::ModelSC:      s << 'm'; break;
         case ngen::AddressModel::ModelBTS:     s << 's'; break;
         case ngen::AddressModel::ModelInvalid: s << 'r'; break;

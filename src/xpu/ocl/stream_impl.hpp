@@ -60,14 +60,20 @@ public:
     status_t copy(impl::stream_t *stream, const memory_storage_t &src,
             const memory_storage_t &dst, size_t size, const xpu::event_t &deps,
             xpu::event_t &out_dep,
-            xpu::stream_profiler_t *stream_profiler = nullptr);
+            xpu::stream_profiler_t *stream_profiler = nullptr,
+            xpu::verbose_profiler_t *verbose_profiler = nullptr);
 
     status_t fill(impl::stream_t *stream, const memory_storage_t &dst,
             uint8_t pattern, size_t size, const xpu::event_t &deps,
             xpu::event_t &out_dep,
-            xpu::stream_profiler_t *stream_profiler = nullptr);
+            xpu::stream_profiler_t *stream_profiler = nullptr,
+            xpu::verbose_profiler_t *verbose_profiler = nullptr);
 
     status_t barrier();
+
+    status_t init_verbose_profiler(engine_kind_t kind) override;
+
+    bool queue_has_profiling() const;
 
     const xpu::ocl::context_t &ocl_ctx() const;
     xpu::ocl::context_t &ocl_ctx();
@@ -95,7 +101,7 @@ public:
 private:
     cl_command_queue queue_;
 
-    mutable utils::thread_local_storage_t<xpu::ocl::context_t> ctx_;
+    utils::thread_local_storage_t<xpu::ocl::context_t> ctx_;
 };
 
 } // namespace ocl

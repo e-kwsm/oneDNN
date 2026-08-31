@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2026 ZTE Corporation
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -28,6 +29,8 @@
 #include "cpu/matmul/cpu_matmul_pd.hpp"
 
 #include "cpu/rv64/brgemm/brgemm.hpp"
+#include "cpu/rv64/cpu_isa_traits.hpp"
+#include "cpu/rv64/jit_uni_postops_kernel.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -36,25 +39,30 @@ namespace rv64 {
 namespace matmul {
 
 struct jit_pack_a_tile_t;
-struct jit_bias_postops_row_t;
 
 struct rvv_brgemm_matmul_t : public primitive_t {
     struct pd_t : public ::dnnl::impl::cpu::matmul::cpu_matmul_pd_t {
         using ::dnnl::impl::cpu::matmul::cpu_matmul_pd_t::cpu_matmul_pd_t;
 
-        DECLARE_COMMON_PD_T("brgemm:rvv", rvv_brgemm_matmul_t);
+        DECLARE_COMMON_PD_T(
+                JIT_IMPL_NAME_HELPER("brgemm:", isa_, ""), rvv_brgemm_matmul_t);
 
-        status_t init(engine_t *engine);
+        status_t init(const engine_t *engine);
 
         std::shared_ptr<brgemm_kernel_t> brg_kernel_;
         std::shared_ptr<jit_pack_a_tile_t> pack_kernel_;
-        std::shared_ptr<jit_bias_postops_row_t> bias_postops_kernel_;
+        std::shared_ptr<jit_uni_postops_kernel_t> postops_kernel_;
 
         dim_t M_ = 0;
         dim_t N_ = 0;
         dim_t K_ = 0;
         dim_t batch_ = 0;
         bool weights_are_broadcast_ = false;
+        // Input element size in bytes (4=f32, 2=bf16/f16, 1=int8). dst is f32 or s32.
+        int input_typesize_ = 4;
+        // Kernel isa from the input dtype (f32->v / f16->zvfh / bf16->zvfbfwma);
+        // drives the impl name (brgemm:rvv / brgemm:rvv_zvfh / ..._zvfbfwma).
+        cpu_isa_t isa_ = v;
 
     private:
         void init_scratchpad();

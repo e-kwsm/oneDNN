@@ -41,7 +41,7 @@ struct ref_matmul_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("ref:any", ref_matmul_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             using smask_t = primitive_attr_t::skip_mask_t;
             const auto src_type = src_md(0)->data_type;
@@ -52,17 +52,17 @@ struct ref_matmul_t : public primitive_t {
             VDISPATCH_MATMUL(
                     is_dense_format_kind(), VERBOSE_UNSUPPORTED_SPARSE_CFG);
             VDISPATCH_MATMUL(utils::one_of(src_type, f32, bf16, f16, f8_e5m2,
-                                     f8_e4m3, f4_e2m1, f4_e3m0),
+                                     f8_e4m3, f4_e2m1),
                     VERBOSE_UNSUPPORTED_DT);
             VDISPATCH_MATMUL(utils::one_of(wei_type, f32, bf16, f16, f8_e5m2,
-                                     f8_e4m3, f4_e2m1, f4_e3m0, u8, s8, u4, s4),
+                                     f8_e4m3, f4_e2m1, u8, s8, u4, s4),
                     VERBOSE_UNSUPPORTED_DT);
             VDISPATCH_MATMUL(utils::one_of(dst_type, f32, bf16, f16, f8_e5m2,
-                                     f8_e4m3, f4_e2m1, f4_e3m0, u8, s8),
+                                     f8_e4m3, f4_e2m1, u8, s8),
                     VERBOSE_UNSUPPORTED_DT);
             VDISPATCH_MATMUL((src_type == wei_type
-                                     || utils::one_of(wei_type, bf16, f16, u8,
-                                             s8, u4, s4, f4_e3m0)),
+                                     || utils::one_of(wei_type, bf16, f16,
+                                             f8_e5m2, f8_e4m3, u8, s8, u4, s4)),
                     VERBOSE_UNSUPPORTED_DT);
             /* int weights decompression support */
             VDISPATCH_MATMUL(
@@ -70,7 +70,7 @@ struct ref_matmul_t : public primitive_t {
                             attr_.mayiconvert(wei_type, src_type)),
                     VERBOSE_UNSUPPORTED_DT);
             VDISPATCH_MATMUL(IMPLICATION(src_type == f16,
-                                     utils::one_of(dst_type, f32, f16)),
+                                     utils::one_of(dst_type, f32, f16, u8, s8)),
                     VERBOSE_UNSUPPORTED_DT);
             // TODO: any implication on allowed dst data type for fp8?
             VDISPATCH_MATMUL(
@@ -104,14 +104,14 @@ struct ref_matmul_t : public primitive_t {
                     VERBOSE_UNSUPPORTED_POSTOP);
             VDISPATCH_MATMUL(ref_post_ops_t::post_ops_ok(attr()->post_ops_),
                     VERBOSE_UNSUPPORTED_POSTOP);
-            VDISPATCH_MATMUL(attr_scales_ok({DNNL_ARG_SRC, DNNL_ARG_WEIGHTS,
-                                                    DNNL_ARG_DST},
-                                     {quantization_mode::static_sazp,
-                                             quantization_mode::dynamic_mx,
-                                             quantization_mode::dynamic_fp}),
-                    VERBOSE_UNSUPPORTED_SCALES_CFG);
+            CHECK(attr_scales_ok(engine,
+                    {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST},
+                    {quantization_mode::static_sazp,
+                            quantization_mode::dynamic_mx,
+                            quantization_mode::dynamic_fp}));
+            CHECK(attr_zero_points_ok(engine, {DNNL_ARG_WEIGHTS},
+                    {quantization_mode::static_sazp}));
             VDISPATCH_MATMUL(set_default_formats(), VERBOSE_UNSUPPORTED_TAG);
-            VDISPATCH_MATMUL(zero_points_ok(), VERBOSE_UNSUPPORTED_ZP_CFG);
             VDISPATCH_MATMUL(
                     attr_.set_default_formats(dst_md(0)) == status::success,
                     VERBOSE_UNSUPPORTED_POSTOP);
@@ -122,35 +122,11 @@ struct ref_matmul_t : public primitive_t {
             return status::success;
         }
 
-        int nthr_;
-        int ntasks_;
+        int nthr_ = 0;
+        int ntasks_ = 0;
 
     private:
         void init_scratchpad();
-
-        bool zero_points_ok() const {
-            const auto &zp = attr()->zero_points_;
-            if (!zp.has_default_values(DNNL_ARG_SRC)) { return false; }
-            /* weights decompression requires zero points support */
-            if (!zp.has_default_values(DNNL_ARG_WEIGHTS)) {
-                if (!zp.get(DNNL_ARG_WEIGHTS).has_default_groups()) {
-                    const auto gK = zp.get_group(DNNL_ARG_WEIGHTS, 0);
-                    bool ok = IMPLICATION(gK > 1, K() % gK == 0);
-                    if (!ok) return false;
-
-                    const auto gN = zp.get_group(DNNL_ARG_WEIGHTS, 1);
-                    ok = IMPLICATION(gN > 1, N() % gN == 0);
-                    if (!ok) return false;
-
-                    // Only one non-unit group is supported.
-                    ok = utils::one_of(1, gK, gN);
-                    if (!ok) return false;
-                }
-            }
-            if (!zp.has_default_values(DNNL_ARG_DST)) { return false; }
-
-            return true;
-        }
 
         status_t dropout_ok() const {
             if (attr_.dropout_.has_default_values()) return status::success;

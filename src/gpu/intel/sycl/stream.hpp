@@ -59,7 +59,17 @@ struct stream_t : public gpu::intel::stream_t {
         return status::success;
     }
 
-    status_t wait() override { return impl()->wait(); }
+    status_t wait() override {
+        auto status = impl()->wait();
+        // A verbose profiler polling call cannot be added here since sporadic
+        // wait() calls outside the normal primitive execution flow may
+        // interrupt in-flight primitives before all their events are complete.
+        // This causes the profiler to incorrectly log incomplete execution
+        // times and invalidate event storage for pending operations. Unlogged
+        // primitives are instead captured at the next after_exec_hook()
+        // polling cycle or during profiler destruction.
+        return status;
+    }
 
     void before_exec_hook() override;
     void after_exec_hook() override;
@@ -75,6 +85,9 @@ struct stream_t : public gpu::intel::stream_t {
         if (!is_profiling_enabled()) return status::invalid_arguments;
         return profiler_->get_info(data_kind, num_entries, data);
     }
+
+    status_t run_verbose_profiler(const std::string &pd_info, double start_ms,
+            uint64_t component) override;
 
     ::sycl::queue &queue() const { return *impl()->queue(); }
 
@@ -97,28 +110,14 @@ struct stream_t : public gpu::intel::stream_t {
 
     status_t barrier() override { return impl()->barrier(); }
 
-    const xpu::sycl::context_t &sycl_ctx() const { return impl()->sycl_ctx(); }
     xpu::sycl::context_t &sycl_ctx() { return impl()->sycl_ctx(); }
-
     xpu::context_t &ctx() override { return impl()->sycl_ctx(); }
-    const xpu::context_t &ctx() const override { return impl()->sycl_ctx(); }
 
     ::sycl::event get_output_event() const {
         return impl()->get_output_event();
     }
 
-    void register_deps(::sycl::handler &cgh) const {
-        return impl()->register_deps(cgh);
-    }
-
     bool recording() const;
-    using weak_graph_t = ::sycl::ext::oneapi::weak_object<
-            ::sycl::ext::oneapi::experimental::command_graph<::sycl::ext::
-                            oneapi::experimental::graph_state::modifiable>>;
-    weak_graph_t get_current_graph_weak() const;
-
-    status_t enter_immediate_mode() override;
-    status_t exit_immediate_mode() override;
 
 protected:
     xpu::sycl::stream_impl_t *impl() const {
@@ -130,16 +129,6 @@ protected:
 
 private:
     status_t init();
-
-    status_t pause_recording();
-    status_t resume_recording();
-
-    std::mutex immediate_mode_mutex_;
-    int immediate_mode_level_ = 0;
-    std::unique_ptr<::sycl::ext::oneapi::experimental::command_graph<
-            ::sycl::ext::oneapi::experimental::graph_state::modifiable>>
-            paused_graph_;
-    xpu::sycl::event_t paused_dep_;
 };
 
 } // namespace sycl

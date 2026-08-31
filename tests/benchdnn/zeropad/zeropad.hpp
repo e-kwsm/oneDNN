@@ -24,6 +24,7 @@
 #include "dnn_types.hpp"
 #include "dnnl_common.hpp"
 #include "utils/perf_report.hpp"
+#include "utils/prb.hpp"
 #include "utils/settings.hpp"
 
 namespace zeropad {
@@ -49,7 +50,7 @@ struct settings_t : public base_settings_t {
     }
 };
 
-struct prb_t : public prb_dims_t {
+struct prb_t : public prb_dims_t, public base_prb_t {
     // A ctor with common interface across all drivers.
     prb_t(const settings_t &s) : prb_t(s.prb_dims, s.dt[0], s.tag[0]) {
         SAFE_V(s.has_single_setup() ? OK : FAIL);
@@ -64,19 +65,14 @@ struct prb_t : public prb_dims_t {
     dnnl_data_type_t dt;
     std::string tag;
 
-    // Used to construct memory desc when dimensions are runtime since such mds
-    // can't be used directly from query and memory objects can't be constructed.
-    benchdnn_dnnl_wrapper_t<dnnl_memory_desc_t> get_md(int arg) const {
-        assert(!"No runtime dimensions support for this driver!");
-        return make_benchdnn_dnnl_wrapper<dnnl_memory_desc_t>(nullptr);
+    static const prb_t *from(const base_prb_t *base_prb) {
+        return downcast<const prb_t *>(base_prb);
     }
 
-    const char *str() const { return repro.c_str(); }
+    void skip_unimplemented(res_t *res) const override;
 
 private:
-    std::string repro;
-
-    std::string set_repro_line();
+    std::string set_repro_line() override;
 };
 
 struct perf_report_t : public base_perf_report_t {

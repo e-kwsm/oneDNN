@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2019 Intel Corporation
+* Copyright 2026 Advanced Micro Devices, Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,6 +23,7 @@
 
 #include "dnnl_thread.hpp"
 #include "engine.hpp"
+#include "memory_desc.hpp"
 #include "primitive_hashing.hpp"
 
 namespace dnnl {
@@ -56,9 +58,18 @@ bool key_t::operator==(const key_t &rhs) const {
         && pd_iterator_offset_ == rhs.pd_iterator_offset_
         && impl_nthr_ == rhs.impl_nthr_
         && skip_idx_ == rhs.skip_idx_
-        && (*attr_) == (*rhs.attr_)
-        && std::equal(
-            hint_mds_.begin(), hint_mds_.end(), rhs.hint_mds_.begin());
+        && (*attr_) == (*rhs.attr_);
+    if (!ret) {
+        // ANCHOR: HASHING_DEBUGINFO_16.
+        VDEBUGINFO(16, primitive, hashing, "operator==,ret=%d", ret);
+        return ret;
+    }
+
+    for (size_t i = 0; i < rhs.hint_mds_.size(); i++) {
+        // Note: fast exit on `!ret` secures the same-sized hints. Make sure
+        // there will be no access out-of-bounds for hints on both sides.
+        ret = ret && hint_mds_[i] == rhs.hint_mds_[i];
+    }
 
     if (!ret) {
         // ANCHOR: HASHING_DEBUGINFO_16.
@@ -156,6 +167,17 @@ size_t get_md_hash(const memory_desc_t &md) {
                                                 .cublaslt_format));
             seed = hash_combine(
                     seed, (md.format_desc.cublaslt_blocked_desc.size));
+            break;
+        case format_kind::zen_packed:
+            seed = hash_combine(seed, md.format_desc.zen_packed_desc.size);
+            seed = hash_combine(
+                    seed, md.format_desc.zen_packed_desc.per_slice_size);
+            seed = hash_combine(seed,
+                    static_cast<size_t>(
+                            md.format_desc.zen_packed_desc.gemm_src_dt));
+            seed = hash_combine(seed,
+                    static_cast<size_t>(
+                            md.format_desc.zen_packed_desc.weights_transposed));
             break;
         case format_kind::rnn_packed:
             seed = hash_combine(seed,
@@ -752,6 +774,7 @@ size_t get_desc_hash(const sdpa_desc_t &desc) {
     seed = hash_combine(seed, desc.vs_zero_points.get_hash());
     seed = hash_combine(seed, get_md_hash(desc.dS_desc));
     seed = hash_combine(seed, get_md_hash(desc.dst_desc));
+    seed = hash_combine(seed, get_md_hash(desc.stats_desc));
     seed = hash_combine(seed, get_md_hash(desc.diff_dst_desc));
     seed = hash_combine(seed, get_md_hash(desc.diff_q_desc));
     seed = hash_combine(seed, get_md_hash(desc.diff_k_desc));

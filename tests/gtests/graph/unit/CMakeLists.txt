@@ -1,5 +1,6 @@
 #===============================================================================
 # Copyright 2021 Intel Corporation
+# Copyright 2026 Advanced Micro Devices, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -67,6 +68,12 @@ target_link_libraries(${BINARY_NAME}
     ${STATIC_LIB_DEPS}
     ${SHARED_LIB_DEPS}
 )
+
+# Absorbed ${LIB_DEPS} objects need libzendnnl symbols that libdnnl links PRIVATE.
+if(DNNL_X64_USE_ZEN)
+    zendnn_resolve_target(_zendnnl_target)
+    target_link_libraries(${BINARY_NAME} ${_zendnnl_target})
+endif()
 
 get_property(test_suite_names GLOBAL PROPERTY GRAPH_UNIT_TEST_SUITES)
 get_property(test_filters GLOBAL PROPERTY GRAPH_UNIT_TEST_FILTERS)

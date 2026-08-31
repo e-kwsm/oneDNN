@@ -19,6 +19,7 @@
 #include "common.hpp"
 
 #include "utils/compare.hpp"
+#include "utils/dnnl_query.hpp"
 
 #include "self/self.hpp"
 
@@ -102,12 +103,11 @@ void link_args(std::unordered_map<int, graph_link_t> &op_graph) {
 }
 
 template <typename settings_t, typename prb_t, typename init_pd_func_t,
-        typename supported_exec_args_func_t, typename setup_cmp_func_t,
+        typename setup_cmp_func_t,
         /* settings_t here instead */ typename init_desc_t>
 int init_op(std::unordered_map<int, graph_link_t> &op_graph,
-        const init_pd_func_t &init_pd,
-        const supported_exec_args_func_t &supported_exec_args,
-        const setup_cmp_func_t &setup_cmp, res_t *res,
+        const init_pd_func_t &init_pd, const setup_cmp_func_t &setup_cmp,
+        res_t *res,
         /* settings_t here instead */ const init_desc_t &init_func) {
     int op_idx = static_cast<int>(op_graph.size());
     op_graph.emplace(op_idx,
@@ -142,7 +142,7 @@ int init_op(std::unordered_map<int, graph_link_t> &op_graph,
     auto &mems = std::get<1>(op_graph[op_idx]);
     auto &ref_mems = std::get<2>(op_graph[op_idx]);
 
-    init_memory_args<prb_t>(mems, prb, prim, supported_exec_args(prb->dir));
+    init_memory_args(mems, prb, prim, res);
 
     // Initialize reference memories and fill the library memories.
     TIME_FILL(SAFE(init_ref_memory_args(ref_mems, mems, prim, prb, res), WARN));
@@ -218,7 +218,7 @@ int check_correctness(std::unordered_map<int, graph_link_t> &op_graph,
         const auto &mem_fp_md = mem_fp.md_;
         dnn_mem_t mem_fp_golden(mem_fp_md, dnnl_f32, tag::abx, get_cpu_engine(),
                 /* prefill = */ true);
-        SAFE(mem_fp_golden.reorder(mem_fp), WARN);
+        SAFE(mem_fp_golden.reorder(mem_fp, res), WARN);
 
         SAFE(cmp.compare(mem_fp_golden, mem_dt, attr_t(), res), WARN);
     }
@@ -232,8 +232,7 @@ static int check_graph() {
 
 #define INIT_OP(driver) \
     init_op<driver::settings_t, driver::prb_t>(op_graph, driver::init_pd, \
-            driver::supported_exec_args, driver::setup_cmp, res, \
-            fill_##driver##_desc<driver::settings_t>)
+            driver::setup_cmp, res, fill_##driver##_desc<driver::settings_t>)
 
     INIT_OP(conv);
     INIT_OP(eltwise);

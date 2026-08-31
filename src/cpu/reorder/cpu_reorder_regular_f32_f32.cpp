@@ -28,6 +28,7 @@ const impl_list_map_t &regular_f32_f32_impl_list_map() {
     static const impl_list_map_t the_map = REG_REORDER_P({
         // f32 -> f32
         {{f32, f32, 0}, {
+            DNNL_X64_ZEN(CPU_REORDER_INSTANCE(x64::zen::reorder::zen_reorder_t))
             DNNL_X64_ONLY(CPU_REORDER_INSTANCE(x64::brgemm_matmul_copy_reorder_t))
             DNNL_X64_ONLY(CPU_REORDER_INSTANCE(x64::jit_uni_reorder_direct_copy_t))
             DNNL_X64_ONLY(CPU_REORDER_INSTANCE(x64::jit_blk_reorder_t))
@@ -38,6 +39,9 @@ const impl_list_map_t &regular_f32_f32_impl_list_map() {
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_blk_reorder_t))
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_uni_reorder_t))
 
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_blk_reorder_t))
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_uni_reorder_t))
+
             REG_FAST_DIRECT_COPY_F32_F32
 
             REG_SR(f32, any, f32, any, fmt_order::any, spec::reference)
@@ -45,6 +49,7 @@ const impl_list_map_t &regular_f32_f32_impl_list_map() {
             nullptr,
         }},
         {{f32, f32, 3}, {
+            DNNL_X64_ZEN(CPU_REORDER_INSTANCE(x64::zen::reorder::zen_reorder_t))
             DNNL_X64_ONLY(CPU_REORDER_INSTANCE(x64::brgemm_matmul_copy_reorder_t))
             DNNL_X64_ONLY(CPU_REORDER_INSTANCE(x64::jit_uni_reorder_direct_copy_t))
             DNNL_X64_ONLY(CPU_REORDER_INSTANCE(x64::jit_blk_reorder_t))
@@ -53,6 +58,9 @@ const impl_list_map_t &regular_f32_f32_impl_list_map() {
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::brgemm_matmul_copy_reorder_t))
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_blk_reorder_t))
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_uni_reorder_t))
+
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_blk_reorder_t))
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_uni_reorder_t))
 
             REG_FAST_DIRECT_COPY_F32_F32
 
@@ -88,6 +96,9 @@ const impl_list_map_t &regular_f32_f32_impl_list_map() {
             DNNL_AARCH64_ACL_ONLY(CPU_REORDER_INSTANCE(aarch64::acl_reorder_fwd_t))
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_blk_reorder_t))
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_uni_reorder_t))
+
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_blk_reorder_t))
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_uni_reorder_t))
 
             REG_FAST_DIRECT_COPY_F32_F32
 
@@ -141,6 +152,9 @@ const impl_list_map_t &regular_f32_f32_impl_list_map() {
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_blk_reorder_t))
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_uni_reorder_t))
 
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_blk_reorder_t))
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_uni_reorder_t))
+
             REG_FAST_DIRECT_COPY_F32_F32
 
             DNNL_NON_X64_ONLY(REG_SR_BIDIR(f32, any, f32, nCdhw16c))
@@ -192,6 +206,9 @@ const impl_list_map_t &regular_f32_f32_impl_list_map() {
 
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_blk_reorder_t))
             DNNL_AARCH64_ONLY(CPU_REORDER_INSTANCE(aarch64::jit_uni_reorder_t))
+
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_blk_reorder_t))
+            DNNL_RV64_ONLY(CPU_REORDER_INSTANCE(rv64::jit_uni_reorder_t))
 
             REG_FAST_DIRECT_COPY_F32_F32
 

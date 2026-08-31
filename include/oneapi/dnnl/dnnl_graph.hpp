@@ -30,10 +30,10 @@
 #include <utility>
 #include <vector>
 
-/// @addtogroup dnnl_api
-/// @{
-
 namespace dnnl {
+
+/// @addtogroup dnnl_api_cpp
+/// @{
 
 /// @addtogroup dnnl_graph_api Graph API
 /// oneDNN Graph API
@@ -299,7 +299,9 @@ public:
 
     /// Tensor property
     enum class property_type {
-        /// Undefined tensor property.
+        /// Default tensor property. It has the same effect as `variable`.
+        /// TODO(lvtao): remove `undef` and make `variable` the default property
+        /// type in a future release.
         undef = dnnl_graph_tensor_property_undef,
         /// Variable means the tensor may be changed during computation or
         /// between different iterations.
@@ -734,13 +736,38 @@ public:
         return inplace_options;
     }
 
+    /// Returns the scratchpad logical tensor describing the required scratchpad
+    /// buffer for execution. The logical tensor has data type u8 and strided
+    /// layout with a single dimension equal to the scratchpad size in bytes.
+    ///
+    /// @returns A logical tensor describing the scratchpad.
+    logical_tensor get_scratchpad_logical_tensor() const {
+        dnnl_graph_logical_tensor_t lt;
+        error::wrap_c_api(
+                dnnl_graph_compiled_partition_get_scratchpad_logical_tensor(
+                        get(), &lt),
+                "could not get scratchpad logical tensor from "
+                "compiled_partition");
+        return logical_tensor {lt};
+    }
+
     /// Execute a compiled partition.
+    ///
+    /// @note The user can provide a scratchpad tensor for execution. If not
+    /// provided, the library will allocate an internal scratchpad buffer for
+    /// the execution. For user-provided scratchpad tensor, the size is
+    /// determined by the logical tensor returned by the
+    /// #get_scratchpad_logical_tensor API. The user is responsible for the
+    /// memory management of the user-provided scratchpad tensor, including
+    /// allocation, deallocation, and thread-safety.
     ///
     /// @param astream Stream object to run over.
     /// @param inputs A list of input tensors.
     /// @param outputs A list of output tensors.
+    /// @param scratchpad User-provided scratchpad tensor.
     void execute(stream &astream, const std::vector<tensor> &inputs,
-            const std::vector<tensor> &outputs) const {
+            const std::vector<tensor> &outputs,
+            const tensor &scratchpad = tensor()) const {
         std::vector<const_dnnl_graph_tensor_t> c_inputs;
         c_inputs.reserve(inputs.size());
         for (auto &in : inputs) {
@@ -753,10 +780,10 @@ public:
         }
 
         error::wrap_c_api(
-                dnnl_graph_compiled_partition_execute(get(), astream.get(),
+                dnnl_graph_compiled_partition_execute_v2(get(), astream.get(),
                         c_inputs.size(), c_inputs.data(), c_outputs.size(),
-                        c_outputs.data()),
-                "could not execute the compiled_partition");
+                        c_outputs.data(), scratchpad.get(true)),
+                "could not execute the compiled_partition with scratchpad");
     }
 };
 
@@ -1690,6 +1717,8 @@ inline status set_dump_mode(graph_dump_mode modes) {
 
 /// @} dnnl_graph_api
 
+/// @} dnnl_api_cpp
+
 } // namespace dnnl
 
 /// @cond DO_NOT_DOCUMENT_THIS
@@ -1705,8 +1734,6 @@ namespace dnnl = ::dnnl;
 } // namespace oneapi
 
 /// @endcond
-
-/// @} dnnl_api
 
 // NOLINTEND(readability-identifier-naming)
 #endif /* ONEAPI_DNNL_DNNL_GRAPH_HPP */

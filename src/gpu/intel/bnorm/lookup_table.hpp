@@ -22,6 +22,7 @@
 #include <unordered_map>
 
 #include "gpu/intel/bnorm/config.hpp"
+#include "gpu/intel/compute/device_info.hpp"
 #include "gpu/intel/config.hpp"
 
 namespace dnnl {
@@ -175,8 +176,9 @@ public:
 
 void maybe_override_bn_conf_params_env(params_t &conf);
 void maybe_override_bn_conf_params_table(
-        params_t &conf, impl::engine_t *engine);
-void maybe_override_bn_conf_params(params_t &conf, impl::engine_t *engine);
+        params_t &conf, const impl::engine_t *engine);
+void maybe_override_bn_conf_params(
+        params_t &conf, const impl::engine_t *engine);
 
 inline std::string getenv_str(const char *s, const std::string &def) {
     char buf[1024];

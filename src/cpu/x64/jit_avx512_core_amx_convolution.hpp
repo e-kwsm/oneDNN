@@ -44,7 +44,7 @@ struct jit_avx512_core_amx_convolution_fwd_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", jcp_.isa, ""),
                 jit_avx512_core_amx_convolution_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             using smask_t = primitive_attr_t::skip_mask_t;
             bool is_bf16_convolution
@@ -132,7 +132,7 @@ struct jit_avx512_core_amx_convolution_bwd_data_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", jcp_.isa, ""),
                 jit_avx512_core_amx_convolution_bwd_data_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             const data_type_t wdt = weights_md_.data_type;
             bool is_xf16_convolution
                     = utils::one_of(wdt, data_type::bf16, data_type::f16)
@@ -200,7 +200,7 @@ struct jit_avx512_core_amx_convolution_bwd_weights_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", jcp_.isa, ""),
                 jit_avx512_core_amx_convolution_bwd_weights_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             VDISPATCH_CONV(is_bwd_w(), VERBOSE_BAD_PROPKIND);
             VDISPATCH_CONV(
@@ -260,15 +260,16 @@ private:
 
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 
-    size_t tr_src_buf_number(const thread_info_t *ti, int g, int ic) const;
-    size_t tr_diff_dst_buf_number(const thread_info_t *ti, int g, int oc) const;
+    size_t tr_src_buf_number(const thread_info_t *ti, dim_t g, dim_t ic) const;
+    size_t tr_diff_dst_buf_number(
+            const thread_info_t *ti, dim_t g, dim_t oc) const;
     void trans_src_nxc(src_data_t *tr_src, const src_data_t *src_base,
-            int spatial_start, dim_t spatial_start_offset, int icb_start,
-            dim_t chb_stride, int my_work) const;
+            dim_t spatial_start, dim_t spatial_start_offset, dim_t icb_start,
+            dim_t chb_stride, dim_t my_work) const;
     void trans_dst_nxc(diff_dst_data_t *tr_diff_dst,
-            const diff_dst_data_t *diff_dst_base, int spatial_start,
-            dim_t spatial_start_offset, int ocb_start, dim_t chb_stride,
-            int my_work) const;
+            const diff_dst_data_t *diff_dst_base, dim_t spatial_start,
+            dim_t spatial_start_offset, dim_t ocb_start, dim_t chb_stride,
+            dim_t my_work) const;
 
     int nthr_ = 0, nthr_mb_ = 0, nthr_g_ = 0, nthr_oc_b_ = 0, nthr_ic_b_ = 0;
 
@@ -280,7 +281,8 @@ private:
     std::unique_ptr<jit_trans_src_t> trans_kernel_;
     std::unique_ptr<jit_trans_dst_t> trans_dst_kernel_;
 
-    inline dim_t wei_offset_int(int g, int oc_b, int ic_b, int kX) const {
+    inline dim_t wei_offset_int(
+            dim_t g, dim_t oc_b, dim_t ic_b, dim_t kX) const {
         const auto &jcp = kernel_->jcp;
         const dim_t const_extra_offset = jcp.kw * jcp.ic_block * jcp.oc_block;
         dim_t extra_offset = (jcp.ndims == 5) ? kX * jcp.kh * const_extra_offset
@@ -289,9 +291,10 @@ private:
                 * jcp.kh * jcp.kw * jcp.ic_block * jcp.oc_block
                 + extra_offset;
     }
-    inline dim_t wei_offset_ext(int g, int oc_b, int ic_b, int kX) const {
+    inline dim_t wei_offset_ext(
+            dim_t g, dim_t oc_b, dim_t ic_b, dim_t kX) const {
         const auto &jcp = kernel_->jcp;
-        const int nb_ic = utils::div_up(jcp.ic, 2 * jcp.ic_block);
+        const dim_t nb_ic = utils::div_up(jcp.ic, 2 * jcp.ic_block);
         const dim_t const_extra_offset
                 = static_cast<dim_t>(jcp.kw) * jcp.ic_block * jcp.oc_block * 2;
         dim_t extra_offset = (jcp.ndims == 5) ? kX * jcp.kh * const_extra_offset

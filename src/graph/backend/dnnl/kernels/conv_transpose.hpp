@@ -41,14 +41,14 @@ namespace dnnl_impl {
 template <bool quantized>
 struct conv_transpose_fwd_t : public conv_base_t {
 public:
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *g_engine,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *eng,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override;
 
     status_t prepare_inplace_pairs_impl() override;
 
     DEF_KERNEL_METHOD_STR(conv_transpose_fwd_t)
+    DEF_KERNEL_METHOD_SCRATCHPAD_SIZE()
 };
 
 using float_convtranspose_fwd = conv_transpose_fwd_t</* quantized */ false>;
@@ -57,22 +57,22 @@ using quantized_convtranspose = conv_transpose_fwd_t</* quantized */ true>;
 #if BUILD_TRAINING
 struct conv_transpose_bwd_data_t : public conv_base_t {
 public:
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *g_engine,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *eng,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override;
 
     DEF_KERNEL_METHOD_STR(conv_transpose_bwd_data_t)
+    DEF_KERNEL_METHOD_SCRATCHPAD_SIZE()
 };
 
 struct conv_transpose_bwd_weights_t : public conv_base_t {
 public:
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *g_engine,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *eng,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override;
 
     DEF_KERNEL_METHOD_STR(conv_transpose_bwd_weights_t)
+    DEF_KERNEL_METHOD_SCRATCHPAD_SIZE()
 };
 #endif
 

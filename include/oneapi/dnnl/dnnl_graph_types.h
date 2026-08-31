@@ -31,7 +31,7 @@ extern "C" {
 #include "oneapi/dnnl/dnnl_common_types.h"
 /// @endcond
 
-/// @addtogroup dnnl_api
+/// @addtogroup dnnl_api_c
 /// @{
 
 /// @addtogroup dnnl_graph_api
@@ -66,7 +66,9 @@ typedef enum {
 
 /// Logical tensor property
 typedef enum {
-    /// Undefined tensor property
+    /// Default tensor property. It has the same effect as `variable`.
+    /// TODO(lvtao): remove `undef` and make `variable` the default property
+    /// type in a future release.
     dnnl_graph_tensor_property_undef = 0,
     /// Variable means the tensor may be changed during computation or between
     /// different iterations.
@@ -491,7 +493,7 @@ typedef const struct dnnl_graph_tensor *const_dnnl_graph_tensor_t;
 
 /// @} dnnl_graph_api
 
-/// @} dnnl_api
+/// @} dnnl_api_c
 
 #ifdef __cplusplus
 }

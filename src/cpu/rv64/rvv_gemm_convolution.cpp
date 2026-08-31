@@ -16,12 +16,13 @@
 *******************************************************************************/
 
 #include <atomic>
-#include <riscv_vector.h>
+#include <vector>
 
 #include "common/c_types_map.hpp"
 #include "common/dnnl_thread.hpp"
 #include "common/type_helpers.hpp"
 #include "common/utils.hpp"
+#include "cpu/rv64/jit_rvv_gemm_convolution_kernel.hpp"
 #include "cpu/rv64/rvv_gemm_convolution.hpp"
 
 namespace dnnl {
@@ -70,6 +71,16 @@ status_t riscv_gemm_convolution_fwd_t::execute_forward_thr_nspc(
         const data_t *src_base, const data_t *wei_base, const data_t *bia_base,
         data_t *dst_base, const memory_tracking::grantor_t &scratchpad) const {
     const conv_gemm_conf_t &jcp = pd()->jcp_;
+
+    // Binary post-op src1 logical origins (scalar or per-oc), one per binary
+    // in chain order; the per-slice channel-base offset is added by the kernel
+    // on top. Empty unless the in-kernel post-op path is active and the chain
+    // has a binary entry.
+    std::vector<const void *> po_rhs;
+    if (jit_postops_kernel_ && jcp.with_binary)
+        po_rhs = binary_injector_utils::prepare_binary_args(
+                pd()->attr()->post_ops_, ctx);
+    const void *const *po_rhs_arr = po_rhs.empty() ? nullptr : po_rhs.data();
 
     // Src Format: mb-spatial-groups-input_channels
     const dim_t src_mb_stride = jcp.id * jcp.ih * jcp.iw * jcp.ngroups * jcp.ic;
@@ -139,7 +150,7 @@ status_t riscv_gemm_convolution_fwd_t::execute_forward_thr_nspc(
             }
         }
 
-        for (int od = 0; od < jcp.od; od++) {
+        for (dim_t od = 0; od < jcp.od; od++) {
             data_t *__restrict dst = dst_base + n * dst_mb_stride
                     + g * dst_g_stride
                     + ((od * jcp.oh + oh) * jcp.ow + ow) * dst_os_stride;
@@ -192,27 +203,31 @@ status_t riscv_gemm_convolution_fwd_t::execute_forward_thr_nspc(
                         if (jcp.with_bias) {
                             size_t n_elems = end_oc - start_oc + 1;
                             if (n_elems > 0) {
-                                size_t oc = 0;
                                 const data_t *b_ptr = bia_arr + start_oc;
                                 data_t *d_ptr = dst_arr + start_oc;
-
-                                while (oc < n_elems) {
-                                    size_t vl = __riscv_vsetvl_e32m1(
-                                            n_elems - oc);
-                                    vfloat32m1_t v_dst = __riscv_vle32_v_f32m1(
-                                            d_ptr + oc, vl);
-                                    vfloat32m1_t v_bias = __riscv_vle32_v_f32m1(
-                                            b_ptr + oc, vl);
-                                    v_dst = __riscv_vfadd_vv_f32m1(
-                                            v_dst, v_bias, vl);
-                                    __riscv_vse32_v_f32m1(
-                                            d_ptr + oc, v_dst, vl);
-                                    oc += vl;
-                                }
+                                jit_rvv_gemm_convolution_apply_bias(
+                                        d_ptr, b_ptr, n_elems);
                             }
                         }
 
-                        if (jcp.with_eltwise || jcp.with_binary) {
+                        if ((jcp.with_eltwise || jcp.with_binary)
+                                && jit_postops_kernel_) {
+                            // Injector chain (eltwise + scalar/per-oc binary)
+                            // over the contiguous oc-slice dst_arr[start_oc ..
+                            // end_oc]; the per-channel bias was already applied
+                            // above. A per-oc binary rhs is read at base + off0,
+                            // where off0 is the slice's channel-base byte offset
+                            // (group g, local channel start_oc); scalars ignore
+                            // it.
+                            jit_uni_postops_kernel_t::call_params_t cp;
+                            cp.dst = dst_arr + start_oc;
+                            cp.bias = nullptr;
+                            cp.rhs = po_rhs_arr;
+                            cp.off0 = (dim_t)(((size_t)g * jcp.oc + start_oc)
+                                    * sizeof(float));
+                            cp.len = (dim_t)(end_oc - start_oc + 1);
+                            (*jit_postops_kernel_)(&cp);
+                        } else if (jcp.with_eltwise || jcp.with_binary) {
                             bool fast_relu_done = false;
                             if (jcp.with_eltwise && jcp.post_ops.len() == 1) {
                                 // fast branch for ReLU case
@@ -359,50 +374,8 @@ status_t riscv_gemm_convolution_fwd_t::execute_forward_ncsp(
                                 data_t b = jcp.with_bias ? bias[oc_start + oc]
                                                          : 0;
                                 data_t *d_ = _dst + oc * M;
-
-                                if (eltwise.alpha == 0.0f) {
-                                    int oS = 0;
-                                    while (oS < m) {
-                                        size_t vl
-                                                = __riscv_vsetvl_e32m1(m - oS);
-                                        vfloat32m1_t v_d
-                                                = __riscv_vle32_v_f32m1(
-                                                        d_ + oS, vl);
-                                        v_d = __riscv_vfadd_vf_f32m1(
-                                                v_d, b, vl); // Add bias
-
-                                        v_d = __riscv_vfmax_vf_f32m1(
-                                                v_d, 0.0f, vl);
-
-                                        if (eltwise.scale != 1.0f) {
-                                            v_d = __riscv_vfmul_vf_f32m1(
-                                                    v_d, eltwise.scale, vl);
-                                        }
-
-                                        __riscv_vse32_v_f32m1(d_ + oS, v_d, vl);
-                                        oS += vl;
-                                    }
-                                } else {
-                                    int oS = 0;
-                                    while (oS < m) {
-                                        size_t vl
-                                                = __riscv_vsetvl_e32m1(m - oS);
-                                        vfloat32m1_t v_d
-                                                = __riscv_vle32_v_f32m1(
-                                                        d_ + oS, vl);
-                                        v_d = __riscv_vfadd_vf_f32m1(
-                                                v_d, b, vl); // Add bias
-                                        vbool32_t mask
-                                                = __riscv_vmflt_vf_f32m1_b32(
-                                                        v_d, 0.0f, vl);
-                                        v_d = __riscv_vfmul_vf_f32m1_m(
-                                                mask, v_d, eltwise.alpha, vl);
-                                        v_d = __riscv_vfmul_vf_f32m1(
-                                                v_d, eltwise.scale, vl);
-                                        __riscv_vse32_v_f32m1(d_ + oS, v_d, vl);
-                                        oS += vl;
-                                    }
-                                }
+                                jit_rvv_gemm_convolution_apply_scalar_bias_relu(
+                                        d_, m, b, eltwise.alpha, eltwise.scale);
                             });
                             fast_relu_done = true;
                         }
@@ -417,7 +390,7 @@ status_t riscv_gemm_convolution_fwd_t::execute_forward_ncsp(
                             args.dst_md = pd()->dst_md();
                             args.l_offset = d_ - dst;
 
-                            for (int oS = 0; oS < m; ++oS) {
+                            for (dim_t oS = 0; oS < m; ++oS) {
                                 d_[oS] += b;
                                 post_ops_->execute(d_[oS], args);
                                 args.l_offset++;
@@ -429,16 +402,7 @@ status_t riscv_gemm_convolution_fwd_t::execute_forward_ncsp(
                     parallel_nd(step.oc, [&](dim_t oc) {
                         data_t b = bias[oc_start + oc];
                         data_t *d_ = _dst + oc * M;
-
-                        int oS = 0;
-                        while (oS < m) {
-                            size_t vl = __riscv_vsetvl_e32m1(m - oS);
-                            vfloat32m1_t v_d
-                                    = __riscv_vle32_v_f32m1(d_ + oS, vl);
-                            v_d = __riscv_vfadd_vf_f32m1(v_d, b, vl);
-                            __riscv_vse32_v_f32m1(d_ + oS, v_d, vl);
-                            oS += vl;
-                        }
+                        jit_rvv_gemm_convolution_apply_scalar_bias(d_, m, b);
                     });
                 }
             }
@@ -468,7 +432,7 @@ status_t riscv_gemm_convolution_fwd_t::execute_forward_ncsp(
 
         if (jcp.loop_order == gemm_loop_rlb)
             for (curr.ic = 0; curr.ic < jcp.ic; curr.ic += step.ic)
-                for (int spatial = start.sp; spatial < end.sp;
+                for (dim_t spatial = start.sp; spatial < end.sp;
                         spatial += step.sp) {
                     nd_iterator_init(spatial, curr.n, jcp.mb, curr.g,
                             jcp.ngroups, curr.od, jcp.od, curr.sp, jcp.os);
@@ -483,7 +447,8 @@ status_t riscv_gemm_convolution_fwd_t::execute_forward_ncsp(
                     }
                 }
         else if (jcp.loop_order == gemm_loop_lrb)
-            for (int spatial = start.sp; spatial < end.sp; spatial += step.sp) {
+            for (dim_t spatial = start.sp; spatial < end.sp;
+                    spatial += step.sp) {
                 nd_iterator_init(spatial, curr.n, jcp.mb, curr.g, jcp.ngroups,
                         curr.od, jcp.od, curr.sp, jcp.os);
                 for (curr.ic = 0; curr.ic < jcp.ic; curr.ic += step.ic)

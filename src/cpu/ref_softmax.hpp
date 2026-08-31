@@ -40,7 +40,7 @@ struct ref_softmax_fwd_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("ref:any", ref_softmax_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             using skip_mask_t = primitive_attr_t::skip_mask_t;
 
@@ -183,7 +183,7 @@ private:
 
     std::unique_ptr<ref_post_ops_t> ref_post_ops;
     bool use_dense_;
-    int outer_size_, channels_, inner_size_;
+    dim_t outer_size_, channels_, inner_size_;
 };
 
 struct ref_softmax_bwd_t : public primitive_t {
@@ -192,7 +192,7 @@ struct ref_softmax_bwd_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("ref:any", ref_softmax_bwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             bool ok = !is_fwd()
                     && utils::one_of(dst_md()->data_type, f32, bf16, f16)
@@ -245,7 +245,7 @@ private:
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 
     bool use_dense_;
-    int outer_size_, channels_, inner_size_;
+    dim_t outer_size_, channels_, inner_size_;
 };
 
 } // namespace cpu

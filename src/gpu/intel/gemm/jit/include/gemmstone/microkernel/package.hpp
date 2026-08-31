@@ -17,6 +17,10 @@
 #ifndef GEMMSTONE_INCLUDE_GEMMSTONE_MICROKERNEL_PACKAGE_HPP
 #define GEMMSTONE_INCLUDE_GEMMSTONE_MICROKERNEL_PACKAGE_HPP
 
+#include <algorithm>
+#include <array>
+#include <string>
+
 #include "gemmstone/microkernel/protocol.hpp"
 
 GEMMSTONE_NAMESPACE_START
@@ -25,6 +29,54 @@ namespace microkernel {
 struct Argument;
 struct RegisterRange;
 struct Setting;
+
+struct ClobberSet {
+    static constexpr int maxRegs = 512;
+    static constexpr int maxAcc = 16;
+    static constexpr int maxFlag = 16;
+    std::array<bool, maxRegs> clobbered = {};
+    std::array<bool, maxAcc> accClobbered = {};
+    std::array<bool, maxFlag> flagClobbered = {};
+
+    void clear() { clobbered.fill(false); accClobbered.fill(false); flagClobbered.fill(false); }
+    bool empty() const { return std::none_of(clobbered.begin(), clobbered.end(), [](bool b) { return b; }); }
+    size_t size() const { return clobbered.size(); }
+    bool operator[](uint32_t reg) const { return clobbered[reg]; }
+    bool &operator[](uint32_t reg) { return clobbered[reg]; }
+
+    bool acc(uint32_t idx) const { return idx < maxAcc && accClobbered[idx]; }
+    bool flag(uint32_t idx) const { return idx < maxFlag && flagClobbered[idx]; }
+
+    void addAcc(uint32_t start, uint32_t len) {
+        for (uint32_t i = start; i < start + len && i < maxAcc; i++)
+            accClobbered[i] = true;
+    }
+    void addFlag(uint32_t start, uint32_t len) {
+        for (uint32_t i = start; i < start + len && i < maxFlag; i++)
+            flagClobbered[i] = true;
+    }
+
+    std::string str() const {
+        std::string out = "{";
+        int i = 0;
+        while (i < maxRegs) {
+            int start = i;
+            while (i < maxRegs && clobbered[i]) i++;
+            i++;
+            if(i == start + 1) continue;
+            if (out.size() > 1) out += ", ";
+            out += "r" + std::to_string(start);
+            if (i - 2 > start) out += "-r" + std::to_string(i - 2);
+        }
+        out += "}";
+        return out;
+    }
+
+    void add(uint32_t regStart, uint32_t regLen) {
+        for (uint32_t i = regStart; i < regStart + regLen && i < maxRegs; i++)
+            clobbered[i] = true;
+    }
+};
 
 // Microkernel package.
 // Fields marked [*] are automatically filled in by finalize().
@@ -47,6 +99,7 @@ struct Package {
     /* Register usage */
     std::vector<Argument> arguments; // Input and output arguments for microkernel
     std::vector<RegisterRange> clobbers; // Registers clobbered by microkernel (includes arguments) [*]
+    uint32_t argumentBase = 0; // First GRF byte used by microkernel; host thread payload lies below
 
     /* Requirements */
     uint32_t gmdidCompat; // Compatible GMDID
@@ -67,13 +120,19 @@ struct Package {
     }
 
     enum class Status {
+        Pending,
         Success,
         UncertainClobbers,
         UnsupportedHW,
     };
 
+    Status status = Status::Pending;
+
     // Analyzes the package and deduces information from the raw microkernel binary.
-    Status finalize();
+    // Note: if any ARF registers are used, they must be declared in knownClobbers, which
+    // indicates that the microkernel has save/restore code for those registers. Only supports
+    // acc/flag ARF registers so far
+    Status finalize(const ClobberSet &knownClobbers = {});
 };
 
 // Contiguous span of register space.

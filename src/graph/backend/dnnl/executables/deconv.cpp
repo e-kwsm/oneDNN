@@ -62,25 +62,25 @@ std::optional<::sycl::event> deconv_fwd_executable_t::execute_sycl(
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-cl_event deconv_fwd_executable_t::execute_ocl(const stream &stream,
+ocl_event_t deconv_fwd_executable_t::execute_ocl(const stream &stream,
         const std::unordered_map<int, memory> &args,
-        const std::vector<cl_event> &deps) const {
-    auto ocl_deps = deps;
+        const std::vector<ocl_event_t> &deps) const {
+    std::vector<cl_event> ocl_deps(deps.begin(), deps.end());
+    ocl_event_t reorder_event;
     if (with_sum_) {
         const memory &psrc_mem = args.find(DNNL_GRAPH_ARG_POST_SRC)->second;
         const memory &dst_mem = args.find(DNNL_ARG_DST)->second;
         if (psrc_mem.get_data_handle() != dst_mem.get_data_handle()) {
             auto prim = dnnl::reorder(psrc_mem, dst_mem);
-            auto e = dnnl::ocl_interop::execute(prim, stream,
+            reorder_event = ocl_event_t(dnnl::ocl_interop::execute(prim, stream,
                     {{DNNL_ARG_FROM, const_cast<memory &>(psrc_mem)},
                             {DNNL_ARG_TO, const_cast<memory &>(dst_mem)}},
-                    deps);
-            // WA: ocl_deps = {e}; may cause compiler warining with GCC 13+.
-            ocl_deps.assign(1, e);
+                    ocl_deps));
+            ocl_deps.assign(1, reorder_event.get());
         }
     }
     auto e = dnnl::ocl_interop::execute(prim_, stream, args, ocl_deps);
-    return e;
+    return ocl_event_t(e);
 }
 #endif
 
@@ -187,7 +187,7 @@ deconv_bwd_data_executable_t::desc_t deconv_bwd_data_executable_t::create_desc(
 
     dnnl::deconvolution_backward_data::primitive_desc pd(p_engine,
             dnnl::algorithm::deconvolution_direct, diff_src, weight, diff_dst,
-            strides, pads_begin, pads_end, fwd_hints);
+            strides, pads_begin, pads_end, fwd_hints, prm_attr);
 
     pd_cache.insert({op.get(), pd});
 
@@ -237,11 +237,11 @@ deconv_bwd_weights_executable_t::create_desc(std::shared_ptr<op_t> &op,
     auto fwd_hints = dnnl::deconvolution_forward::primitive_desc(p_engine,
             dnnl::prop_kind::forward_training,
             dnnl::algorithm::deconvolution_direct, src, diff_weight, diff_dst,
-            strides, dilates, pads_begin, pads_end);
+            strides, dilates, pads_begin, pads_end, prm_attr);
 
     dnnl::deconvolution_backward_weights::primitive_desc pd(p_engine,
             dnnl::algorithm::deconvolution_direct, src, diff_weight, diff_dst,
-            strides, dilates, pads_begin, pads_end, fwd_hints);
+            strides, dilates, pads_begin, pads_end, fwd_hints, prm_attr);
 
     pd_cache.insert({op.get(), pd});
 

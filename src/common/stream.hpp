@@ -26,7 +26,7 @@
 #include "common/stream_impl.hpp"
 #include "common/utils.hpp"
 
-struct dnnl_stream : public dnnl::impl::c_compatible {
+struct dnnl_stream {
     dnnl_stream(dnnl::impl::engine_t *engine, dnnl::impl::stream_impl_t *impl)
         : engine_(engine), impl_(impl) {}
     virtual ~dnnl_stream() = default;
@@ -72,6 +72,17 @@ struct dnnl_stream : public dnnl::impl::c_compatible {
     }
 
     bool is_profiling_enabled() const { return impl_->is_profiling_enabled(); }
+
+    bool is_verbose_profiler_enabled() const {
+        return impl_->is_verbose_profiler_enabled();
+    }
+
+    virtual dnnl::impl::status_t run_verbose_profiler(
+            const std::string &pd_info, double start_ms, uint64_t component) {
+        // TODO: Change interface to std::string &&pd_info to allow direct
+        // move into primitive profiling data, avoiding string copy overhead
+        return dnnl::impl::status::unimplemented;
+    }
 
     virtual dnnl::impl::status_t zero_pad(const dnnl::impl::memory_t *memory,
             const dnnl::impl::exec_ctx_t &ctx);

@@ -57,7 +57,7 @@ struct pd_t : public gemm::pd_t {
     using gemm::pd_t::pd_t;
 
     // Assumes desc() was already initialized with default formats
-    status_t init(impl::engine_t *engine, compute::gpu_arch_t arch) {
+    status_t init(const impl::engine_t *engine, compute::gpu_arch_t arch) {
 
         arch_ = arch;
         with_sround_ = attr()->rounding_mode_.get(DNNL_ARG_DST)
@@ -96,11 +96,11 @@ struct pd_t : public gemm::pd_t {
                 binary_div, binary_min, binary_max);
     }
 
-    status_t init_post_ops(impl::engine_t *engine);
-    status_t init_attrs(impl::engine_t *engine);
-    status_t scales_ok(impl::engine_t *engine);
-    status_t zp_ok(impl::engine_t *engine);
-    status_t gs_ok(impl::engine_t *engine);
+    status_t init_post_ops(const impl::engine_t *engine);
+    status_t init_attrs(const impl::engine_t *engine);
+    status_t scales_ok(const impl::engine_t *engine);
+    status_t zp_ok(const impl::engine_t *engine);
+    status_t gs_ok(const impl::engine_t *engine);
 
     dim_t ld_binary(int idx) const;
     dim_t stride_binary(int idx, int stride = 0) const;
@@ -197,6 +197,7 @@ struct pd_t : public gemm::pd_t {
     bool with_c_scales() const {
         return !attr()->scales_.has_default_values(DNNL_ARG_DST);
     }
+    bool with_inlined_c_scale() const;
 
     bool with_a_zero_points() const { return (a_quant.zp_ndims >= 0); }
     bool with_b_zero_points() const { return (b_quant.zp_ndims >= 0); }
@@ -214,9 +215,9 @@ struct pd_t : public gemm::pd_t {
     bool b_scales_2d() const { return b_quant.scale_ndims > 1; }
     bool c_scales_2d() const { return c_quant.scale_ndims > 1; }
 
-    bool dy_quant_enabled();
-    bool wei_decomp();
-    bool quant_enabled();
+    bool dy_quant_enabled() const;
+    bool wei_decomp() const;
+    bool quant_enabled() const;
 
     bool swap_ab() const { return swap_ab_; }
 

@@ -51,7 +51,7 @@ struct jit_uni_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
                         isa == avx2 && jcp_.has_vnni ? avx2_vnni : isa, ""),
                 jit_uni_x8s8s32x_1x1_convolution_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             using smask_t = primitive_attr_t::skip_mask_t;
 
@@ -235,7 +235,7 @@ struct jit_uni_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
             return weights_md_ == want_wei_md;
         }
 
-        status_t depthwise_po_init(engine_t *engine) {
+        status_t depthwise_po_init(const engine_t *engine) {
             using namespace memory_tracking;
             auto &jcp_1x1 = jcp_;
             primitive_attr_t attr_1x1(*attr());
@@ -314,8 +314,8 @@ struct jit_uni_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
             while (jcp_1x1.nb_load_blocking % jcp_dw_->nb_ch_blocking != 0)
                 --jcp_dw_->nb_ch_blocking;
 
-            jcp_dw_->dw_conv_buffer_oc
-                    = jcp_1x1.nb_load_blocking * jcp_1x1.oc_block;
+            jcp_dw_->dw_conv_buffer_oc = static_cast<int>(
+                    jcp_1x1.nb_load_blocking * jcp_1x1.oc_block);
             jcp_1x1.bcast_loop_output_step = jcp_1x1.ur
                     * (jcp_1x1.nb_load_blocking * jcp_1x1.oc_block)
                     * jcp_1x1.typesize_out;

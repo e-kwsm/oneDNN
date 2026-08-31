@@ -14,116 +14,178 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include "gpu/intel/include/post_ops.h"
 #include "gpu/intel/include/types.h"
 
 // Grouped GEMM OCL reference kernel
 //
-// For each group g:
-//  C[g] = A[g] * B[g] + bias[g],
-//  where A[g] is M_g x K, B[g] is K x N, C[g] is M_g x N
+// Per group g: C[g] = A[g] * B[g] (+ bias / scales / zero-points for 2Dx3D)
 //
-// Memory layout:
-//  A/src: [total_tokens, K] with grouped encoding (values in buffer 0, offsets in buffer 1)
-//  B/wei: [num_experts, K, N] dense 3D tensor
-//  C/dst: [total_tokens, N] with grouped encoding (values in buffer 0, offsets in buffer 1)
+// 2D grouped src (variable M) x 3D dense wei -> 2D grouped dst (variable M)
+// partner_offsets buffer is dst_offsets
 //
-// offsets is an array of size group_count, with cumulative values [M_0, M_0 + M_1, M_0 + M_1 + M_2, ...]
-// Note, that M_g can be zero for some groups
+// 2D grouped src (variable K) x 2D grouped wei (variable M) -> dense 3D dst
+// partner_offsets buffer is wei_offsets
+//
+// Both patterns are unified via runtime strides + per-group bases:
+//   idx = base + i * stride_i + j * stride_j
+//   base = group_start * group_stride
 //
 // get_global_id(0): group index
-// get_global_id(1): output row (M dimension within group)
-// get_global_id(2): output column (N dimension)
-
-// Supported below:
-//  Data types: f32, f16, bf16
-//  Row-wise (per-token) src scales
-//  Column-wise weight scales
-//  Bias addition (shape [group_count, N])
-__kernel void ref_grouped_gemm_matmul(
-        __global const SRC_DATA_T *src, // Buffer 0: concatenated values
-        __global const int
-                *src_offsets, // Buffer 1: group offsets [group_count]
-        __global const WEI_DATA_T *wei, // Dense weights [group_count, K, N]
-        __global DST_DATA_T *dst, // Buffer 0: concatenated output values
-        __global const int
-                *dst_offsets, // Buffer 1: output group offsets [group_count]
-        const int group_count // Number of groups
+// get_global_id(1): output row (m)
+// get_global_id(2): output column (n)
+//
+// Supported:
+//  f32/f16/bf16
+// For 2Dx3D only:
+//  u8/s8 src, u8/s8/s4/u4/f8/f4 wei (incl. WOQ)
+//  row/col-wise or K-grouped scales & zero-points
+//  bias [group_count, N] and post-ops
+__kernel void ref_grouped_gemm_matmul(__global const SRC_DATA_T *src,
+        __global const int *src_offsets, __global const WEI_DATA_T *wei,
+        __global const int *partner_offsets, __global DST_DATA_T *dst,
+        const int group_count, const int is_2dby2d, const long m_fixed,
+        const long k_fixed, const long N, const long src_stride_m,
+        const long src_stride_k, const long wei_stride_k,
+        const long wei_stride_n, const long dst_stride_m,
+        const long dst_stride_n, const long src_group_stride,
+        const long wei_group_stride, const long dst_group_stride,
+        const long n_k_groups
 #if WITH_BIAS
         ,
         __global const BIA_DATA_T *bias // Bias [group_count, N]
 #endif
 #if WITH_SRC_SCALES
         ,
-        __global const float *src_scales
+        __global const SRC_SCALES_DATA_T *src_scales,
+        const long src_scale_ngroups_k
 #endif
 #if WITH_WEI_SCALES
         ,
-        __global const float *wei_scales
+        __global const WEI_SCALES_DATA_T *wei_scales,
+        const long wei_scale_ngroups_k
 #endif
-) {
-
-    const int group_id = get_global_id(0);
-    const int m = get_global_id(1);
-    const int n = get_global_id(2);
-
-    const int src_start = (group_id == 0) ? 0 : src_offsets[group_id - 1];
-    const int src_end = src_offsets[group_id];
-    const int M = src_end - src_start;
+#if WITH_SRC_ZPOINTS
+        ,
+        __global const SRC_ZP_DATA_T *src_zero_points,
+        const long src_zp_ngroups_k
+#endif
+#if WITH_WEI_ZPOINTS
+        ,
+        __global const WEI_ZP_DATA_T *wei_zero_points,
+        const long wei_zp_ngroups_k
+#endif
+                POST_OP_ARGS) {
+    const off_t group_id = get_global_id(0);
+    const long m = get_global_id(1);
+    const long n = get_global_id(2);
 
     if (group_id >= group_count) return;
     if (n >= N) return;
-    if (K <= 0) return;
-    if (m >= M) return; // upper bound is currently very large (total_tokens)
-    if (M <= 0) return; // skip empty or invalid groups
 
-    const int dst_start = (group_id == 0) ? 0 : dst_offsets[group_id - 1];
-    const int dst_end = dst_offsets[group_id];
-    const int dst_M = dst_end - dst_start;
+    const int src_start = (group_id == 0) ? 0 : src_offsets[group_id - 1];
+    const int src_end = src_offsets[group_id];
+    const int var_extent
+            = src_end - src_start; // M_g or K_g depending on the pattern
 
-    if (dst_M != M)
-        return; // src and dst must have same token count per group for now
-
-    const long src_offset = (long)src_start * K;
-    const long wei_offset = (long)group_id * K * N;
-    const long dst_offset = (long)dst_start * N;
-
-    __global const SRC_DATA_T *src_group = src + src_offset;
-    __global const WEI_DATA_T *wei_group = wei + wei_offset;
-    __global DST_DATA_T *dst_group = dst + dst_offset;
-
-    ACC_DATA_T acc = (ACC_DATA_T)0;
-    for (int k = 0; k < K; k++) {
-        const long src_idx = (long)m * K + k;
-#if WEI_TRANSPOSED
-        const long wei_idx = (long)n * K + k;
-#else
-        const long wei_idx = (long)k * N + n;
-#endif
-        ACC_DATA_T src_val = SRC_TO_REF(src_group[src_idx]);
-        ACC_DATA_T wei_val = WEI_TO_REF(wei_group[wei_idx]);
-        acc += src_val * wei_val;
+    long M_g, K_g;
+    off_t src_group_start, wei_group_start, dst_group_start;
+    if (is_2dby2d) {
+        // partner_offsets == wei_offsets
+        if (partner_offsets[group_id] != src_end
+                || (group_id > 0 && partner_offsets[group_id - 1] != src_start))
+            return;
+        M_g = m_fixed;
+        K_g = var_extent;
+        src_group_start = src_start; // along total_K
+        wei_group_start = src_start; // along total_K
+        dst_group_start = group_id; // dense [G, M, N]
+    } else {
+        // partner_offsets == dst_offsets
+        const int dst_start
+                = (group_id == 0) ? 0 : partner_offsets[group_id - 1];
+        const int dst_end = partner_offsets[group_id];
+        if (dst_end - dst_start != var_extent) return;
+        M_g = var_extent;
+        K_g = k_fixed;
+        src_group_start = src_start; // along total_M
+        wei_group_start = group_id; // dense [G, K, N]
+        dst_group_start = dst_start; // along total_M
     }
 
-    // Apply row-wise src scale
-#if WITH_SRC_SCALES
-    const int token_idx = src_start + m;
-    const float src_scale = src_scales[token_idx];
-    acc *= (ACC_DATA_T)src_scale;
-#endif
+    // Note, that K_g == 0 must still write zeros
+    if (M_g == 0 || m >= M_g) return;
 
-    // Apply column-wise weight scale
-#if WITH_WEI_SCALES
-    const long wei_scale_idx = (long)group_id * N + n;
-    const float wei_scale = wei_scales[wei_scale_idx];
-    acc *= (ACC_DATA_T)wei_scale;
+    const long src_base = src_group_start * src_group_stride;
+    const long wei_base = wei_group_start * wei_group_stride;
+    const long dst_base = dst_group_start * dst_group_stride;
+
+    // src attribute row (global token) = group start + local row
+    const long src_attr_row = src_group_start + m;
+    const long k_group_size = K_g / n_k_groups;
+
+    FLT_ACC_DATA_T acc = 0;
+    for (long i_group = 0; i_group < n_k_groups; i_group++) {
+        ACC_DATA_T acc_g = (ACC_DATA_T)0;
+        for (long k = 0; k < k_group_size; k++) {
+            const long k_abs = k + i_group * k_group_size;
+            const long src_idx
+                    = src_base + m * src_stride_m + k_abs * src_stride_k;
+            const long wei_idx
+                    = wei_base + k_abs * wei_stride_k + n * wei_stride_n;
+            int src_zp = 0;
+#if WITH_SRC_ZPOINTS
+            src_zp = SRC_ZP_TO_REF(src_zero_points,
+                    src_attr_row * src_zp_ngroups_k
+                            + i_group * src_zp_ngroups_k / n_k_groups);
 #endif
+            int wei_zp = 0;
+#if WITH_WEI_ZPOINTS
+            wei_zp = WEI_ZP_TO_REF(wei_zero_points,
+                    group_id * wei_zp_ngroups_k * N
+                            + (i_group * wei_zp_ngroups_k / n_k_groups) * N
+                            + n);
+#endif
+#if SRC_DT_F4_E2M1
+            ACC_DATA_T s
+                    = TO_ACC(SRC_TO_REF(GET_HALF_BYTE(src, src_idx)) - src_zp);
+#else
+            ACC_DATA_T s = TO_ACC(SRC_TO_REF(src[src_idx]) - src_zp);
+#endif
+#if WEI_DT_S4 || WEI_DT_U4 || WEI_DT_F4_E2M1
+            ACC_DATA_T w
+                    = TO_ACC(WEI_TO_REF(GET_HALF_BYTE(wei, wei_idx)) - wei_zp);
+#else
+            ACC_DATA_T w = TO_ACC(WEI_TO_REF(wei[wei_idx]) - wei_zp);
+#endif
+            acc_g += s * w;
+        }
+        FLT_ACC_DATA_T src_scale = 1.f;
+        FLT_ACC_DATA_T wei_scale = 1.f;
+#if WITH_SRC_SCALES
+        src_scale = SRC_SCALES_TO_REF(
+                src_scales[src_attr_row * src_scale_ngroups_k
+                        + i_group * src_scale_ngroups_k / n_k_groups]);
+#endif
+#if WITH_WEI_SCALES
+        wei_scale = WEI_SCALES_TO_REF(wei_scales[group_id * wei_scale_ngroups_k
+                        * N
+                + (i_group * wei_scale_ngroups_k / n_k_groups) * N + n]);
+#endif
+        acc += ACC_TO_REF(acc_g) * src_scale * wei_scale;
+    }
 
 #if WITH_BIAS
-    const long bias_idx = (long)group_id * N + n;
-    acc += BIA_TO_REF(bias[bias_idx]);
+    acc += BIA_TO_REF(bias[group_id * N + n]);
 #endif
 
-    const long out_idx = (long)m * N + n;
+    // Post-ops apply to the 2Dx3D pattern only
+    POST_OP_DATA_T po_acc = acc;
+    POST_OP_DATA_T sum_src = 0;
+    APPLY_POST_OPS_SERIAL(
+            po_acc, sum_src, group_id, dst_group_start + m, n, 0, 0, 0);
+    acc = po_acc;
 
-    dst_group[out_idx] = REF_TO_DST(acc);
+    const long dst_idx = dst_base + m * dst_stride_m + n * dst_stride_n;
+    dst[dst_idx] = REF_TO_DST(acc);
 }

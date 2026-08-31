@@ -124,14 +124,7 @@ bool is_imm12(T imm) {
 
 } // namespace
 
-class jit_generator_t : public Xbyak_aarch64::CodeGenerator,
-                        public c_compatible {
-public:
-    using c_compatible::operator new;
-    using c_compatible::operator new[];
-    using c_compatible::operator delete;
-    using c_compatible::operator delete[];
-
+class jit_generator_t : public Xbyak_aarch64::CodeGenerator {
 private:
     const size_t xreg_len = 8;
     const size_t vreg_len_preserve = 8; // Only bottom 8byte must be preserved.
@@ -172,7 +165,6 @@ public:
     const Xbyak_aarch64::XReg X_TMP_3 = x26;
     const Xbyak_aarch64::XReg X_TMP_4 = x27;
     const Xbyak_aarch64::XReg X_DEFAULT_ADDR = x28;
-    const Xbyak_aarch64::XReg X_SP = x21;
     const Xbyak_aarch64::PReg P_TMP = p7;
     const Xbyak_aarch64::PReg P_TMP_0 = p11;
     const Xbyak_aarch64::PReg P_TMP_1 = p12;
@@ -226,8 +218,6 @@ public:
             ptrue(P_NOT_256.b, Xbyak_aarch64::VL32);
             not_(P_NOT_256.b, P_ALL_ONE / Xbyak_aarch64::T_z, P_NOT_256.b);
         }
-
-        mov(X_SP, sp);
     }
 
     void postamble() {
@@ -269,6 +259,16 @@ public:
 
         add_imm(addr, base, off, x_tmp);
         return addr;
+    }
+
+    void ldr_imm(Xbyak_aarch64::XReg reg, Xbyak_aarch64::XReg &addr,
+            uint32_t offset) {
+        if (is_imm12(offset)) {
+            ldr(reg, ptr(addr, offset));
+        } else {
+            add_imm(X_DEFAULT_ADDR, addr, offset, X_DEFAULT_ADDR);
+            ldr(reg, ptr(X_DEFAULT_ADDR));
+        }
     }
 
     inline int compute_off_mul_vl(int off, int size, int cpu_sveLen) {
@@ -328,13 +328,10 @@ public:
         }
     }
 
-    template <typename PRegBHSD, typename T>
-    void set_preg(const PRegBHSD &p, T tail_size,
-            const Xbyak_aarch64::XReg x_tmp0 = Xbyak_aarch64::XReg(DUMMY_IDX),
-            const Xbyak_aarch64::XReg x_tmp1 = Xbyak_aarch64::XReg(DUMMY_IDX)) {
+    template <typename PRegBHSD>
+    void set_preg(const PRegBHSD &p, size_t tail_size,
+            const Xbyak_aarch64::XReg x_tmp) {
         using namespace Xbyak_aarch64;
-
-        assert(tail_size <= 64); // Implemented only for "SVE size <=  512"
 
         switch (tail_size) {
             case 0: pfalse(PRegB(p.getIdx())); return;
@@ -351,10 +348,8 @@ public:
             case 64: ptrue(p, VL64); return;
         }
 
-        assert(x_tmp0.getIdx() != DUMMY_IDX && x_tmp1.getIdx() != DUMMY_IDX);
-        mov_imm(x_tmp0, 0);
-        mov_imm(x_tmp1, tail_size);
-        whilelt(p, x_tmp0, x_tmp1);
+        mov_imm(x_tmp, tail_size);
+        whilelo(p, xzr, x_tmp);
     }
 
     template <typename T>
@@ -674,6 +669,28 @@ public:
         }
     }
 
+    void uni_mov(const Xbyak_aarch64::VReg &d, const Xbyak_aarch64::VReg &s) {
+        mov(d.b16, s.b16);
+    }
+
+    void uni_mov(const Xbyak_aarch64::ZReg &d, const Xbyak_aarch64::ZReg &s) {
+        mov(d.d, s.d);
+    }
+
+    void uni_dup(const Xbyak_aarch64::VReg4S &dst, int32_t value) {
+        assert(value >= -128 && value <= 127);
+
+        if (value >= 0)
+            movi(dst, static_cast<uint32_t>(value));
+        else
+            mvni(dst, static_cast<uint32_t>(~value));
+    }
+
+    void uni_dup(const Xbyak_aarch64::ZRegS &dst, int32_t value) {
+        assert(value >= -128 && value <= 127);
+        dup(dst, value);
+    }
+
     void uni_orr(const Xbyak_aarch64::VReg &d, const Xbyak_aarch64::VReg &s0,
             const Xbyak_aarch64::VReg &s1) {
         orr(d.b16, s0.b16, s1.b16);
@@ -746,6 +763,30 @@ public:
         body();
 
         subs(index_reg, index_reg, 1);
+        bge(loop_begin);
+
+        L(loop_end);
+    }
+
+    // Roughly equivalent to:
+    // for(index = max - step; index >= 0; index -= step) {
+    //   body();
+    // }
+    template <typename TReg, typename Func>
+    void asm_for_step(const TReg &index_reg, const TReg &max_reg, int64_t step,
+            const Func &body) {
+        Xbyak_aarch64::Label loop_begin, loop_end;
+
+        cmp_imm(max_reg, step, X_TMP_0);
+        blt(loop_end);
+
+        sub_imm(index_reg, max_reg, step, X_TMP_0);
+
+        L(loop_begin);
+
+        body();
+
+        subs(index_reg, index_reg, step);
         bge(loop_begin);
 
         L(loop_end);

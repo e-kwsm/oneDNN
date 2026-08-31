@@ -19,9 +19,7 @@
 #include "c_types_map.hpp"
 #include "engine.hpp"
 
-#if defined(DNNL_ENABLE_ITT_TASKS)
 #include "ittnotify.hpp"
-#endif
 
 #include "cache_hit_types.hpp"
 #include "primitive.hpp"
@@ -65,13 +63,11 @@ status_t primitive_create(primitive_iface_t **primitive_iface,
 
     std::pair<primitive_iface_t *, cache_state_t> p_iface;
 
-#if defined(DNNL_ENABLE_ITT_TASKS)
     const bool enable_itt = itt::get_itt(itt::__itt_task_level_low);
     if (enable_itt) {
         itt::primitive_task_start(
                 primitive_desc_iface->impl()->kind(), VERBOSE_create);
     }
-#endif
 
     if (get_verbose(verbose_t::create_profile,
                 prim_kind2_comp_kind(primitive_desc_iface->impl()->kind()))) {
@@ -93,7 +89,6 @@ status_t primitive_create(primitive_iface_t **primitive_iface,
                 p_iface, cache_blob));
     }
 
-#if defined(DNNL_ENABLE_ITT_TASKS)
     if (enable_itt) {
         // Before metadata is added to the ITT task, the `info()` string is
         // checked for initialization.
@@ -104,15 +99,16 @@ status_t primitive_create(primitive_iface_t **primitive_iface,
         const char *pd_info = p_iface.first->pd()->impl()->info(
                 primitive_desc_iface->engine(), false);
         if ((p_iface.second == cache_state_t::miss) || (pd_info && *pd_info)) {
-            auto task_id
+#if defined(DNNL_ENABLE_ITT_TASKS)
+            const __itt_id task_id
                     = itt::make_itt_id(p_iface.first->pd()->info(), get_msec());
             itt::primitive_add_metadata_and_id(
-                    p_iface.first->pd()->info(), VERBOSE_create, task_id);
+                    p_iface.first->pd()->info(), VERBOSE_create, &task_id);
+#endif
         }
 
         itt::primitive_task_end(VERBOSE_create);
     }
-#endif
 
     return safe_ptr_assign((*primitive_iface), p_iface.first);
 }
@@ -123,7 +119,6 @@ status_t primitive_execute(
     status_t status = success;
     auto pd = primitive_iface->pd();
 
-#if defined(DNNL_ENABLE_ITT_TASKS)
     const bool enable_itt = itt::get_itt(itt::__itt_task_level_low);
     if (enable_itt) {
         itt::primitive_task_start(pd->impl()->kind(), VERBOSE_exec);
@@ -136,34 +131,20 @@ status_t primitive_execute(
         const auto *pd_info
                 = pd->impl()->info(primitive_iface->engine(), false);
         if (pd_info && *pd_info) {
+#if defined(DNNL_ENABLE_ITT_TASKS)
             // ITT task IDs are uniquely assigned using pd->info() and
             // timestamps - the timestamps helps distinguish between different
             // instances of the same configuration
-            auto task_id = itt::make_itt_id(pd_info, get_msec());
-            itt::primitive_add_metadata_and_id(pd_info, VERBOSE_exec, task_id);
+            const __itt_id task_id = itt::make_itt_id(pd_info, get_msec());
+            itt::primitive_add_metadata_and_id(pd_info, VERBOSE_exec, &task_id);
+#endif
         }
     }
-#endif
 
     if (get_verbose(verbose_t::exec_profile,
                 prim_kind2_comp_kind(pd->impl()->kind()))) {
-        bool block_on_wait = true;
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
-        dnnl::threadpool_interop::threadpool_iface *tp;
-        auto st = stream->get_threadpool(&tp);
-        const bool is_async_cpu = st == status::success && tp
-                && (tp->get_flags()
-                        & dnnl::threadpool_interop::threadpool_iface::
-                                ASYNCHRONOUS)
-                && stream->engine()->kind() == engine_kind::cpu;
-        block_on_wait = !is_async_cpu;
-#endif
-        if (block_on_wait) stream->wait();
-        double start_ms = get_msec();
-        status = stream->enqueue_primitive(primitive_iface, ctx);
-        if (block_on_wait) stream->wait();
+        std::string pd_info;
 
-        double duration_ms = get_msec() - start_ms;
         if (pd->impl()->has_runtime_dims_or_strides()) {
             // Take out mds from `ctx` here to avoid primitive_desc dependency
             // on `exec_ctx_t` type.
@@ -176,22 +157,44 @@ status_t primitive_execute(
             const auto bia_md = ctx.memory_mdw(DNNL_ARG_BIAS, pd_bia_md).md_;
             const auto pd_dst_md = pd->impl()->invariant_dst_md();
             const auto dst_md = ctx.memory_mdw(DNNL_ARG_DST, pd_dst_md).md_;
-
-            std::string info = pd->info_with_runtime_dims(
+            pd_info = pd->info_with_runtime_dims(
                     src_md, wei_md, bia_md, dst_md);
-            VPROF(start_ms, primitive, exec, VERBOSE_profile, info.c_str(),
+        } else {
+            pd_info = pd->info();
+        }
+
+        if (!stream->is_verbose_profiler_enabled()) {
+            bool block_on_wait = true;
+#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
+            dnnl::threadpool_interop::threadpool_iface *tp;
+            auto st = stream->get_threadpool(&tp);
+            const bool is_async_cpu = st == status::success && tp
+                    && (tp->get_flags()
+                            & dnnl::threadpool_interop::threadpool_iface::
+                                    ASYNCHRONOUS)
+                    && stream->engine()->kind() == engine_kind::cpu;
+            block_on_wait = !is_async_cpu;
+#endif
+
+            if (block_on_wait) stream->wait();
+            double start_ms = get_msec();
+            status = stream->enqueue_primitive(primitive_iface, ctx);
+            if (block_on_wait) stream->wait();
+            double duration_ms = get_msec() - start_ms;
+            VPROF(start_ms, primitive, exec, VERBOSE_profile, pd_info.c_str(),
                     duration_ms);
         } else {
-            VPROF(start_ms, primitive, exec, VERBOSE_profile, pd->info(),
-                    duration_ms);
+            // For OpenCL/SYCL GPU streams, the verbose logs print device-
+            // measured execution times in a non-blocking manner.
+            double start_ms = get_msec();
+            status = stream->enqueue_primitive(primitive_iface, ctx);
+            CHECK(stream->run_verbose_profiler(pd_info, start_ms, 0));
         }
     } else {
         status = stream->enqueue_primitive(primitive_iface, ctx);
     }
 
-#if defined(DNNL_ENABLE_ITT_TASKS)
     if (enable_itt) itt::primitive_task_end(VERBOSE_exec);
-#endif
 
     if (msan_enabled) unpoison_outputs(ctx.args());
 

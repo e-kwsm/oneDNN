@@ -28,14 +28,6 @@ namespace gpu {
 namespace intel {
 namespace jit {
 
-inline ngen::Product get_ngen_product(const compute::device_info_t &info) {
-    ngen::Product ret;
-    std::memcpy(static_cast<void *>(&ret),
-            static_cast<const void *>(&info.gpu_product()),
-            sizeof(ngen::Product));
-    return ret;
-}
-
 inline ngen::DataType convert_dnnl_type_to_ngen(data_type_t dt) {
     using namespace ngen;
 
@@ -114,7 +106,6 @@ inline compute::gpu_arch_t convert_ngen_arch_to_dnnl(ngen::HW gpu_arch) {
 inline data_type_t to_dnnl(const gemmstone::dsl::type_t &type) {
     gpu_assert(type.elems() == 1) << type;
     gpu_assert(!type.is_ptr() == 1) << type;
-    if (type.is_f4_e3m0()) return data_type::f4_e3m0;
     if (type.is_f4_e2m1()) return data_type::f4_e2m1;
     if (type.is_bf8()) return data_type::f8_e5m2;
     if (type.is_hf8()) return data_type::f8_e4m3;
@@ -135,7 +126,6 @@ inline gemmstone::dsl::type_t to_ir(const data_type_t &dt) {
     switch ((int)dt) {
 #define CASE(x) \
     case data_type::x: return gemmstone::dsl::type_t::x();
-        CASE(f4_e3m0);
         CASE(f4_e2m1);
         CASE(f8_e5m2);
         CASE(f8_e4m3);
@@ -153,13 +143,6 @@ inline gemmstone::dsl::type_t to_ir(const data_type_t &dt) {
         default: gpu_error_not_expected();
     }
     return {};
-}
-
-inline compute::gpu_product_t to_gpu_product(const ngen::Product &p) {
-    compute::gpu_product_t result;
-    static_assert(sizeof(ngen::Product) == sizeof(compute::gpu_product_t), "");
-    std::memcpy(&result, &p, sizeof(result));
-    return result;
 }
 
 } // namespace jit

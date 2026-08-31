@@ -31,8 +31,11 @@
 
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
 #include "cpu/cpu_stream.hpp"
-#include "oneapi/dnnl/dnnl_threadpool.h"
 #endif
+
+#define VCHECK_SDP_PRIMITIVE(cond, status, msg, ...) \
+    VCONDCHECK(graph, create, check, sdp_decomp_kernel_t, (cond), status, msg, \
+            ##__VA_ARGS__);
 
 namespace dnnl {
 namespace impl {
@@ -40,12 +43,22 @@ namespace graph {
 namespace dnnl_impl {
 template <bool quantized, memory::data_type dt>
 status_t sdp_decomp_kernel_t<quantized, dt>::compile_impl(
-        const dnnl_partition_impl_t *part, const engine_t *g_engine,
+        const dnnl_partition_impl_t *part, engine_t *eng,
         const std::vector<logical_tensor_t> &inputs,
         const std::vector<logical_tensor_t> &outputs) {
-    p_engine_ = make_dnnl_engine(*g_engine);
-    g_alloc_
-            = reinterpret_cast<graph::allocator_t *>(g_engine->get_allocator());
+    VCHECK_SDP_PRIMITIVE(eng->kind() == engine_kind::cpu, status::unimplemented,
+            "supports cpu only");
+
+#if DNNL_CPU_RUNTIME != DNNL_RUNTIME_OMP \
+        && DNNL_CPU_RUNTIME != DNNL_RUNTIME_THREADPOOL
+    UNUSED(part);
+    UNUSED(inputs);
+    UNUSED(outputs);
+    VCHECK_SDP_PRIMITIVE(false, status::unimplemented,
+            "supports OMP or Threadpool runtime only");
+#else
+
+    p_engine_ = make_dnnl_engine(*eng);
 
     // get subgraph from the deep copied partition
     subgraph_ = std::make_shared<subgraph_t>(
@@ -113,6 +126,7 @@ status_t sdp_decomp_kernel_t<quantized, dt>::compile_impl(
     // Initialize and construct kernel params
     return sdp_cfg_.construct_params<quantized, dt>(
             subgraph_, sdp_registry_, p_engine_, inputs);
+#endif
 }
 
 template <bool quantized, memory::data_type dt>
@@ -160,20 +174,15 @@ void sdp_decomp_kernel_t<quantized, dt>::prepare_sub_args(
 }
 
 template <bool quantized, memory::data_type dt>
-status_t sdp_decomp_kernel_t<quantized, dt>::execute_impl(
-        const stream_t *g_stream, const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs) {
-    dnnl::stream strm = make_dnnl_stream(p_engine_, *g_stream);
+status_t sdp_decomp_kernel_t<quantized, dt>::execute_impl(stream_t *strm,
+        const std::vector<tensor_t> &inputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf) {
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
     auto *tp_stream
             = dnnl::impl::utils::downcast<dnnl::impl::cpu::cpu_stream_t *>(
-                    const_cast<stream_t *>(g_stream));
-    tp_stream->before_exec_hook();
-    int thread_num = 1;
-    dnnl_threadpool_interop_get_max_concurrency(&thread_num);
-    sdp_cfg_.nthr = thread_num;
-    tp_stream->after_exec_hook();
+                    strm);
 #endif
 
     thread_local_cache_t<sdp_args_set_t> res_cache;
@@ -194,10 +203,8 @@ status_t sdp_decomp_kernel_t<quantized, dt>::execute_impl(
     char *dst2_user_pointer = static_cast<char *>(outputs[0].get_data_handle());
 
     size_t block_size = sdp_registry_.size();
-    auto scratchpad = std::make_shared<temporary_scratchpad_t>(
-            block_size * sdp_cfg_.nthr, p_engine_, *g_alloc_);
-    assertm(scratchpad->size() >= sdp_registry_.size(),
-            "no enough scratchpad memory");
+    auto scratchpad = std::make_shared<scratchpad_t>(
+            scratchpad_buf, block_size * sdp_cfg_.nthr, p_engine_);
     grantor_t var_grantor = sdp_registry_.grantor(scratchpad->get_buffer());
 
     const auto get_mem_dt_size = [](const memory &m) -> size_t {
@@ -383,21 +390,21 @@ status_t sdp_decomp_kernel_t<quantized, dt>::execute_impl(
         }
 
         // in parallel region - these primitives should use single thread.
-        sdp_cfg_.sub_reorder0.execute(strm, res->sub_reorder0_args[tid]);
-        sdp_cfg_.sub_reorder1.execute(strm, res->sub_reorder1_args[tid]);
+        sdp_cfg_.sub_reorder0.execute(p_stream, res->sub_reorder0_args[tid]);
+        sdp_cfg_.sub_reorder1.execute(p_stream, res->sub_reorder1_args[tid]);
         dnnl_primitive_execute_without_tp_hook(
-                sdp_cfg_.sub_mm1_prim, strm, res->sub_mm1_args[tid]);
+                sdp_cfg_.sub_mm1_prim, p_stream, res->sub_mm1_args[tid]);
         if (sdp_cfg_.has_select && !sdp_cfg_.select_fusiable)
-            dnnl_primitive_execute_without_tp_hook(
-                    sdp_cfg_.sub_select_prim, strm, res->sub_select_args[tid]);
-        dnnl_primitive_execute_without_tp_hook(
-                sdp_cfg_.sub_softmax_prim, strm, res->sub_softmax_args[tid]);
+            dnnl_primitive_execute_without_tp_hook(sdp_cfg_.sub_select_prim,
+                    p_stream, res->sub_select_args[tid]);
+        dnnl_primitive_execute_without_tp_hook(sdp_cfg_.sub_softmax_prim,
+                p_stream, res->sub_softmax_args[tid]);
 
-        sdp_cfg_.sub_reorder2.execute(strm, res->sub_reorder2_args[tid]);
+        sdp_cfg_.sub_reorder2.execute(p_stream, res->sub_reorder2_args[tid]);
 
         dnnl_primitive_execute_without_tp_hook(
-                sdp_cfg_.sub_mm2_prim, strm, res->sub_mm2_args[tid]);
-        sdp_cfg_.sub_reorder3.execute(strm, res->sub_reorder3_args[tid]);
+                sdp_cfg_.sub_mm2_prim, p_stream, res->sub_mm2_args[tid]);
+        sdp_cfg_.sub_reorder3.execute(p_stream, res->sub_reorder3_args[tid]);
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
         auto tp = threadpool_utils::get_active_threadpool();
         threadpool_utils::activate_threadpool(tp);
@@ -413,7 +420,7 @@ status_t sdp_decomp_kernel_t<quantized, dt>::execute_impl(
     tp_stream->after_exec_hook();
 #endif
 
-    prolong_temporary_scratchpad_lifetime(g_stream, scratchpad);
+    prolong_scratchpad_lifetime(strm, scratchpad);
 
     return status::success;
 }

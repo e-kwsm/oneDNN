@@ -40,44 +40,46 @@ class dnnl_compiled_partition_impl_t : public compiled_partition_impl_t {
     friend class dnnl_partition_impl_t;
 
 public:
-    dnnl_compiled_partition_impl_t(const engine_t &engine,
+    dnnl_compiled_partition_impl_t(engine_t *engine,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs, kernel_ptr &kernel)
         : compiled_partition_impl_t(
                   engine, inputs, outputs, kernel->get_inplace_pairs())
         , kernel_(kernel) {}
 
-    status_t execute(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs) override {
-        // We don't need to resort the inputs and outputs
-        return kernel_->execute(g_stream, inputs, outputs);
+    status_t execute(stream_t *strm, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf) override {
+        return kernel_->execute(strm, inputs, outputs, scratchpad_buf);
     }
 
 #ifdef DNNL_WITH_SYCL
-    status_t execute_sycl(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
+    status_t execute_sycl(stream_t *strm, const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) override {
-        // We don't need to resort the inputs and outputs
         return kernel_->execute_sycl(
-                g_stream, inputs, outputs, sycl_deps, sycl_event);
+                strm, inputs, outputs, scratchpad_buf, sycl_deps, sycl_event);
     }
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
     // It looks very similar to execute_sycl. Consider to merge them in the
     // future.
-    status_t execute_ocl(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
+    status_t execute_ocl(stream_t *strm, const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &ocl_deps,
-            cl_event *ocl_event) override {
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &ocl_deps,
+            ocl_event_t &ocl_event) override {
         return kernel_->execute_ocl(
-                g_stream, inputs, outputs, ocl_deps, ocl_event);
+                strm, inputs, outputs, scratchpad_buf, ocl_deps, ocl_event);
     }
 #endif
+
+    size_t get_scratchpad_size() const override {
+        return kernel_->get_scratchpad_size();
+    }
 
     std::string str() const override { return kernel_->str(); }
 
@@ -116,7 +118,7 @@ public:
     status_t compile(compiled_partition_t *compiled_partition,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs,
-            const engine_t *g_engine) const override;
+            engine_t *eng) const override;
 
     status_t infer_shape(std::vector<const logical_tensor_t *> &inputs,
             std::vector<logical_tensor_t *> &outputs) const override;

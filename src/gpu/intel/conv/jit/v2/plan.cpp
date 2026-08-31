@@ -604,7 +604,7 @@ private:
         int bias_off_elems = 0;
         auto &a_mapper = dim_mapper_manager_.mapper(tensor_kind_t::a);
         auto &b_mapper = dim_mapper_manager_.mapper(tensor_kind_t::b);
-        for (int i = 0; i < outer_size; i++) {
+        for (dim_t i = 0; i < outer_size; i++) {
             auto sub_coord = coord_info_.iter_coord();
             if (!outer_dim.is_undef()) {
                 sub_coord[outer_dim] += sub_tile[outer_dim] * i;
@@ -841,7 +841,7 @@ private:
                 << plan.str() << "\ncheck_plan: out of registers";
         int slm_bound = compute::device_info_t::max_slm_size_per_tg(
                 into<int>(desc_.thread_group_tile.elems()), desc_.regs,
-                to_gpu_product(hw_.product()));
+                hw_.product());
         int slm_bytes = plan.slm_usage_bytes();
         gpu_check(slm_bytes <= slm_bound)
                 << "Plan:\n"

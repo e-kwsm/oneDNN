@@ -2,6 +2,7 @@
 # Copyright 2019 Intel Corporation
 # Copyright 2020 Arm Ltd. and affiliates
 # Copyright 2021 FUJITSU LIMITED
+# Copyright 2026 Advanced Micro Devices, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -84,11 +85,14 @@ if(DNNL_WERROR)
     endif()
 endif()
 
-if (MSVC)
-    if(${CMAKE_CXX_COMPILER_ID} STREQUAL MSVC)
-        # int64_t -> int (tent)
-        append(CMAKE_C_FLAGS "/wd4244")
-        append(CMAKE_CXX_FLAGS "/wd4244")
+# C4244 is only fixed for x64 without ZenDNN, keep it suppressed elsewhere.
+if (NOT DNNL_TARGET_ARCH STREQUAL "X64" OR DNNL_X64_USE_ZEN)
+    if (MSVC)
+        if(${CMAKE_CXX_COMPILER_ID} STREQUAL MSVC)
+            # int64_t -> int (tent)
+            append(CMAKE_C_FLAGS "/wd4244")
+            append(CMAKE_CXX_FLAGS "/wd4244")
+        endif()
     endif()
 endif()
 
@@ -137,6 +141,13 @@ endif()
 
 set(OBJ_LIB ${LIB_PACKAGE_NAME}_cpu)
 add_library(${OBJ_LIB} OBJECT ${SOURCES})
+if (DNNL_X64_USE_ZEN)
+    zendnn_resolve_target(_zendnnl_target)
+    get_target_property(ZENDNN_INCLUDE_DIRS ${_zendnnl_target} INTERFACE_INCLUDE_DIRECTORIES)
+    target_include_directories(${OBJ_LIB} PRIVATE ${ZENDNN_INCLUDE_DIRS})
+    # ZenDNN public headers require C++17. Scoped to this target only.
+    target_compile_features(${OBJ_LIB} PRIVATE cxx_std_17)
+endif()
 set_property(GLOBAL APPEND PROPERTY DNNL_LIB_DEPS
     $<TARGET_OBJECTS:${OBJ_LIB}>)
 

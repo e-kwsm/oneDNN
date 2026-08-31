@@ -85,17 +85,32 @@ static inline std::string to_string(ze_result_t r) {
 #undef ZE_STATUS_CASE
 }
 
+#define MAYBE_REPORT_ZE_ERROR(str) \
+    do { \
+        VERROR(primitive, level_zero, "errcode %s", str); \
+    } while (false)
+
 #define ZE_CHECK(f) \
     do { \
         ze_result_t res_ = (f); \
         if (res_ != ZE_RESULT_SUCCESS) { \
             std::string err_str_ = xpu::ze::to_string(res_); \
-            VERROR(common, level_zero, "errcode %s", err_str_.c_str()); \
+            MAYBE_REPORT_ZE_ERROR(err_str_.c_str()); \
             return status::runtime_error; \
         } \
     } while (false)
 
-status_t ze_initialize();
+#define ZE_CHECK_V(f) \
+    do { \
+        ze_result_t res_ = (f); \
+        if (res_ != ZE_RESULT_SUCCESS) { \
+            std::string err_str_ = xpu::ze::to_string(res_); \
+            MAYBE_REPORT_ZE_ERROR(err_str_.c_str()); \
+            return; \
+        } \
+    } while (false)
+
+ze_result_t ze_initialize();
 
 #if defined(_WIN32)
 #define ZE_LIB_NAME "ze_loader.dll"
@@ -111,12 +126,12 @@ F find_ze_symbol(const char *symbol) {
 
 #define INDIRECT_ZE_CALL(f) \
     template <typename... Args> \
-    status_t f(Args &&...args) { \
-        CHECK(ze_initialize()); \
+    ze_result_t f(Args &&...args) { \
+        ze_result_t init_res_ = ze_initialize(); \
+        if (init_res_ != ZE_RESULT_SUCCESS) return init_res_; \
         static auto f_ = find_ze_symbol<decltype(&::f)>(#f); \
-        if (!f_) return status::runtime_error; \
-        ZE_CHECK(f_(std::forward<Args>(args)...)); \
-        return status::success; \
+        if (!f_) return ZE_RESULT_ERROR_UNINITIALIZED; \
+        return (f_(std::forward<Args>(args)...)); \
     }
 INDIRECT_ZE_CALL(zeDriverGet)
 INDIRECT_ZE_CALL(zeDriverGetProperties)
@@ -142,6 +157,7 @@ INDIRECT_ZE_CALL(zeEventCreate)
 INDIRECT_ZE_CALL(zeEventDestroy)
 INDIRECT_ZE_CALL(zeEventHostSynchronize)
 INDIRECT_ZE_CALL(zeEventQueryKernelTimestamp)
+INDIRECT_ZE_CALL(zeEventQueryStatus)
 INDIRECT_ZE_CALL(zeMemAllocShared)
 INDIRECT_ZE_CALL(zeMemAllocDevice)
 INDIRECT_ZE_CALL(zeMemAllocHost)
@@ -173,44 +189,76 @@ struct destroy_traits;
 template <>
 struct destroy_traits<ze_command_list_handle_t> {
     static void destroy(ze_command_list_handle_t t) {
-        (void)xpu::ze::zeCommandListHostSynchronize(t, UINT64_MAX);
-        (void)xpu::ze::zeCommandListDestroy(t);
+        ZE_CHECK_V(xpu::ze::zeCommandListHostSynchronize(t, UINT64_MAX));
+        auto ze_res = xpu::ze::zeCommandListDestroy(t);
+        if (ze_res != ZE_RESULT_SUCCESS
+                && ze_res != ZE_RESULT_ERROR_UNINITIALIZED) {
+            ZE_CHECK_V(ze_res);
+        }
     }
 };
 
 template <>
 struct destroy_traits<ze_context_handle_t> {
     static void destroy(ze_context_handle_t t) {
-        (void)xpu::ze::zeContextDestroy(t);
+        auto ze_res = xpu::ze::zeContextDestroy(t);
+        if (ze_res != ZE_RESULT_SUCCESS
+                && ze_res != ZE_RESULT_ERROR_UNINITIALIZED) {
+            ZE_CHECK_V(ze_res);
+        }
     }
 };
 
 template <>
 struct destroy_traits<ze_event_handle_t> {
     static void destroy(ze_event_handle_t t) {
-        (void)xpu::ze::zeEventHostSynchronize(t, UINT64_MAX);
-        (void)xpu::ze::zeEventDestroy(t);
+        ZE_CHECK_V(xpu::ze::zeEventHostSynchronize(t, UINT64_MAX));
+        ZE_CHECK_V(xpu::ze::zeEventDestroy(t));
     }
 };
 
 template <>
 struct destroy_traits<ze_event_pool_handle_t> {
     static void destroy(ze_event_pool_handle_t t) {
-        (void)xpu::ze::zeEventPoolDestroy(t);
+        auto ze_res = xpu::ze::zeEventPoolDestroy(t);
+        if (ze_res != ZE_RESULT_SUCCESS
+                && ze_res != ZE_RESULT_ERROR_UNINITIALIZED) {
+            ZE_CHECK_V(ze_res);
+        }
     }
 };
 
+// Kernels are part of the global static kernel cache object. It gets destroyed
+// at static objects destruction point of program destruction. This moment
+// happens after `atexit` system call, when Level Zero library will be unloaded.
+// The unloaded library means there are no Level Zero resources that can be used
+// for proper kernels destruction leading to reporting errors from this
+// wrapper. This error reports specific `ZE_RESULT_ERROR_UNINITIALIZED` error
+// code. Don't print an error message for this and successful codes.
+//
+// Note: since engine object is a singleton in benchdnn, objects created during
+// engine construction shouldn't report `ZE_RESULT_ERROR_UNINITIALIZED` error
+// message, too. Such objects are a context, a list, an event pool and modules
+// associated with kernels.
 template <>
 struct destroy_traits<ze_kernel_handle_t> {
     static void destroy(ze_kernel_handle_t t) {
-        (void)xpu::ze::zeKernelDestroy(t);
+        auto ze_res = xpu::ze::zeKernelDestroy(t);
+        if (ze_res != ZE_RESULT_SUCCESS
+                && ze_res != ZE_RESULT_ERROR_UNINITIALIZED) {
+            ZE_CHECK_V(ze_res);
+        }
     }
 };
 
 template <>
 struct destroy_traits<ze_module_handle_t> {
     static void destroy(ze_module_handle_t t) {
-        (void)xpu::ze::zeModuleDestroy(t);
+        auto ze_res = xpu::ze::zeModuleDestroy(t);
+        if (ze_res != ZE_RESULT_SUCCESS
+                && ze_res != ZE_RESULT_ERROR_UNINITIALIZED) {
+            ZE_CHECK_V(ze_res);
+        }
     }
 };
 
@@ -244,6 +292,8 @@ xpu::device_uuid_t get_device_uuid(ze_device_handle_t device);
 status_t get_device_index(size_t *index, ze_device_handle_t device);
 std::string get_kernel_name(ze_kernel_handle_t kernel);
 ze_memory_type_t get_pointer_type(ze_context_handle_t, const void *ptr);
+status_t create_kernel(ze_kernel_handle_t &kernel,
+        ze_module_handle_t module_handle, const std::string &kernel_name);
 status_t append_memory_copy(ze_command_list_handle_t list,
         std::mutex &list_mutex, void *dst, const void *src, size_t size,
         ze_event_handle_t out_event, uint32_t num_deps_events,

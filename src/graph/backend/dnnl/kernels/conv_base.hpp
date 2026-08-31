@@ -40,8 +40,6 @@ namespace dnnl_impl {
 
 struct conv_base_t : public kernel_base_t {
 protected:
-    allocator_t *g_alloc_ = nullptr;
-
     std::shared_ptr<subgraph_t> subgraph_;
     memory_planner_t memory_planner_;
 
@@ -66,24 +64,26 @@ public:
             const std::vector<tensor_t> &outputs,
             const scratchpad_t &scratchpad);
 
-    status_t execute_impl(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs) override;
+    status_t execute_impl(stream_t *strm, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf) override;
 
 #ifdef DNNL_WITH_SYCL
-    status_t sycl_execute_impl(const stream_t *g_stream,
+    status_t sycl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) override;
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    status_t ocl_execute_impl(const stream_t *g_stream,
+    status_t ocl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &ocl_deps,
-            cl_event *ocl_event) override;
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &ocl_deps,
+            ocl_event_t &ocl_event) override;
 #endif
 
     DNNL_DISALLOW_COPY_AND_ASSIGN(conv_base_t)

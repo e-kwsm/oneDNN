@@ -21,6 +21,7 @@
 #include "ngen_object_helpers.hpp"
 
 #include <algorithm>
+#include <numeric>
 
 GEMMSTONE_NAMESPACE_START
 
@@ -107,7 +108,6 @@ static bool isSubsetOf(DataType dt1, DataType dt2)
     if (isInt4(dt1) && (isB(dt2) || dt2 == DataType::hf8)) return true;
     if (dt1 == DataType::s4 && dt2 == DataType::bf8) return true;
     if (dt1 == DataType::e2m1 && isFP8(dt2)) return true;
-    if (dt1 == DataType::e3m0 && isFP8(dt2)) return true;
     return getBytes(dt1) < getBytes(dt2);
 }
 
@@ -249,6 +249,7 @@ void CopyPlan::transform()
 
     sort(SortType::Register);
 
+    optimizeTranspose();
     optimizeIntegerDownconvert();
     optimizeZip();
     optimizeZipAdjacent();
@@ -273,6 +274,7 @@ void CopyPlan::transform()
 
     legalizeRegions();
     legalizeNegation();
+    legalizeSIMD();
     optimizeSaturate();
 
     sort(SortType::SourceOrder);
@@ -287,10 +289,10 @@ void CopyPlan::transform()
 
     legalizeShfl();
 
-
 #if GEMMSTONE_ENABLE_COPY_PLAN_DUMP
-    if (getVerbose(GEMMVerbose::DebugInfo) >= 170)
-        dump();
+    const auto verbose = getVerbose(GEMMVerbose::DebugInfo);
+    if (verbose >= 170)
+        dump(verbose >= 180);
 #endif
 }
 
@@ -299,7 +301,9 @@ void CopyPlan::transform()
 /* Basic operations on copy plans. */
 CopyInstruction &CopyPlan::append(CopyInstruction &&i)
 {
-    i.cnumMin = i.cnumMax = int16_t(insns.size());
+    auto offset = insns.empty() ? 0 : insns.back().range.end + 1;
+    i.range.start = offset;
+    i.range.end = offset + i.simd - 1;
     insns.push_back(std::move(i));
     return insns.back();
 }
@@ -477,39 +481,40 @@ std::array<CopyInstruction*, n> CopyPlan::splitMultiple(CopyInstruction &i)
 //   a call to mergeChanges.
 CopyInstruction &CopyPlan::join(CopyInstruction &i1, CopyInstruction &i2, int maxGap)
 {
-    // Reorder cnums to be adjacent, if possible, to reduce temporary usage.
+    // Reorder ranges to be adjacent, if possible, to reduce temporary usage.
     CopyInstruction *ifirst = nullptr, *ilast = nullptr;
-    if (i1.cnumMax < i2.cnumMin)
+    if (i1.range.end < i2.range.start)
         ifirst = &i1, ilast = &i2;
-    else if (i2.cnumMax < i1.cnumMin)
+    else if (i2.range.end < i1.range.start)
         ifirst = &i2, ilast = &i1;
 
     if (ifirst && ilast) {
-        bool gapTooLarge = (ifirst->cnumMax + maxGap + 1 < ilast->cnumMin);
-        if (!freezeCNums && trySwapCNumRanges(ilast->cnumMin, ilast->cnumMax, ifirst->cnumMax + 1))
+        bool gapTooLarge = (ifirst->range.end + maxGap + 1 < ilast->range.start);
+        if (!freezeRange && trySwapRanges(ilast->range, ifirst->range.end + 1))
             gapTooLarge = false;
         if (gapTooLarge)
             return invalidInsn;
     }
 
-    i1.cnumMin = std::min(i1.cnumMin, i2.cnumMin);
-    i1.cnumMax = std::max(i1.cnumMax, i2.cnumMax);
+    i1.range |= i2.range;
     i2.invalidate();
 
     return i1;
 }
 
-// Try to swap cnums so that the range [min0, max0] is moved to start at min1.
+// Try to swap ranges so that the range [min0, max0] is moved to start at min1.
 // Returns true if successful.
-bool CopyPlan::trySwapCNumRanges(int16_t min0, int16_t max0, int16_t min1)
+bool CopyPlan::trySwapRanges(const CopyRange &range, int min1)
 {
-    int16_t max1 = min1 + max0 - min0;
+    const auto &min0 = range.start;
+    const auto &max0 = range.end;
+    int max1 = min1 + max0 - min0;
     if (max0 >= min1 && max1 >= min0) return false;       /* ranges overlap */
 
     // Check validity of swap.
-    auto moveOK = [](CopyInstruction &i, int16_t minN, int16_t maxN) -> bool {
-        if (i.cnumMin < minN && i.cnumMax >= minN) return false;
-        if (i.cnumMax > maxN && i.cnumMin <= maxN) return false;
+    auto moveOK = [](CopyInstruction &i, int minN, int maxN) -> bool {
+        if (i.range.start < minN && i.range.end >= minN) return false;
+        if (i.range.end > maxN && i.range.start <= maxN) return false;
         return true;
     };
 
@@ -524,12 +529,12 @@ bool CopyPlan::trySwapCNumRanges(int16_t min0, int16_t max0, int16_t min1)
     }
 
     // Execute swap.
-    int16_t diff = min1 - min0;
+    int diff = min1 - min0;
     auto swap = [=](CopyInstruction &i) {
-        if (i.cnumMin >= min0 && i.cnumMax <= max0)
-            i.cnumMin += diff, i.cnumMax += diff;
-        else if (i.cnumMin >= min1 && i.cnumMax <= max1)
-            i.cnumMin -= diff, i.cnumMax -= diff;
+        if (i.range.start >= min0 && i.range.end <= max0)
+            i.range.start += diff, i.range.end += diff;
+        else if (i.range.start >= min1 && i.range.end <= max1)
+            i.range.start -= diff, i.range.end -= diff;
     };
 
     for (auto &i: insns)    swap(i);
@@ -588,7 +593,8 @@ void CopyPlan::copyThrough(CopyInstruction &i, DataType type, int stride, bool s
         i0.dst = i0.src0;
         i0.dst.offset = (i0.dst.offset * ssize) / isize;
         i0.dst.stride = (i0.dst.stride * ssize) / isize;
-        i0.src1 = i0.src2 = CopyOperand();
+        i0.flag = i0.src1 = i0.src2 = CopyOperand();
+        i0.cmod = ConditionModifier::none;
         i1.src0 = i0.dst;
     } else if (inplaceDst) {
         // Convert dst in place
@@ -596,7 +602,8 @@ void CopyPlan::copyThrough(CopyInstruction &i, DataType type, int stride, bool s
         i1.src0 = i1.dst;
         i1.src0.offset = (i1.src0.offset * dsize) / isize;
         i1.src0.stride = (i1.src0.stride * dsize) / isize;
-        i1.src1 = i1.src2 = CopyOperand();
+        i1.flag = i1.src1 = i1.src2 = CopyOperand();
+        i1.cmod = ConditionModifier::none;
         i0.dst = i1.src0;
     } else {
         // No space for in-place conversion -- create temporary.
@@ -620,7 +627,8 @@ void CopyPlan::copyThrough(CopyInstruction &i, DataType type, int stride, bool s
 
         auto &im = movAfter ? i1 : i0;
         im.op = Opcode::mov;
-        im.src1 = im.src2 = CopyOperand();
+        im.flag = im.src1 = im.src2 = CopyOperand();
+        im.cmod = ConditionModifier::none;
     }
     i1.src0.overwrite = true;
     i0.dst.type = i1.src0.type = type;
@@ -640,12 +648,20 @@ void CopyPlan::copyThrough(CopyInstruction &i, DataType type, int stride, bool s
         return !isSubsetOf(st, dt);
     };
 
+    auto setNullDstRegioning = [](CopyOperand &dst, const CopyOperand &src) {
+        if (!dst.isNull()) return;
+        dst.stride = src.width == 1 ? src.vs : src.stride;
+        dst.width = dst.vs = 0;
+        dst.type = src.type;
+    };
+
+    setNullDstRegioning(i0.dst, i0.src0);
+    setNullDstRegioning(i1.dst, i1.src0);
+
     if (needsSaturate(i0.src0, i0.dst))
         i0.sat = true;
     if (needsSaturate(i1.src0, i1.dst))
         i1.sat = true;
-
-    i0.cmod = ConditionModifier::none;
 }
 
 // Adjust stride on src0.
@@ -667,9 +683,12 @@ void CopyPlan::repositionSrc(CopyInstruction &i, int n, int stride, int offset)
     auto CopyInstruction::* src = (n == 0) ? &CopyInstruction::src0 :
                                   (n == 1) ? &CopyInstruction::src1 :
                                              &CopyInstruction::src2;
-    auto type = (i.*src).type;
+    auto &op = i.*src;
+    auto type = op.type;
+    if (type == DataType::v) type = DataType::w;
+    if (type == DataType::uv) type = DataType::uw;
     auto bytes = getBytes(type);
-    auto abs = (i.*src).abs;
+    auto abs = op.abs;
 
     bool inplaceDst = i.dst
                    && stride * bytes == i.dst.byteStride()
@@ -700,6 +719,12 @@ void CopyPlan::repositionSrc(CopyInstruction &i, int n, int stride, int offset)
     (i1.*src).overwrite = true;
     (i1.*src).abs = abs;
 
+    if (!i1.dst) {
+        i1.dst.stride = i1.src0.width == 1 ? i1.src0.vs : i1.src0.stride;
+        i1.dst.width = i1.dst.vs = 0;
+        i1.dst.type = i1.src0.type;
+    }
+
     i0.cmod = ConditionModifier::none;
     i0.moveToIntegerPipe();
 }
@@ -728,8 +753,8 @@ void CopyPlan::split2DRegions()
     for (auto &i: insns) {
         if ((is2D(i.dst) && !is4(i.dst.type)) || is2D(i.src1) || is2D(i.src2))
             stub("Unsupported 2D region");
-        if (is2D(i.src0)){
-	    if(i.dst.stride > 4)
+        if (is2D(i.src0)) {
+            if (i.dst.stride > 4)
                 continue;
             if (i.flag) stub("Unsupported predication");
             int w = i.src0.width, vs = i.src0.vs, hs = i.src0.stride;
@@ -782,6 +807,8 @@ void CopyPlan::planTypeConversions()
 
     for (auto &i: insns) {
         if (i.op != Opcode::mov) continue;
+        if (i.dst == i.src0) i.invalidate();
+        if (i.isInvalid()) continue;
 
         auto &st = i.src0.type, &dt = i.dst.type;
         auto &srange = i.src0.range;
@@ -814,7 +841,7 @@ void CopyPlan::planTypeConversions()
             rerunZip = true;
         } else if (st == ngen_b16_l4x() && one_of(dt, {DataType::hf, DataType::bf}))
             planInt4ToF16(i);
-        else if (st == DataType::hf && one_of(dt, {DataType::e2m1, DataType::e3m0})) {
+        else if (st == DataType::hf && dt == DataType::e2m1) {
             planEmulatedHFToF4(i);
             rerun = true;
         } else if (isFP4(dt)) {
@@ -893,12 +920,9 @@ void CopyPlan::planTypeConversions()
                     planEmulatedHalveFloat(i);
             }
         } else if (st == DataType::bf8 && dt == DataType::bf) {
-            bfArithmeticOK(i) ? planUnpack8To16High(i)
-                              : copyThrough(i, DataType::hf, 1);
-            rerunZip = true;
-        } else if (st == ngen_b16() && srange == DataType::bf8 && dt == DataType::bf)
-            planEmulatedBF8ToBF(i);
-        else if (st == DataType::hf8 && dt == DataType::hf) {
+            copyThrough(i, DataType::hf, 1);
+            rerun = true;
+        } else if (st == DataType::hf8 && dt == DataType::hf) {
             if (hw < HW::Xe3) {
                 planUnpack8To16High(i);
                 rerunZip = true;
@@ -923,7 +947,7 @@ void CopyPlan::planTypeConversions()
         } else if (st != dt && (isFP8(st) || isFP8(dt))) {
             copyThrough(i, DataType::hf, 1);
             rerun = true;
-        } else if (one_of(st, {DataType::e2m1, DataType::e3m0}) && one_of(dt, {DataType::hf, DataType::bf})) {
+        } else if (st == DataType::e2m1 && one_of(dt, {DataType::hf, DataType::bf})) {
             if (dt == DataType::bf && !bfArithmeticOK(i))
                 copyThrough(i, DataType::hf);
             else
@@ -983,9 +1007,10 @@ bool CopyPlan::planShflUpconvertXe3p(CopyInstruction &i)
     // If dst is integral, only use shfl.idx4 in case 1 and only when src and dst have valid offsets for shfl.idx4.
 
     auto st = i.src0.type, dt = i.dst.type;
-    bool _16 = (getBytes(dt) == 2);
+    const bool _16 = (getBytes(dt) == 2);
+    const auto minElems = _16 ? 32 : 64;  // minimum 4-bit elements per shfl.idx4 instruction
 
-    bool laneAligned = (i.src0.vs == 8 && i.src0.width * getBytes(dt) == 8 && i.src0.stride == 1);
+    bool laneAligned = (i.src0.vs == 8 && i.src0.width * getBytes(dt) == 4 && i.src0.stride == 1);
     if ((i.src0.vs || i.src0.width) && !laneAligned)
         return false;       /* unsupported 2D region */
     if (!laneAligned && i.src0.stride != 1)
@@ -994,32 +1019,31 @@ bool CopyPlan::planShflUpconvertXe3p(CopyInstruction &i)
         return false;       /* unaligned input */
 
     auto x = i.src0, y = i.dst;
-    bool copySrc = !laneAligned || x.byteOffset() >= 4;
-    bool copyDst = (y.stride != 1 || y.offset != 0);
+    const bool copySrc = !laneAligned || x.byteOffset() >= 4;
+    const bool copyDst = (y.stride != 1 || y.offset != 0 || i.simd % minElems);
 
     if (isInt(dt) && (copySrc || copyDst))
         return false;       /* use normal sequence */
 
-    if (i.simd < 16) return false;
     auto lut = getResource(CopyResource::makeShflLUT(st, dt));
     if (!lut)
         return false;       /* no LUT available */
     lut.type = DataType::ud;
     lut.stride = 0;         /* will be fixed up later */
 
-    int orig_simd  = i.simd;
-    if (copySrc){
-         i.simd /= 2;
-         i.simd = std::max(16, i.simd);
-    }
-
-    auto ie = splitMultiple<3>(i);
 
     x.offset >>= (_16 ? 1 : 2);
     x.type = (_16 ? DataType::ub : DataType::uw);
 
-    if (copyDst)
+    int orig_simd  = i.simd;
+    if (copyDst) {
+        // Round up SIMD to ensure a valid shfl.
+        i.simd = round_up(i.simd, minElems);
         y = newTemp(dt, i.simd, 1);
+    }
+
+    i.simd /= (_16 ? 2 : 4);
+    auto ie = splitMultiple<3>(i);
 
     if (copySrc) {
         ie[0]->op = Opcode::mov;
@@ -1028,7 +1052,8 @@ bool CopyPlan::planShflUpconvertXe3p(CopyInstruction &i)
         x.type = (_16 ? DataType::ub : DataType::uw);
         x.stride = (_16 ? 4 : 2);
         ie[0]->dst = x;
-    }
+    } else
+        ie[0]->invalidate();
 
     ie[1]->op = Opcode::shfl;
     ie[1]->dst = y;
@@ -1243,13 +1268,9 @@ CopyOperand CopyPlan::bfImmediate(uint16_t bits, bool ternary)
 // {b,ub}->bf sequence.
 void CopyPlan::planInt8ToBF(CopyInstruction &i)
 {
-    if (i.src0.neg || i.sat || i.hasCMod() || !bfArithmeticOK(i)) {
+    if (i.src0.neg || i.sat || i.hasCMod() || hw == ngen::HW::Xe3p || !bfArithmeticOK(i)) {
         copyThrough(i, DataType::f);
         return;
-    }
-    if (hw == ngen::HW::Xe3p){
-            copyThrough(i, DataType::f);
-            return;
     }
 
     auto ie = splitMultiple<3>(i);
@@ -1285,23 +1306,19 @@ void CopyPlan::planInt8ToBF(CopyInstruction &i)
     ie[2]->src1 = Immediate::hf(0x4000);
 }
 
-void CopyPlan::legalizeBfImmediate(CopyInstruction &i1){
+void CopyPlan::legalizeBfImmediate(CopyInstruction &i1)
+{
     if (i1.src1.kind != CopyOperand::Immediate) return;
-    auto op = i1.op;
     auto temp = newTemp(DataType::uw, i1.simd, 1);
-    auto src0 = i1.src0;
-    auto dst = i1.dst;
+    auto &i2 = split(i1);
 
     i1.op = Opcode::mov;
     i1.dst = temp;
     i1.src0 = Immediate::uw((uint16_t)(i1.src1.value >> 16));
     i1.src0.type = DataType::uw;
+    i1.flag = i1.src1 = i1.src2 = CopyOperand{};
+    i1.cmod = ConditionModifier::none;
 
-    auto &i2 = split(i1);
-
-    i2.op = op;
-    i2.dst = dst;
-    i2.src0 = src0;
     i2.src1 = temp;
     i2.src1.type = DataType::bf;
 }
@@ -1477,14 +1494,14 @@ void CopyPlan::planInt4Upconversion(CopyInstruction &i)
         }
     } else {
         bool even = (i.src0.offset % 2 == 0);
-	if ( i.dst.stride > 4 ) stub("Unsupported stride.");
+        if (i.dst.stride > 4) stub("Unsupported stride.");
         i.src0.stride /= 2;
         i.src0.offset /= 2;
-	if ( getBits(i.dst.type) < 8 ) {
-	    i.dst.type = DataType::ub;
-	    i.dst.stride /= 2;
-	    i.dst.offset /= 2;
-	}
+        if (getBits(i.dst.type) < 8) {
+            i.dst.type = DataType::ub;
+            i.dst.stride /= 2;
+            i.dst.offset /= 2;
+        }
 
         if (even) {
             // Low nybbles
@@ -1510,7 +1527,9 @@ void CopyPlan::planInt4Upconversion(CopyInstruction &i)
         } else {
             // High nybble
             auto tmp = newTemp(i.dst.type, i.simd, i.dst.stride, 1, 0);
-            if(hw == ngen::HW::Xe3p && (i.src0.offset * getBytes(i.src0.type) != i.dst.offset * getBytes(i.dst.type))){
+            auto s0BO = i.src0.offset * getBytes(i.src0.type);
+            auto dBO = i.dst.offset * getBytes(i.dst.type);
+            if (hw == ngen::HW::Xe3p && (s0BO != dBO)) {
                 auto ie = splitMultiple<2>(i);
 
                 // High nybble
@@ -1632,6 +1651,11 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
     ie[0]->dst = stmp;
     ie[0]->src0 = osrc;
 
+    if (isW(osrc.type) && osrc.stride == 1 && osrc.overwrite) {
+        stmp = osrc;
+        ie[0]->invalidate();
+    }
+
     // Special case for expanding 4-bit values already at least byte aligned.
     if (ddst.stride >= sStride && sStride > 1 && ssrc.type == DataType::ub && simd >= 4) {
         int dst_mask = 0x0;
@@ -1678,15 +1702,15 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
             ie[2]->dst = ssrc;
             ie[2]->dst.type = DataType::uw;
             ie[2]->dst.stride = 2;
-	        ie[2]->dst.offset = tmp_off;
+            ie[2]->dst.offset = tmp_off;
             ie[2]->src0 = ssrc;
             ie[2]->src0.type = DataType::uw;
             ie[2]->src0.stride = 2;
-	        ie[2]->src0.offset = tmp_off;
+            ie[2]->src0.offset = tmp_off;
             ie[2]->src1 = Immediate::uw(0x4 * (ddst.offset % mask_granularity));
-	    } else {
+        } else {
             ie[2]->invalidate();
-	    }
+        }
 
         ie[3]->op = Opcode::bfn;
         ie[3]->ctrl = 0xCA;
@@ -1694,11 +1718,11 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
         ie[3]->dst = ddst;
         ie[3]->dst.type = DataType::uw;
         ie[3]->dst.stride = ssrc.stride;
-        ie[3]->dst.offset = ddst.offset/4;
+        ie[3]->dst.offset = ddst.offset / 4;
         ie[3]->src0 = ddst;
         ie[3]->src0.type = DataType::uw;
         ie[3]->src0.stride = ssrc.stride;
-        ie[3]->src0.offset = ddst.offset/4;
+        ie[3]->src0.offset = ddst.offset / 4;
         ie[3]->src1 = ssrc;
         ie[3]->src1.type = DataType::uw;
         ie[3]->src1.stride = ssrc.stride;
@@ -1707,56 +1731,71 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
 
         ie[4]->invalidate();
     } else if (simd > 1 && ddst.stride == 1) {
-        ie[1]->op = Opcode::shl;
-        ie[1]->simd = simd/2;
-        ie[1]->dst = stmp;
-        ie[1]->dst.offset += 1;
-        ie[1]->dst.stride *= 2;
-        ie[1]->src0 = stmp;
-        ie[1]->src0.offset += 1;
-        ie[1]->src0.stride *= 2;
-        ie[1]->src1 = Immediate::uw(0x4);
+        if (hw < HW::Xe3p) {
+            ie[1]->op = Opcode::shl;
+            ie[1]->simd = simd / 2;
+            ie[1]->dst = stmp;
+            ie[1]->dst.offset += 1;
+            ie[1]->dst.stride *= 2;
+            ie[1]->src0 = stmp;
+            ie[1]->src0.offset += 1;
+            ie[1]->src0.stride *= 2;
+            ie[1]->src1 = Immediate::uw(0x4);
+        } else {
+            // Single-instruction shift + alignment
+            // Note: clobbers even words in tmp
+            ie[1]->op = Opcode::shr;
+            ie[1]->simd = simd / 2;
+            ie[1]->dst = tmp;
+            ie[1]->dst.type = DataType::uw;
+            ie[1]->dst.stride = stmp.stride * 2;
+            ie[1]->dst.offset = stmp.offset;
+            ie[1]->src0 = stmp;
+            ie[1]->src0.type = DataType::ud;
+            ie[1]->src0.offset /= 2;
+            ie[1]->src1 = Immediate::uw(0xC);
+        }
 
         ie[2]->op = Opcode::bfn;
-        ie[2]->ctrl = 0xEC;
-        ie[2]->simd = simd/2;
-        ie[2]->dst = tmp;
+        // Note: Xe3p path has junk in low 4 bits of src1.
+        ie[2]->ctrl = hw < HW::Xe3p ? 0xEC : 0xAC;
+        ie[2]->simd = simd / 2;
+        ie[2]->dst = hw < HW::Xe3p ? stmp : tmp;
+        ie[2]->dst.stride *= 2;
+        ie[2]->dst.offset = stmp.offset;
         ie[2]->src0 = stmp;
         ie[2]->src0.stride *= 2;
-        ie[2]->src1 = stmp;
-        ie[2]->src1.offset += 1;
-        ie[2]->src1.stride *= 2;
+        ie[2]->src1 = ie[1]->dst;
         ie[2]->src2 = Immediate::uw(0x0F);
 
         if (simd > 2) {
             ie[3]->op = Opcode::mov;
-            ie[3]->simd = simd/2;
-            ie[3]->dst = tmp;
+            ie[3]->simd = simd / 2;
+            ie[3]->dst = stmp;
             ie[3]->dst.type = DataType::ub;
             ie[3]->dst.stride = 1;
-            ie[3]->src0 = tmp;
-            ie[3]->src0.stride = 2;
+            ie[3]->src0 = ie[2]->dst;
+            ie[3]->src0.stride *= 2;
+            ie[3]->src0.offset *= 2;
             ie[3]->src0.type = DataType::ub;
 
             ie[4]->op = Opcode::mov;
-            ie[4]->simd = simd/2;
+            ie[4]->simd = simd / 2;
             ie[4]->dst = ddst;
             ie[4]->dst.type = DataType::ub;
             if (ddst.vs != 0)
                 ie[4]->dst.stride = ddst.vs / ddst.width;
             ie[4]->dst.offset /= 2;
-            ie[4]->src0 = tmp;
-            ie[4]->src0.stride = 1;
-            ie[4]->src0.type = DataType::ub;
+            ie[4]->src0 = ie[3]->dst;
         } else {
             ie[3]->op = Opcode::mov;
-            ie[3]->simd = simd/2;
+            ie[3]->simd = simd / 2;
             ie[3]->dst = ddst;
             ie[3]->dst.type = DataType::ub;
             ie[3]->dst.stride = 1;
             ie[3]->dst.offset /= 2;
-            ie[3]->src0 = tmp;
-            ie[3]->src0.stride = 2;
+            ie[3]->src0 = ie[2]->dst;
+            ie[3]->src0.stride *= 2;
             ie[3]->src0.type = DataType::ub;
 
             ie[4]->invalidate();
@@ -1838,38 +1877,6 @@ void CopyPlan::planE8M0ToF(CopyInstruction &i)
     ie[2]->dst.offset += 1;
     ie[2]->src0 = ie[2]->dst;
     ie[2]->src1 = 0x40;
-}
-
-// Emulation sequence for bf8->bf conversion.
-void CopyPlan::planEmulatedBF8ToBF(CopyInstruction &i)
-{
-    if (i.src0.neg || i.sat || i.hasCMod()) stub("Unsupported modifier");
-    if (!bfArithmeticOK(i)) stub();      /* need bf * f multiply */
-
-    // Emulation sequence for mov y:bf x:bf8:
-    // shl          y:uw    x:ub    8               /* already done */
-    // asr          y:w     y:w     3
-    // and          y:uw    y:uw    0x8FFF
-    // mul          y:bf    y:bf    0x7780:bf
-
-    auto ie = splitMultiple<3>(i);
-
-    auto y = i.dst, yUW = y, yW = y;
-    yUW.type = DataType::uw;
-    yW.type = DataType::w;
-    y.type = DataType::bf;
-
-    ie[0]->op = Opcode::asr;
-    ie[0]->src0 = ie[0]->dst = yW;
-    ie[0]->src1 = 3;
-
-    ie[1]->op = Opcode::and_;
-    ie[1]->src0 = ie[1]->dst = yUW;
-    ie[1]->src1 = 0x8FFF;
-
-    ie[2]->op = Opcode::mul;
-    ie[2]->src0 = ie[2]->dst = y;
-    ie[2]->src1 = bfImmediate(0x7780, false);
 }
 
 // Emulation sequence for hf8->hf conversion.
@@ -1963,7 +1970,7 @@ void CopyPlan::planEmulatedHF8ToBF(CopyInstruction &i)
     ie[4]->flag = f;
 }
 
-// Emulation sequence for {e2m1,e3m0}->hf conversion.
+// Emulation sequence for e2m1->hf conversion.
 void CopyPlan::planEmulatedF4ToHF(CopyInstruction &i)
 {
     // Emulation sequence for mov y:hf x:e2m1:
@@ -1971,13 +1978,10 @@ void CopyPlan::planEmulatedF4ToHF(CopyInstruction &i)
     //   asr                 y:w     y:w     3
     //   and                 y:uw    y:uw    0x8E00
     //   mul                 y:hf    y:hf    16384:hf
-    // e3m0 sequence is similar, but with a different shift amount.
 
     if (i.src0.neg || i.sat || i.hasCMod()) stub("Unsupported modifier");
 
     auto ie = splitMultiple<3>(i);
-
-    bool e2m1 = (i.src0.range == DataType::e2m1);
 
     auto y = i.dst, yUW = y, yW = y;
     yUW.type = DataType::uw;
@@ -1985,18 +1989,18 @@ void CopyPlan::planEmulatedF4ToHF(CopyInstruction &i)
 
     ie[0]->op = Opcode::asr;
     ie[0]->src0 = ie[0]->dst = yW;
-    ie[0]->src1 = e2m1 ? 3 : 2;
+    ie[0]->src1 = 3;
 
     ie[1]->op = Opcode::and_;
     ie[1]->src0 = ie[1]->dst = yUW;
-    ie[1]->src1 = e2m1 ? 0x8E00 : 0x9C00;
+    ie[1]->src1 = 0x8E00;
 
     ie[2]->op = Opcode::mul;
     ie[2]->src0 = ie[2]->dst = y;
-    ie[2]->src1 = Immediate::hf(e2m1 ? 0x7400 : 0x6C00);
+    ie[2]->src1 = Immediate::hf(0x7400);
 }
 
-// Emulation sequence for {e2m1,e3m0}->bf conversion.
+// Emulation sequence for e2m1->bf conversion.
 void CopyPlan::planEmulatedF4ToBF(CopyInstruction &i)
 {
     // Emulation sequence for mov y:bf x:e2m1:
@@ -2004,14 +2008,11 @@ void CopyPlan::planEmulatedF4ToBF(CopyInstruction &i)
     //   asr                 y:w     y:w     6
     //   and                 y:uw    y:uw    0x81C0
     //   mul                 y:bf    y:bf    0x7E80:bf
-    // e3m0 sequence is similar, but with a different shift amount.
 
     if (i.src0.neg || i.sat || i.hasCMod()) stub("Unsupported modifier");
     if (!bfArithmeticOK(i)) stub();      /* need bf/f arithmetic */
 
     auto ie = splitMultiple<3>(i);
-
-    bool e2m1 = (i.src0.range == DataType::e2m1);
 
     auto y = i.dst, yUW = y, yW = y;
     yUW.type = DataType::uw;
@@ -2019,15 +2020,15 @@ void CopyPlan::planEmulatedF4ToBF(CopyInstruction &i)
 
     ie[0]->op = Opcode::asr;
     ie[0]->src0 = ie[0]->dst = yW;
-    ie[0]->src1 = e2m1 ? 6 : 5;
+    ie[0]->src1 = 6;
 
     ie[1]->op = Opcode::and_;
     ie[1]->src0 = ie[1]->dst = yUW;
-    ie[1]->src1 = e2m1 ? 0x81C0 : 0x8380;
+    ie[1]->src1 = 0x81C0;
 
     ie[2]->op = Opcode::mul;
     ie[2]->src0 = ie[2]->dst = y;
-    ie[2]->src1 = bfImmediate(e2m1 ? 0x7E80 : 0x7D80, false);
+    ie[2]->src1 = bfImmediate(0x7E80, false);
 }
 
 // Emulation sequence for nf4->hf conversion.
@@ -2206,28 +2207,24 @@ void CopyPlan::planEmulatedHFToHF8(CopyInstruction &i)
     ie[10]->src0.offset++;
 }
 
-// hf->e2m1/e3m0 sequences.
+// hf->e2m1 sequences.
 void CopyPlan::planEmulatedHFToF4(CopyInstruction &i)
 {
-    // Emulation sequence for mov y:e2m1/e3m0 x:hf
-    // The only difference between the two types is in the constants:
-    //   e2m1 constants are shown below, with e3m0 variants in (parentheses).
+    // Emulation sequence for mov y:e2m1 x:hf
     //
-    //        mad (lt)f0   t1:hf   0x8004:hf  (abs)x:hf  0x2:hf     (0x8002/0x4)   /* denormal check */
-    //        sel (lt)     t0:hf   (abs)x:hf  0x4600:hf             (0x4C00)       /* clamp */
-    //        mul          t0:hf   t0:hf      0x400:hf              (0xC00)        /* adjust exponent */
-    //   (f0) mad          t0:hf   0x800:hf   t1:hf      0x6000:hf  (0x800/0x6400) /* manual denormal rounding */
-    //        add          t0:uw   t0:uw      -0x100                (-0x200)       /* RTNE */
-    //        and (nz)f0   null    t0:uw      0x3ff                 (0x7FF)
-    //   (f0) add          t0:uw   t0:uw      0x200                 (0x400)
-    //        shl          t0:uw   t0:uw      3                     (2)            /* shift exponent field */
+    //        mad (lt)f0   t1:hf   0x8004:hf  (abs)x:hf  0x2:hf                    /* denormal check */
+    //        sel (lt)     t0:hf   (abs)x:hf  0x4600:hf                            /* clamp */
+    //        mul          t0:hf   t0:hf      0x400:hf                             /* adjust exponent */
+    //   (f0) mad          t0:hf   0x800:hf   t1:hf      0x6000:hf                 /* manual denormal rounding */
+    //        add          t0:uw   t0:uw      -0x100                               /* RTNE */
+    //        and (nz)f0   null    t0:uw      0x3ff
+    //   (f0) add          t0:uw   t0:uw      0x200
+    //        shl          t0:uw   t0:uw      3                                    /* shift exponent field */
     //        bfn.0xCA     t0:uw   x:uw       t0:uw      0x7FFF                    /* copy sign */
     //        shr          t0:uw   t0:uw      12                                   /* move to lowest nybble */
     //        mov          y:u4    t0:uw                                           /* pack nybbles */
 
     if (i.src0.neg || i.sat || i.hasCMod()) stub("Unsupported modifier");
-
-    bool e2m1 = (i.dst.type == DataType::e2m1);
 
     auto x = i.src0;
     auto y = i.dst;
@@ -2239,8 +2236,8 @@ void CopyPlan::planEmulatedHFToF4(CopyInstruction &i)
     }
 
     if (hw >= HW::Xe3p) {
-        auto t0 = newTemp(DataType::hf, i.simd/2, 1);
-        auto t1 = newTemp(DataType::hf, i.simd/2, 1);
+        auto t0 = newTemp(DataType::hf, i.simd / 2, 1);
+        auto t1 = newTemp(DataType::hf, i.simd / 2, 1);
         auto ie = splitMultiple<5>(i);
         int simd = i.simd;
         int dstStride = y.stride;
@@ -2288,7 +2285,7 @@ void CopyPlan::planEmulatedHFToF4(CopyInstruction &i)
         ie[3]->src0.type = DataType::ub;
         ie[3]->src0.stride = 2;
 
-        if ( needPack ){
+        if (needPack) {
             ie[4]->op = Opcode::mov;
             ie[4]->dst = y;
             ie[4]->dst.type = DataType::u4;
@@ -2296,13 +2293,13 @@ void CopyPlan::planEmulatedHFToF4(CopyInstruction &i)
             ie[4]->src0 = t0;
             ie[4]->src0.type = DataType::u4;
             ie[4]->src0.stride = 1;
-	    } else {
+        } else {
             ie[4]->invalidate();
-	    }
+        }
 
     } else
     {
-        auto ie = splitMultiple<13>(i);
+        auto ie = splitMultiple<11>(i);
 
 
         auto t0 = newTemp(DataType::hf, i.simd, 1);
@@ -2317,83 +2314,65 @@ void CopyPlan::planEmulatedHFToF4(CopyInstruction &i)
         ie[0]->cmod = ConditionModifier::lt;
         ie[0]->flag = flag;
         ie[0]->dst = t1;
-        ie[0]->src0 = Immediate::hf(e2m1 ? 0x8004 : 0x8002);
+        ie[0]->src0 = Immediate::hf(0x8004);
         ie[0]->src1 = abs(x);
-        ie[0]->src2 = Immediate::hf(e2m1 ? 0x0002 : 0x0004);
+        ie[0]->src2 = Immediate::hf(0x0002);
 
         ie[1]->op = Opcode::sel;
         ie[1]->cmod = ConditionModifier::lt;
         ie[1]->dst = t0;
         ie[1]->src0.abs = true;
-        ie[1]->src1 = Immediate::hf(e2m1 ? 0x4600 : 0x4C00);
+        ie[1]->src1 = Immediate::hf(0x4600);
 
         ie[2]->op = Opcode::mul;
         ie[2]->src0 = ie[2]->dst = t0;
-        ie[2]->src1 = Immediate::hf(e2m1 ? 0x0400 : 0x0C00);
+        ie[2]->src1 = Immediate::hf(0x0400);
 
         ie[3]->op = Opcode::mad;
         ie[3]->flag = flag;
         ie[3]->dst = t0;
         ie[3]->src0 = Immediate::hf(0x0800);
         ie[3]->src1 = t1;
-        ie[3]->src2 = Immediate::hf(e2m1 ? 0x6000 : 0x6400);
+        ie[3]->src2 = Immediate::hf(0x6000);
 
         ie[4]->op = Opcode::add;
         ie[4]->src0 = ie[4]->dst = t0UW;
-        ie[4]->src1 = Immediate::w(e2m1 ? -0x0100 : -0x200);
+        ie[4]->src1 = Immediate::w(-0x0100);
 
-        if (e2m1) {
-            ie[5]->invalidate();
-            ie[6]->invalidate();
-        } else {
-            ie[5]->op = Opcode::cmp;
-            ie[5]->cmod = ConditionModifier::gt;
-            ie[5]->flag = flag;
-            ie[5]->dst = CopyOperand();
-            ie[5]->dst.type = DataType::hf;
-            ie[5]->src0 = t0;
-            ie[5]->src1 = Immediate::hf(0x0200);
+        ie[5]->op = Opcode::and_;
+        ie[5]->flag = flag;
+        ie[5]->cmod = ConditionModifier::nz;
+        ie[5]->dst = CopyOperand();
+        ie[5]->dst.type = DataType::uw;
+        ie[5]->src0 = t0UW;
+        ie[5]->src1 = Immediate::uw(0x03FF);
 
-            ie[6]->op = Opcode::or_;
-            ie[6]->flag = flag;
-            ie[6]->dst = t0UW;
-            ie[6]->src0 = t0UW;
-            ie[6]->src1 = 0x1;
-        }
-        ie[7]->op = Opcode::and_;
-        ie[7]->flag = flag;
-        ie[7]->cmod = ConditionModifier::nz;
-        ie[7]->dst = CopyOperand();
-        ie[7]->dst.type = DataType::uw;
-        ie[7]->src0 = t0UW;
-        ie[7]->src1 = Immediate::uw(e2m1 ? 0x03FF : 0x07FF);
+        ie[6]->op = Opcode::add;
+        ie[6]->flag = flag;
+        ie[6]->src0 = ie[6]->dst = t0UW;
+        ie[6]->src1 = Immediate::uw(0x0200);
 
-        ie[8]->op = Opcode::add;
-        ie[8]->flag = flag;
-        ie[8]->src0 = ie[8]->dst = t0UW;
-        ie[8]->src1 = Immediate::uw(e2m1 ? 0x0200 : 0x0400);
-
-        ie[9]->op = Opcode::shl;
-        ie[9]->src0 = ie[9]->dst = t0UW;
-        ie[9]->src1 = Immediate::uw(e2m1 ? 3 : 2);
+        ie[7]->op = Opcode::shl;
+        ie[7]->src0 = ie[7]->dst = t0UW;
+        ie[7]->src1 = Immediate::uw(3);
 
         // Restore sign.
-        ie[10]->op = Opcode::bfn;
-        ie[10]->src0 = ie[10]->dst = t0UW;
-        ie[10]->src1 = x;
-        ie[10]->src1.type = DataType::uw;
-        ie[10]->src2 = 0x8000;
-        ie[10]->ctrl = 0xCA;
+        ie[8]->op = Opcode::bfn;
+        ie[8]->src0 = ie[8]->dst = t0UW;
+        ie[8]->src1 = x;
+        ie[8]->src1.type = DataType::uw;
+        ie[8]->src2 = 0x8000;
+        ie[8]->ctrl = 0xCA;
 
         // Pack into bytes.
-        ie[11]->op = Opcode::shr;
-        ie[11]->src0 = ie[11]->dst = t0UW;
-        ie[11]->src1 = Immediate::uw(12);
+        ie[9]->op = Opcode::shr;
+        ie[9]->src0 = ie[9]->dst = t0UW;
+        ie[9]->src1 = Immediate::uw(12);
 
-        ie[12]->op = Opcode::mov;
-        ie[12]->dst = y;
-        ie[12]->dst.type = DataType::u4;
-        ie[12]->src0 = t0UW;
+        ie[10]->op = Opcode::mov;
+        ie[10]->dst = y;
+        ie[10]->dst.type = DataType::u4;
+        ie[10]->src0 = t0UW;
     }
 }
 
@@ -2405,42 +2384,15 @@ void CopyPlan::checkNoSubbytes()
             stub("Unexpected 4-bit type");
 }
 
-// Collapse multiple-cnum instructions into single-cnum instructions if possible.
-void CopyPlan::collapseCNums()
-{
-    int ncnum = 0;
-    for (auto &i: insns)
-        ncnum = std::max(ncnum, i.cnumMax + 1);
-
-    std::vector<int16_t> snapDown(ncnum);
-    for (auto &i: insns)
-        for (auto cnum = i.cnumMin; cnum <= i.cnumMax; cnum++)
-            snapDown[cnum] = std::max(snapDown[cnum], i.cnumMin);
-
-    // remap cnums to be as small as possible
-    int16_t cnumMin = 0;
-    int16_t cnumMax = 0;
-    for (auto &cnum: snapDown) {
-        if (cnum > cnumMax) {
-            cnumMax = cnum;
-            cnumMin = cnumMin + 1;
-        }
-        if (cnum > cnumMin) cnum = cnumMin;
-    }
-
-    for (auto &i: insns) {
-        i.cnumMin = snapDown[i.cnumMin];
-        i.cnumMax = snapDown[i.cnumMax];
-    }
-}
-
 // Pass to legalize SIMD lengths.
 // If initial = true, does not perform complete legalization,
 //   only SIMD32 limits for complex conversion sequences.
 void CopyPlan::legalizeSIMD(bool initial)
 {
     int grf = GRF::bytes(hw);
+    int simdOff = 0;
     bool splitting = false;
+    bool rerun = false;
 
     auto forceSIMD1 = [&](const CopyInstruction &i) {
         // Workaround for packed byte mov to odd-offset dst.
@@ -2456,10 +2408,6 @@ void CopyPlan::legalizeSIMD(bool initial)
     if (!initial)
         checkNoSubbytes();
 
-    collapseCNums();
-    for (auto &i: insns)
-        i.cnumSub = 0;
-
     // Basic rule: maximum of 2 registers per operand.
     auto opSimdMax = [&] (const CopyOperand &op, bool src2 = false) {
         if (op.kind != CopyOperand::GRF || op.stride == 0) return 64;
@@ -2469,7 +2417,6 @@ void CopyPlan::legalizeSIMD(bool initial)
     };
 
     auto ninsn = insns.size();
-    std::vector<std::pair<int16_t, int16_t>> cnumOffsets;
     for (size_t n = 0; n < ninsn; ) {
         auto &i = insns[n];
 
@@ -2503,16 +2450,34 @@ void CopyPlan::legalizeSIMD(bool initial)
         }
 
         // Fracture instruction into legal SIMD lengths.
-        int simd0 = std::min<int>(rounddown_pow2(i.simd), simdMax);
-
-        if (hw == ngen::HW::Xe3p && simd0 == 2) simd0 = 1;
+        const int simd1 = std::min<int>(rounddown_pow2(i.simd), simdMax);
+        int simd0 = simd1;
 
         if (!initial && forceSIMD1(i))
             simd0 = 1;
 
+        int minSimd0 = 1;
+        for (auto *op : {&i.src0, &i.src1}) {
+            if (op->kind != CopyOperand::GRF) continue;
+            if (op->width)
+                minSimd0 = std::max<int>(op->width, minSimd0);
+        }
+
+        if (simd0 < minSimd0 && minSimd0 < simd1) {
+            rerun = true;
+            simd0 = minSimd0;
+        }
+
         if (simd0 < i.simd || splitting) {
             auto &isplit = split(i, false);
+            auto length = i.range.end - i.range.start + 1;
+            auto simdOrig = simdOff + i.simd;
+
+            auto startOff = (simdOff * length) / simdOrig;
+            auto endOff = ((simdOff + simd0) * length - 1) / simdOrig;
             isplit.simd = simd0;
+            isplit.range.start = i.range.start + startOff;
+            isplit.range.end = i.range.start + endOff;
 
             auto advance = [grf](CopyOperand &op, int n) {
                 if (op.kind == CopyOperand::Flag)
@@ -2529,8 +2494,6 @@ void CopyPlan::legalizeSIMD(bool initial)
                 op.offset -= grfOffset * ne;
             };
 
-            i.cnumSub++;
-
             i.simd -= simd0;
             advance(i.dst, simd0);
             advance(i.src0, simd0);
@@ -2538,33 +2501,17 @@ void CopyPlan::legalizeSIMD(bool initial)
             advance(i.src2, simd0);
             advance(i.flag, simd0);
             splitting = (i.simd > 0);
+            simdOff += simd0;
         } else {
-            if (i.cnumSub > 0)
-                cnumOffsets.emplace_back(i.cnumMax, i.cnumSub - 1);
+            simdOff = 0;
             n++;    /* done with this instruction */
         }
     }
 
     mergeChanges();
 
-    /* Split apart cnums */
-    int16_t offset = 0;
-    std::sort(cnumOffsets.begin(), cnumOffsets.end());
-    for (auto &cnumOffset : cnumOffsets)
-        cnumOffset.second = offset += cnumOffset.second;
-
-    for (auto &i : insns) {
-        int16_t offset = 0;
-        for (auto &cnumOffset : cnumOffsets) {
-             if (i.cnumMax <= cnumOffset.first)
-                 break;
-            offset = cnumOffset.second;
-        }
-        i.cnumMin += offset;
-        i.cnumMax += offset;
-        if (i.cnumMin == i.cnumMax)
-            i.cnumMin = i.cnumMax += i.cnumSub;
-    }
+    if (rerun)
+        legalizeSIMD(initial);
 }
 
 // Check if an operand is a legal packed bfloat16 region.
@@ -2724,7 +2671,19 @@ void CopyPlan::legalizeRegions()
         }
 
         int dstBO  = i.dst.byteOffset();
+        int src0BO = i.src0.byteOffset();
+        int src1BO = i.src1.byteOffset();
+        int src2BO = i.src2.byteOffset();
         int dstBS  = i.dst.byteStride();
+        int src0BS = i.src0.byteStride();
+        int src1BS = i.src1.byteStride();
+        int src2BS = i.src2.byteStride();
+
+        bool nullDst = i.dst.isNull();
+        if (nullDst) {
+            i.dst.offset = src0BO / getBytes(dt);
+            dstBO = src0BO, dstBS = src0BS;
+        }
 
         /* Check for swizzling */
         bool canSwizzle = true, splitQWMov = false;
@@ -2748,28 +2707,21 @@ void CopyPlan::legalizeRegions()
             };
 
             if (!isFlat(i.src1)) {
-                if (isCommutative(i.op) && i.src0.kind == CopyOperand::GRF && isFlat(i.src0))
+                if (isCommutative(i.op) && i.src0.kind == CopyOperand::GRF && isFlat(i.src0)) {
                     std::swap(i.src0, i.src1);
-                else
+                    std::swap(src0BO, src1BO);
+                    std::swap(src0BS, src1BS);
+                } else
                     canSwizzle = false;
             }
-        }
 
-        int src0BO = i.src0.byteOffset();
-        int src1BO = i.src1.byteOffset();
-        int src2BO = i.src2.byteOffset();
-        int src0BS = i.src0.byteStride();
-        int src1BS = i.src1.byteStride();
-        int src2BS = i.src2.byteStride();
-
-        bool nullDst = i.dst.isNull();
-        if (nullDst) {
-            i.dst.offset = src0BO / getBytes(dt);
-            dstBO = src0BO, dstBS = src0BS;
+            if (hfIntConvert)
+                canSwizzle = false;
         }
 
         if (!canSwizzle) {
-            int dboMask = GRF::bytes(hw) - (isFP(dt) ? 1 : 4);
+            bool strict = isFP(dt) || (hw >= HW::Xe3p && i.op != Opcode::mov);
+            int dboMask = GRF::bytes(hw) - (strict ? 1 : 4);
 
             auto matchesDstBO = [=](int bo) -> bool {
                 return (dstBO & dboMask) == (bo & dboMask);
@@ -2795,7 +2747,7 @@ void CopyPlan::legalizeRegions()
                         repositionDst(i, stride, offset);
                     }
                     continue;
-                } else if (src0BS < dstBS){
+                } else if (src0BS < dstBS) {
                     restrideSrc0(i, dstBS >> getLog2Bytes(s0t));
                     rerun = true;
                 }
@@ -2943,20 +2895,26 @@ void CopyPlan::legalizeNegation()
 void CopyPlan::legalizeImmediateTypes()
 {
     for (auto &i: insns) {
+        int srcN = -1;
         for (auto *op: {&i.src0, &i.src1, &i.src2}) {
+            srcN++;
             if (op->kind != CopyOperand::Immediate)
                 continue;
             if (one_of(op->type, {DataType::ub, DataType::u4}))
                 op->type = DataType::uw;
             else if (one_of(op->type, {DataType::b, DataType::s4}))
                 op->type = DataType::w;
-	    else if (hw == ngen::HW::Xe3p && i.op != Opcode::mov && op->type == DataType::f && i.dst.type == DataType::bf)
-	      legalizeBfImmediate(i);
+            else if (hw == ngen::HW::Xe3p && i.op != Opcode::mov && op->type == DataType::f && i.dst.type == DataType::bf)
+                legalizeBfImmediate(i);
+            else if (one_of(op->type, {DataType::v, DataType::uv})) {
+                // Destination must be 128 bit-aligned for vector immediates.
+                if ((i.dst.offset * getBits(i.dst.type)) % 128 != 0)
+                    repositionSrc(i, srcN, i.dst.stride, 0);
+            }
         }
     }
     mergeChanges();
     legalizeRegions();
-
 }
 
 // Pass to sort instructions by phase and dst.
@@ -2967,7 +2925,7 @@ void CopyPlan::sort(SortType type)
             case SortType::PhaseOnly:
                 return std::make_tuple(i.phase, 0, 0);
             case SortType::SourceOrder:
-                return std::make_tuple(i.phase, int(i.cnumMin), int(i.cnumMax));
+                return std::make_tuple(i.phase, int(i.range.start), int(i.range.end));
             case SortType::Register:
             default:
                 auto &op = i.dst.temp ? i.src0 : i.dst;
@@ -2978,6 +2936,83 @@ void CopyPlan::sort(SortType type)
     std::stable_sort(insns.begin(), insns.end(), [=](const CopyInstruction &i1, const CopyInstruction &i2) {
         return sortOrder(i1) < sortOrder(i2);
     });
+}
+
+// Optimization pass: Convert long chains of small-SIMD equal-strided movs
+// to a few larger-SIMD movs.
+// Example input:
+//    mov (2) r3.0:ub<1>      r3.0:ub<2>
+//    mov (2) r3.4:ub<1>      r3.4:ub<2>
+//    mov (2) r3.8:ub<1>      r3.8:ub<2>
+//    mov (2) r3.12:ub<1>     r3.12:ub<2>
+//    mov (2) r3.16:ub<1>     r3.16:ub<2>
+//    mov (2) r3.20:ub<1>     r3.20:ub<2>
+//    mov (2) r3.24:ub<1>     r3.24:ub<2>
+//    mov (2) r3.28:ub<1>     r3.28:ub<2>
+// Output:
+//    mov (8) r3.0:ub<4>      r3.0:ub<4>  /* removed */
+//    mov (8) r3.1:ub<4>      r3.2:ub<4>
+//
+void CopyPlan::optimizeTranspose()
+{
+    const auto grf = ngen::GRF::bytes(hw);
+    auto transposable = [grf](const CopyOperand &o1, const CopyOperand &o2, int offset) {
+        if (o1.kind != CopyOperand::GRF || o2.kind != CopyOperand::GRF) return false;
+        if (o1.type != o2.type || o1.stride != o2.stride) return false;
+        if (o1.temp != o2.temp) return false;
+        if (o1.temp && o1.value != o2.value) return false;
+        if (o1.neg != o2.neg) return false;
+        if (o1.abs != o2.abs) return false;
+
+        auto grf_diff = o2.grf - o1.grf;
+        auto dist = bytesToElements(grf, o1.type) * grf_diff + (o2.offset - o1.offset);
+        return dist == offset;
+    };
+
+    auto ninsn = insns.size();
+    for (size_t n1 = 0; n1 < ninsn; n1++) {
+        auto &i1 = insns[n1];
+        if (i1.op != Opcode::mov || i1.simd == 0) continue;
+        const int8_t dstride = bytesToElements(4, i1.dst.type);
+        const int8_t sstride = bytesToElements(4, i1.src0.type);
+
+        int simd = 1;
+        size_t n2 = n1 + 1;
+        auto end = i1.range.end + 1;
+        for (; n2 < ninsn; n2++, simd++) {
+            auto &i2 = insns[n2];
+            if (i1.phase != i2.phase) break;
+            if (i2.op != Opcode::mov) break;
+            if (i1.simd != i2.simd) break;
+            if (i1.sat != i2.sat) break;
+            if (!transposable(i1.src0, i2.src0, dstride * simd)) break;
+            if (!transposable(i1.dst, i2.dst, sstride * simd)) break;
+            if (i2.range.start != end) break;  // ensure joins are valid
+            end = i2.range.end + 1;
+        }
+
+        size_t n = n1 + 1;
+        n1 = n2 - 1;
+
+        if (i1.simd >= simd) continue;
+
+        for (; n < n2; n++)
+            join(i1, insns[n]);
+
+        auto simd0 = i1.simd;
+        i1.simd = simd;
+        auto soffset = i1.src0.stride;
+        auto doffset = i1.dst.stride;
+        i1.src0.stride = sstride;
+        i1.dst.stride = dstride;
+        for (int i = 1; i < simd0; ++i) {
+            auto &i2 = split(i1, false);
+            i2.src0.offset += i * soffset;
+            i2.dst.offset += i * doffset;
+        }
+    }
+
+    mergeChanges();
 }
 
 // Optimization pass: zip together interleaved operations.
@@ -3001,6 +3036,7 @@ void CopyPlan::sort(SortType type)
 void CopyPlan::optimizeZip(bool zip2DSrc0)
 {
     bool didZip2D = false;
+    bool didStridedVecZip = false;
 
     auto ninsn = insns.size();
     for (size_t n1 = 0; n1 < ninsn; n1++) {
@@ -3013,16 +3049,17 @@ void CopyPlan::optimizeZip(bool zip2DSrc0)
 
             auto zippable = [&](const CopyOperand &o1, const CopyOperand &o2, bool zip2D = false, bool zipImm = false) {
                 if (o1.kind != o2.kind) return false;
-                if (o1.kind == CopyOperand::Immediate) return (o1.value == o2.value || (zipImm && !(hw >= ngen::HW::Xe3p)));
+                if (o1.kind == CopyOperand::Immediate) return (o1.value == o2.value || zipImm);
                 if (o1.kind != CopyOperand::GRF) return true;
                 if (o1.type != o2.type || o1.stride != o2.stride || o1.grf != o2.grf) return false;
                 if (o1.temp != o2.temp) return false;
                 if (o1.temp && o1.value != o2.value) return false;
-                if (o1.vs || o1.width) return false;
+                if (o1.vs != o2.vs || o1.width != o2.width) return false;
+                if (o1.width && (!zip2D || o1.stride != 2 * (o2.offset - o1.offset))) return false;
                 if (o1.neg != o2.neg) return false;
                 if (o1.abs != o2.abs) return false;
                 if (!is_zero_or_pow2(o2.offset - o1.offset)) return false;
-                bool can1D = ((o1.stride & 1) == 0)
+                bool can1D = (o1.width == 0) && ((o1.stride & 1) == 0)
                           && (o1.offset + (o1.stride >> 1) == o2.offset);
                 if (!can1D) {
                     unsigned od = (o2.offset - o1.offset);
@@ -3037,7 +3074,9 @@ void CopyPlan::optimizeZip(bool zip2DSrc0)
 
             CopyOperand zippedSrc1;
             if (zip && i1.src1.kind == CopyOperand::Immediate && i1.src1.value != i2.src1.value) {
-                zippedSrc1 = zipImmediates(i1.src1, i2.src1);
+                const auto stride = i1.dst.stride >> 1;
+                const auto ok = ((stride * getBits(i1.dst.type)) % 16 == 0);
+                zippedSrc1 = zipImmediates(i1.src1, i2.src1, ok ? stride : 0);
                 zip = zip && zippedSrc1;
             }
 
@@ -3051,13 +3090,21 @@ void CopyPlan::optimizeZip(bool zip2DSrc0)
                         i.src0.stride /= 2;
                         std::swap(i1, i2);      /* move joined entry to end for further processing */
                     } else {
-                        i.src0.vs = i.src0.stride;
-                        i.src0.stride = i2.src0.offset - i1.src0.offset;
-                        i.src0.width = 2;
+                        if (!i.src0.width) {
+                            // transform 1D to equivalent 2D regioning
+                            // <N> -> <N;1,0>
+                            i.src0.width = 1;
+                            i.src0.vs = i.src0.stride;
+                            i.src0.stride = 0;
+                        }
+                        i.src0.width *= 2;
+                        i.src0.stride += i2.src0.offset - i1.src0.offset;
                         didZip2D = true;
                     }
-                    if (zippedSrc1)
+                    if (zippedSrc1) {
                         i.src1 = zippedSrc1;
+                        didStridedVecZip = (i.dst.stride > 1) && one_of(i.src1.type, {DataType::v, DataType::uv});
+                    }
                     break;
                 }
             }
@@ -3066,18 +3113,54 @@ void CopyPlan::optimizeZip(bool zip2DSrc0)
 
     mergeChanges();
 
+    if (didStridedVecZip)
+        optimizeZip(zip2DSrc0);  /* may be able to zip more vector immediates */
     if (didZip2D)
         legalizeSIMD();     /* 2D zipping comes late in the pipeline */
 }
 
-// Zip small immediates, converting to <0;2,1>-regioned resource access.
-CopyOperand CopyPlan::zipImmediates(const CopyOperand &o1, const CopyOperand &o2)
+// Zip small immediates, converting small values to a vector immediate, and
+// other cases to <0;2,1>-regioned resource access.
+CopyOperand CopyPlan::zipImmediates(const CopyOperand &o1, const CopyOperand &o2, uint8_t stride)
 {
-    if (!isInt(o1.type) || o1.type != o2.type || !isW(o1.type))
+    if (o1.type != o2.type)
         return CopyOperand{};
 
-    auto rkind = CopyResource::makeConstant32(((o2.value & 0xFFFF) << 16)
-                                             | (o1.value & 0xFFFF));
+    if (o1.type == DataType::uv || o1.type == DataType::v) {
+        if (stride <= 0 || stride >= 8)
+            return CopyOperand{};
+        // alternate vector entries for stride = 1, alternate consecutive
+        // pairs of vector entries for stride = 2, etc.
+        uint32_t mask = (1 << (4 * stride)) - 1;
+        for (auto bits = 8 * stride; bits < 32; bits <<= 1)
+            mask |= mask << bits;
+        auto value = ((uint32_t)o1.value & mask) | ((uint32_t)o2.value & ~mask);
+        return o1.type == DataType::uv ? Immediate::uv(value) : Immediate::v(value);
+    }
+
+    if (!isW(o1.type))
+        return CopyOperand{};
+
+    auto v1 = (uint16_t)o1.value;
+    auto v2 = (uint16_t)o2.value;
+
+    if (stride > 0 && stride < 8) {
+        auto pattern = (v1 & 0xF) | ((v2 & 0xF) << (4 * stride));
+        for (uint8_t i = 1; i < stride; i <<= 1)
+            pattern |= pattern << (4 * i);
+        auto bits = 8 * stride;
+        for (; bits < 32; bits <<= 1)
+            pattern |= pattern << bits;
+        if (v1 <= 0xF && v2 <= 0xF)
+            return ngen::Immediate::uv(pattern);
+        else if (o1.type == DataType::w && (uint16_t)(v1 + 8) <= 0xF && (uint16_t)(v2 + 8) <= 0xF)
+            return ngen::Immediate::v(pattern);
+    }
+
+    if (hw >= HW::Xe3p)
+        return CopyOperand{};
+
+    auto rkind = CopyResource::makeConstant32((v2 << 16) | v1);
     auto op = getResource(rkind);
     op.vs = 0;
     op.width = 2;
@@ -3316,25 +3399,24 @@ void CopyPlan::optimizeWriteCombine()
             n++; continue;
         }
 
-        auto cnumMin = i0.cnumMin, cnumMax = i0.cnumMax;
+        auto range = i0.range;
         size_t n1;
         for (n1 = n + 1; n1 < ninsn; n1++) {
             auto &i1 = insns[n1];
             if (!canWC(hw, i1)) break;
             if (i1.dst.grf != i0.dst.grf) break;
+            if (i1.dst.temp ^ i0.dst.temp) break;
+            if (i1.dst.temp && i0.dst.temp && i1.dst.value != i0.dst.value) break;
             if (i1.dst.offset + n != i0.dst.offset + n1) break;
             if (i0.dst.offset / 4 != i1.dst.offset / 4) break;
-            cnumMin = std::min(cnumMin, i1.cnumMin);
-            cnumMax = std::max(cnumMax, i1.cnumMax);
+            range |= i1.range;
         }
 
         auto length = int(rounddown_pow2(n1 - n));
         for (n1 = n; n1 + 1 < n + length; n1++)
             insns[n1].atomic = true;
-        for (n1 = n; n1 < n + length; n1++) {
-            insns[n1].cnumMin = cnumMin;
-            insns[n1].cnumMax = cnumMax;
-        }
+        for (n1 = n; n1 < n + length; n1++)
+            insns[n1].range = range;
 
         n += length;
     }
@@ -3442,17 +3524,17 @@ struct AllocationManager {
         return allocateRange(temp);
     }
 
-    void release(int cnum) {
-        release(cnum, grfAllocations);
-        release(cnum, flagAllocations);
+    void release(int end) {
+        release(end, grfAllocations);
+        release(end, flagAllocations);
     }
 
 private:
     template <typename AllocationType>
-    void release(int cnum, std::vector<AllocationType> &allocs) {
+    void release(int end, std::vector<AllocationType> &allocs) {
         for (size_t i = 0; i < allocs.size();) {
             auto &alloc = allocs[i];
-            if (alloc.cnum < cnum) {
+            if (alloc.end < end) {
                 dealloc(alloc);
                 std::swap(allocs[i], allocs[allocs.size() - 1]);
                 allocs.pop_back();
@@ -3464,12 +3546,12 @@ private:
 protected:
     struct GRFAllocation {
         GRFRange range;
-        int cnum;
+        int end;
     };
 
     struct FlagAllocation {
         FlagRegister flag;
-        int cnum;
+        int end;
     };
 
     void dealloc(GRFAllocation &alloc) { grfAllocator(0, alloc.range); }
@@ -3480,7 +3562,7 @@ protected:
         flagAllocator(temp.bytes, flag);
         if (!flag.isValid()) return false;
         temp.assignment = flag.index();
-        flagAllocations.push_back({flag, temp.cnumMax});
+        flagAllocations.push_back({flag, temp.range.end});
         return true;
     }
 
@@ -3490,7 +3572,7 @@ protected:
         grfAllocator(grfs, range);
         if (!range.isValid()) return false;
         temp.assignment = range.getBase();
-        grfAllocations.push_back({range, temp.cnumMax});
+        grfAllocations.push_back({range, temp.range.end});
         return true;
     }
 
@@ -3506,8 +3588,7 @@ void CopyPlan::materializeTemps(const GRFAllocator &grfAllocator, const FlagAllo
 {
     std::vector<CopyInstruction> sortedInsns;
     AllocationManager manager(hw, grfAllocator, flagAllocator);
-    uint16_t minPhaseTemp = 0xFFFF, maxPhaseTemp = 0xFFFF;
-    int ncnum = 0;
+    uint16_t minPhaseTemp = 0xFFFF, maxPhaseTemp = 0x0;
 
     sortedInsns.reserve(insns.size());
     manager.reserve(temps.size());
@@ -3521,89 +3602,107 @@ void CopyPlan::materializeTemps(const GRFAllocator &grfAllocator, const FlagAllo
         }
         if (haveTemp) {
             minPhaseTemp = std::min(minPhaseTemp, i.phase);
-            maxPhaseTemp = i.phase;
+            maxPhaseTemp = std::max(maxPhaseTemp, i.phase);
         }
-        ncnum = std::max(ncnum, i.cnumMax + 1);
     }
 
-    /* Check which instruction groups must be issued together */
-    auto groupInstructions = [&](std::vector<bool> &joined, bool reset = false) {
-        if (reset) joined.assign(joined.size(), false);
+    // No temporaries used
+    if (minPhaseTemp > maxPhaseTemp) return;
 
-        for (auto &i: insns)
-            if (i.phase >= minPhaseTemp && i.phase <= maxPhaseTemp)
-                for (int cnum = i.cnumMin; cnum < i.cnumMax; cnum++)
-                    joined[cnum] = true;
+    /* Check which instruction groups must be issued together */
+    auto groupInstructions = [&](std::vector<bool> &joined, CopyRange &range) {
+        range = {};
+        joined.assign(joined.size(), false);
+
+        for (auto &i: insns) {
+            if (i.phase < minPhaseTemp || i.phase > maxPhaseTemp)
+                continue;
+            for (auto j = i.range.start; j < i.range.end; j++)
+                joined[j] = true;
+            range |= i.range;
+        }
     };
 
-    std::vector<bool> joined(ncnum);
-    groupInstructions(joined);
+    CopyRange range0;
+    for (auto &i : insns)
+        range0 |= i.range;
 
-    /* Sort instructions and temporaries by parent instruction (cnum) */
-    std::vector<std::pair<int, int>> cnumOrder;
-    cnumOrder.reserve(temps.size());
+    CopyRange range;
+    std::vector<bool> joined(range0.end + 1);
+    groupInstructions(joined, range);
 
-    for (size_t t = 0; t < temps.size(); t++)
-        cnumOrder.push_back(std::make_pair(temps[t].cnumMin, int(t)));
-    std::sort(cnumOrder.begin(), cnumOrder.end());
+    /* Sort instructions and temporaries by element index */
 
-    auto emit = [&](int cnumMin, int cnumMax, uint16_t minPhase, uint16_t maxPhase) {
+    auto cmp = [&](int i, int j) {
+        const auto &ri = temps[i].range;
+        const auto &rj = temps[j].range;
+        if (ri != rj) return ri < rj;
+        return i < j;
+    };
+
+    std::vector<int> rangeOrder(temps.size());
+    std::iota(rangeOrder.begin(), rangeOrder.end(), 0);
+    std::sort(rangeOrder.begin(), rangeOrder.end(), cmp);
+
+    auto emit = [&](const CopyRange &range, uint16_t minPhase, uint16_t maxPhase) {
         bool emitted = false;
-        for (const auto &i: insns)
-            if (i.cnumMin >= cnumMin && i.cnumMax < cnumMax && i.phase >= minPhase && i.phase <= maxPhase) {
-                sortedInsns.push_back(i);
-                emitted = true;
-            }
+        for (const auto &i: insns) {
+            if (i.phase < minPhase || i.phase > maxPhase)
+                continue;
+            if (i.range.start < range.start || i.range.end > range.end)
+                continue;
+            sortedInsns.push_back(i);
+            emitted = true;
+        }
         return emitted;
     };
 
     /* Issue instructions up to first temporary */
     if (minPhaseTemp > 0x0000)
-        emit(0, ncnum, 0x0000, minPhaseTemp - 1);
+        emit(range0, 0x0000, minPhaseTemp - 1);
 
-    auto order = cnumOrder.begin();
-    const auto end = cnumOrder.end();
-    int cnum0 = 0, cnum1 = ncnum;
+    auto order = rangeOrder.begin();
+    const auto end = rangeOrder.end();
     while (order != end) {
         for (; order != end; ++order) {
-            auto &temp = temps[order->second];
+            auto &temp = temps[*order];
             // Don't allocate unused temporaries.
-            if (temp.cnumMin > temp.cnumMax) continue;
+            if (!temp.range) continue;
             if (!manager.allocate(temp)) {
-                cnum1 = temp.cnumMin; break;
+                range.end = temp.range.start - 1; break;
             }
         }
 
         /* Back off to the nearest instruction group boundary */
-        while (cnum1 > 0 && joined[cnum1 - 1])
-            cnum1--;
-        if (cnum1 <= cnum0) {
+        while (range.end >= range.start && joined[range.end])
+            range.end--;
+        if (range.end < range.start) {
             bool emitted = false;
             if (order != end) {
-                auto &temp = temps[order->second];
+                auto &temp = temps[*order];
                 if (temp.phaseMin > minPhaseTemp) {
-                    emitted = emit(0, ncnum, minPhaseTemp, temp.phaseMin - 1);
+                    emitted = emit(range0, minPhaseTemp, temp.phaseMin - 1);
                     minPhaseTemp = temp.phaseMin;
                 }
             }
             if (!emitted)
                 throw out_of_registers_exception();
-            groupInstructions(joined, /*reset=*/true);
+            groupInstructions(joined, range);
         }
 
         /* Issue instructions for this batch of instruction groups */
-        emit(cnum0, cnum1, minPhaseTemp, maxPhaseTemp);
+        emit(range, minPhaseTemp, maxPhaseTemp);
 
-        manager.release(cnum1);
-        cnum0 = cnum1;
-        cnum1 = ncnum;
+        manager.release(range.end + 1);
+        range.start = range.end + 1;
+        range.end = range0.end;
     }
 
     /* Issue any remaining instructions */
-    if (cnum0 < ncnum)
-        emit(cnum0, cnum1, minPhaseTemp, maxPhaseTemp);
+    if (range.start <= range0.end)
+        emit(range, minPhaseTemp, maxPhaseTemp);
     if (maxPhaseTemp < 0xFFFF)
-        emit(0, ncnum, maxPhaseTemp + 1, 0xFFFF);
+        emit(range0, maxPhaseTemp + 1, 0xFFFF);
 
     std::swap(insns, sortedInsns);
 
@@ -3652,9 +3751,7 @@ int CopyResource::getData(std::array<uint8_t, 64> &data) const
         }
 
         LUT16(e2m1, hf, 0x0, 0x3800, 0x3c00, 0x3e00, 0x4000, 0x4200, 0x4400, 0x4600, 0x8000, 0xb800, 0xbc00, 0xbe00, 0xc000, 0xc200, 0xc400, 0xc600)
-        LUT16(e3m0, hf, 0x0, 0x3400, 0x3800, 0x3c00, 0x4000, 0x4400, 0x4800, 0x4c00, 0x8000, 0xb400, 0xb800, 0xbc00, 0xc000, 0xc400, 0xc800, 0xcc00)
         LUT16(e2m1, bf, 0x0, 0x3f00, 0x3f80, 0x3fc0, 0x4000, 0x4040, 0x4080, 0x40c0, 0x8000, 0xbf00, 0xbf80, 0xbfc0, 0xc000, 0xc040, 0xc080, 0xc0c0)
-        LUT16(e3m0, bf, 0x0, 0x3e80, 0x3f00, 0x3f80, 0x4000, 0x4080, 0x4100, 0x4180, 0x8000, 0xbe80, 0xbf00, 0xbf80, 0xc000, 0xc080, 0xc100, 0xc180)
 
         LUT16(u4, hf, 0x0, 0x3c00, 0x4000, 0x4200, 0x4400, 0x4500, 0x4600, 0x4700, 0x4800, 0x4880, 0x4900, 0x4980, 0x4a00, 0x4a80, 0x4b00, 0x4b80)
         LUT16(s4, hf, 0x0, 0x3c00, 0x4000, 0x4200, 0x4400, 0x4500, 0x4600, 0x4700, 0xc800, 0xc700, 0xc600, 0xc500, 0xc400, 0xc200, 0xc000, 0xbc00)
@@ -3690,109 +3787,107 @@ int CopyPlan::cycleCount() const
     return count;
 }
 
-void CopyPlan::dump(int n) const
+void CopyPlan::dump(std::ostream &os, int n, bool sortInfo) const
 {
-    for (int i = 0; i < (int)insns.size(); ++i){
-	if(n < 0 || i < n)
-        insns[i].dump(*this);
+    for (int i = 0; i < std::min(n, (int)insns.size()); ++i) {
+        insns[i].dump(os, *this, sortInfo);
+        os << std::endl;
     }
 }
 
-void CopyInstruction::dump(const CopyPlan &plan) const
+void CopyInstruction::dump(std::ostream &os, const CopyPlan &plan, bool sortInfo) const
 {
     if (flag && cmod == ConditionModifier::none) {
-        std::cout << '(';
-        flag.dump();
-        std::cout << ")\t";
+        os << '(';
+        flag.dump(os);
+        os << ")\t";
     }
 
     if (op == Opcode::shfl)
-        std::cout << "shfl.idx4";
+        os << "shfl.idx4";
+    else if (op == Opcode::dnscl)
+        os << "dnscl";
     else
-    std::cout << getMnemonic(op, HW::Gen9);
+        os << getMnemonic(op, HW::Gen9);
     switch (op) {
-        case Opcode::bfn:  std::cout << ".(" << BFN::nodes[ctrl].str() << ')'; break;
-        case Opcode::math: std::cout << '.' << static_cast<MathFunction>(ctrl);   break;
+        case Opcode::bfn:  os << ".(" << BFN::nodes[ctrl].str() << ')';  break;
+        case Opcode::math: os << '.' << static_cast<MathFunction>(ctrl); break;
         default: break;
     }
 
-    std::cout << " (" << simd << ")\t";
-    if (sat) std::cout << "(sat) ";
+    os << " (" << simd << ")\t";
+    if (sat) os << "(sat) ";
     if (cmod != ConditionModifier::none) {
-        std::cout << '(' << cmod << ')';
-        flag.dump();
-        std::cout << ' ';
+        os << '(' << cmod << ')';
+        flag.dump(os);
+        os << ' ';
     }
-    dst.dump();
-    std::cout << '\t';
-    src0.dump();
+    dst.dump(os);
+    os << '\t';
+    src0.dump(os);
     if (src1) {
-        std::cout << '\t';
-        src1.dump();
-        if (src2) {
-            std::cout << '\t';
-            src2.dump();
+        os << '\t';
+        src1.dump(os);
+        if (src2 || op == Opcode::dnscl) {
+            os << '\t';
+            src2.dump(os);
         }
     }
     if (atomic)
-        std::cout << "\t{Atomic}";
+        os << "\t{Atomic}";
 
-    if (getVerbose(GEMMVerbose::DebugInfo) >= 180)
-        std::cout << "\t\t(phase = " << phase << ", cnum = [" << cnumMin << ", " << cnumMax << "])";
-
-    std::cout << std::endl;
+    if (sortInfo)
+        os << "\t\t(phase = " << phase << ", range = " << range.str() << ')';
 }
 
-void CopyOperand::dump() const
+void CopyOperand::dump(std::ostream &os) const
 {
-    auto outType = [](DataType dt) {
-        if (dt == Type::ngen_nf4())       std::cout << "nf4";
-        else if (dt == Type::ngen_e8m0()) std::cout << "e8m0";
-        else if (dt == DataType::e2m1) std::cout << "e2m1";
-        else if (dt == DataType::e3m0) std::cout << "e3m0";
-        else if (dt == ngen_b16_l4x())    std::cout << "b16_l4x";
-        else if (dt == ngen_b16_h4x())    std::cout << "b16_h4x";
-        else if (dt == ngen_b16())        std::cout << "b16";
-        else                              std::cout << dt;
+    auto outType = [&](DataType dt) {
+        if (dt == Type::ngen_nf4())       os << "nf4";
+        else if (dt == Type::ngen_e8m0()) os << "e8m0";
+        else if (dt == ngen_b16_l4x())    os << "b16_l4x";
+        else if (dt == ngen_b16_h4x())    os << "b16_h4x";
+        else if (dt == ngen_b16())        os << "b16";
+        else                              os << dt;
     };
 
-    if (neg) std::cout << '-';
-    if (abs) std::cout << "(abs)";
+    if (neg) os << '-';
+    if (abs) os << "(abs)";
     switch (kind) {
-        case Null: std::cout << "null:" << type; break;
+        case Null: os << "null:" << type; break;
         case GRF:
             if (temp) {
-                std::cout << 't' << value;
-                if (grf) std::cout << '+' << grf;
+                os << 't' << value;
+                if (grf) os << '+' << grf;
             } else
-                std::cout << 'r' << grf;
-            std::cout << '.' << int(offset) << ':';
+                os << 'r' << grf;
+            os << '.' << int(offset) << ':';
             outType(type);
             if (range != DataType::invalid && range != type) {
-                std::cout << '[';
+                os << '[';
                 outType(range);
-                std::cout << ']';
+                os << ']';
             }
-            std::cout << '<';
+            os << '<';
             if (vs || width)
-                std::cout << int(vs) << ';' << int(width) << ',';
-            std::cout << int(stride) << '>';
+                os << int(vs) << ';' << int(width) << ',';
+            os << int(stride) << '>';
             break;
         case Flag:
             if (temp)
-                std::cout << 't' << value;
+                os << 't' << value;
             else
-                std::cout << 'f' << (grf >> 1) << '.' << (grf & 1);
+                os << 'f' << (grf >> 1) << '.' << (grf & 1);
             if (offset)
-                std::cout << '+' << int(offset);
+                os << '+' << int(offset);
             break;
         case Immediate:
             LabelManager man;
-            ngenImmediate().outputText(std::cout, PrintDetail::full, man);
+            ngenImmediate().outputText(os, PrintDetail::full, man);
             break;
     }
-    if (stride > 1 && overwriteStride) std::cout << "!!";
-    else if (overwrite)                std::cout << '!';
+    if (stride > 1 && overwriteStride) os << "!!";
+    else if (overwrite)                os << '!';
 }
 #endif /* GEMMSTONE_ENABLE_COPY_PLAN_DUMP */
 

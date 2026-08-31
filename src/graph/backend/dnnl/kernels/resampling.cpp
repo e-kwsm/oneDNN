@@ -33,11 +33,9 @@ namespace graph {
 namespace dnnl_impl {
 
 status_t resampling_fwd_t::compile_impl(const dnnl_partition_impl_t *part,
-        const engine_t *g_engine, const std::vector<logical_tensor_t> &inputs,
+        engine_t *eng, const std::vector<logical_tensor_t> &inputs,
         const std::vector<logical_tensor_t> &outputs) {
-    p_engine_ = make_dnnl_engine(*g_engine);
-    g_alloc_
-            = reinterpret_cast<graph::allocator_t *>(g_engine->get_allocator());
+    p_engine_ = make_dnnl_engine(*eng);
 
     subgraph_ = std::make_shared<subgraph_t>(part->get_ops(), p_engine_,
             part->get_fpmath_mode(), part->get_use_blocked_layout(), true);
@@ -112,54 +110,46 @@ void resampling_fwd_t::prepare_args_set(const execution_args_set_t *res,
     }
 }
 
-status_t resampling_fwd_t::execute_impl(const stream_t *g_stream,
+status_t resampling_fwd_t::execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs) {
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf) {
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    auto scratchpad = std::make_shared<temporary_scratchpad_t>(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    assertm(scratchpad->size()
-                    >= memory_planner_.total_internal_temporary_size(),
-            "no enough scratchpad memory");
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
     prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         subgraph_->execs_[i]->execute(p_stream, res->get_exec_args()[i]);
     }
 
-    prolong_temporary_scratchpad_lifetime(g_stream, scratchpad);
+    prolong_scratchpad_lifetime(strm, scratchpad);
 
     return status::success;
 }
 
 #ifdef DNNL_WITH_SYCL
-status_t resampling_fwd_t::sycl_execute_impl(const stream_t *g_stream,
+status_t resampling_fwd_t::sycl_execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
         const std::vector<::sycl::event> &sycl_deps,
         ::sycl::event *sycl_event) {
 
     auto deps = sycl_deps;
     std::optional<::sycl::event> returned_event;
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    temporary_scratchpad_t scratchpad(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    assertm(scratchpad.size()
-                    >= memory_planner_.total_internal_temporary_size(),
-            "no enough scratchpad memory");
-    prepare_args_set(res, inputs, outputs, scratchpad);
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
+    prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         returned_event = subgraph_->execs_[i]->execute_sycl(
@@ -167,7 +157,7 @@ status_t resampling_fwd_t::sycl_execute_impl(const stream_t *g_stream,
         if (returned_event) deps = {*returned_event};
     }
 
-    scratchpad.set_deps(returned_event ? *returned_event : ::sycl::event {});
+    scratchpad->set_deps(returned_event ? *returned_event : ::sycl::event {});
     if (sycl_event)
         *sycl_event = returned_event ? *returned_event : ::sycl::event {};
 
@@ -176,26 +166,22 @@ status_t resampling_fwd_t::sycl_execute_impl(const stream_t *g_stream,
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-status_t resampling_fwd_t::ocl_execute_impl(const stream_t *g_stream,
+status_t resampling_fwd_t::ocl_execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
-        const std::vector<cl_event> &cl_deps, cl_event *ret_event) {
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
+        const std::vector<ocl_event_t> &cl_deps, ocl_event_t &ret_event) {
 
     auto deps = cl_deps;
-    cl_event returned_event {};
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+    ocl_event_t returned_event;
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    temporary_scratchpad_t scratchpad(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    assertm(scratchpad.size()
-                    >= memory_planner_.total_internal_temporary_size(),
-            "no enough scratchpad memory");
-    prepare_args_set(res, inputs, outputs, scratchpad);
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
+    prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         returned_event = subgraph_->execs_[i]->execute_ocl(
@@ -203,8 +189,8 @@ status_t resampling_fwd_t::ocl_execute_impl(const stream_t *g_stream,
         deps = {returned_event};
     }
 
-    scratchpad.set_deps(returned_event);
-    if (ret_event) *ret_event = returned_event;
+    scratchpad->set_deps(returned_event.get());
+    ret_event = std::move(returned_event);
 
     return status::success;
 }
@@ -212,11 +198,9 @@ status_t resampling_fwd_t::ocl_execute_impl(const stream_t *g_stream,
 
 #if BUILD_TRAINING
 status_t resampling_bwd_t::compile_impl(const dnnl_partition_impl_t *part,
-        const engine_t *g_engine, const std::vector<logical_tensor_t> &inputs,
+        engine_t *eng, const std::vector<logical_tensor_t> &inputs,
         const std::vector<logical_tensor_t> &outputs) {
-    p_engine_ = make_dnnl_engine(*g_engine);
-    g_alloc_
-            = reinterpret_cast<graph::allocator_t *>(g_engine->get_allocator());
+    p_engine_ = make_dnnl_engine(*eng);
 
     subgraph_ = std::make_shared<subgraph_t>(part->get_ops(), p_engine_,
             part->get_fpmath_mode(), part->get_use_blocked_layout(), true);
@@ -275,54 +259,46 @@ void resampling_bwd_t::prepare_args_set(const execution_args_set_t *res,
     }
 }
 
-status_t resampling_bwd_t::execute_impl(const stream_t *g_stream,
+status_t resampling_bwd_t::execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs) {
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf) {
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    auto scratchpad = std::make_shared<temporary_scratchpad_t>(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    assertm(scratchpad->size()
-                    >= memory_planner_.total_internal_temporary_size(),
-            "no enough scratchpad memory");
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
     prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         subgraph_->execs_[i]->execute(p_stream, res->get_exec_args()[i]);
     }
 
-    prolong_temporary_scratchpad_lifetime(g_stream, scratchpad);
+    prolong_scratchpad_lifetime(strm, scratchpad);
 
     return status::success;
 }
 
 #ifdef DNNL_WITH_SYCL
-status_t resampling_bwd_t::sycl_execute_impl(const stream_t *g_stream,
+status_t resampling_bwd_t::sycl_execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
         const std::vector<::sycl::event> &sycl_deps,
         ::sycl::event *sycl_event) {
 
     auto deps = sycl_deps;
     std::optional<::sycl::event> returned_event;
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    temporary_scratchpad_t scratchpad(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    assertm(scratchpad.size()
-                    >= memory_planner_.total_internal_temporary_size(),
-            "no enough scratchpad memory");
-    prepare_args_set(res, inputs, outputs, scratchpad);
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
+    prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         returned_event = subgraph_->execs_[i]->execute_sycl(
@@ -330,7 +306,7 @@ status_t resampling_bwd_t::sycl_execute_impl(const stream_t *g_stream,
         if (returned_event) deps = {*returned_event};
     }
 
-    scratchpad.set_deps(returned_event ? *returned_event : ::sycl::event {});
+    scratchpad->set_deps(returned_event ? *returned_event : ::sycl::event {});
     if (sycl_event)
         *sycl_event = returned_event ? *returned_event : ::sycl::event {};
 
@@ -339,26 +315,22 @@ status_t resampling_bwd_t::sycl_execute_impl(const stream_t *g_stream,
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-status_t resampling_bwd_t::ocl_execute_impl(const stream_t *g_stream,
+status_t resampling_bwd_t::ocl_execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
-        const std::vector<cl_event> &cl_deps, cl_event *ret_event) {
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
+        const std::vector<ocl_event_t> &cl_deps, ocl_event_t &ret_event) {
 
     auto deps = cl_deps;
-    cl_event returned_event {};
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+    ocl_event_t returned_event;
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    temporary_scratchpad_t scratchpad(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    assertm(scratchpad.size()
-                    >= memory_planner_.total_internal_temporary_size(),
-            "no enough scratchpad memory");
-    prepare_args_set(res, inputs, outputs, scratchpad);
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
+    prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         returned_event = subgraph_->execs_[i]->execute_ocl(
@@ -366,8 +338,8 @@ status_t resampling_bwd_t::ocl_execute_impl(const stream_t *g_stream,
         deps = {returned_event};
     }
 
-    scratchpad.set_deps(returned_event);
-    if (ret_event) *ret_event = returned_event;
+    scratchpad->set_deps(returned_event.get());
+    ret_event = std::move(returned_event);
 
     return status::success;
 }

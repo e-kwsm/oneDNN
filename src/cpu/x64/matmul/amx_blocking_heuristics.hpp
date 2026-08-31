@@ -17,7 +17,6 @@
 #ifndef CPU_X64_MATMUL_AMX_BLOCKING_HEURISTICS_HPP
 #define CPU_X64_MATMUL_AMX_BLOCKING_HEURISTICS_HPP
 
-#include "common/math_utils.hpp"
 #include "cpu/x64/matmul/brgemm_matmul_utils.hpp"
 
 namespace dnnl {
@@ -25,6 +24,77 @@ namespace impl {
 namespace cpu {
 namespace x64 {
 namespace matmul {
+struct layer_perf_characteristics_t {
+    size_t a_size {0}, b_size {0}, d_size {0};
+    float strip_1_size_shared {0}, strip_1_size_private {0},
+            strip_1_share_coef {0};
+    float strip_mid_size_shared {0}, strip_mid_size_private {0};
+    float num_tmuls_per_strip {0}, strip_mid_share_coef {0}, num_strip {0},
+            nt_mat_l1_miss {0};
+    float l1_reuse {0};
+    float num_postop_cache_lines {0};
+    dim_t num_cycles_per_tmul {0};
+
+    bool strip1_b_tranform_h {false};
+    bool strips_b_tranform_v {false};
+    bool strip1_b_in_mlc_h {false};
+
+    bool strip1_a_read_v {false};
+    bool strips_a_read_h {false};
+};
+
+class bw_map_t {
+public:
+    bw_map_t() = default;
+
+    float get_bw(int x) const { return linear_interpolation(multicore_bw, x); }
+
+    // All the following bandwidth measurements were taken on an
+    // EMR machine with two NUMA domains, each containing 32 cores.
+
+    // This BW is the BW for read/store when hitting the L1
+    const float l1_load_hit_bw = (float)106.41;
+    const float l1_store_hit_bw = l1_load_hit_bw;
+
+    // This l1 BW is the BW for read when missing the L1
+    const float l1_load_miss_bw = (float)(106.41 / 2.28);
+    // This l1 BW is the BW for store when missing the L1
+    const float l1_store_miss_bw = (float)(106.41 / 2.85);
+    // LLC BW
+    const float llc_bw = (float)6.0;
+
+private:
+    // This dictionary includes DRAM bandwidth for cores that share data.
+    // The key represents the number of cores sharing, and the value is the bandwidth.
+    const std::map<int, float> multicore_bw = {{32, 4.06f}, {16, 3.31f},
+            {8, 2.98f}, {4, 2.39f}, {2, 0.9f}, {1, 2.28f}};
+
+    float linear_interpolation(
+            const std::map<int, float> &points, int x) const {
+        // Find the interval [x0, x1] where x0 <= x <= x1
+        auto it = points.lower_bound(x);
+        if (it == points.end()) {
+            return points.rbegin()
+                    ->second; // x is greater than the largest x in the map
+        }
+        if (it == points.begin()) {
+            return it->second; // x is less than the smallest x in the map
+        }
+
+        auto it1 = it;
+        auto it0 = std::prev(it);
+
+        int x0 = it0->first;
+        float y0 = it0->second;
+        int x1 = it1->first;
+        float y1 = it1->second;
+
+        // Perform linear interpolation
+        return y0
+                + (y1 - y0) * static_cast<float>(x - x0)
+                / static_cast<float>(x1 - x0);
+    }
+};
 
 class matmul_amx_blocking_params_t : public brgemm_matmul_conf_t {
 public:
@@ -69,9 +139,13 @@ public:
 protected:
     virtual float calculate_blocking_scores() const = 0;
     virtual dim_t get_actual_lda() const;
+    // Size of one C buffer element as seen by the scratchpad footprint.
+    dim_t effective_c_buf_dt_sz(int nthr_k_cand) const;
+    // Whether scoring may price C in dst dt instead of the accumulator dt.
+    bool narrow_c_scoring_active() const;
 
     // Num threads for parallelism wrt K dimension
-    size_t nthr_m_ {0}, nthr_n_ {0}, nthr_k_ {0}, nthr_b_ {0};
+    int nthr_m_ {0}, nthr_n_ {0}, nthr_k_ {0}, nthr_b_ {0};
     // Num threads for parallelism wrt M, N and batch dimensions
     int nthr_mnb_ {0};
     int nthr_ {0};
@@ -149,9 +223,9 @@ private:
     size_t l2_matrix_and_c_usage(size_t k_chunk_size, size_t m_or_n_blk,
             size_t k_blk, bool is_horizontal) const;
     void set_core_divs(int nthr_b, int nthr_m, int nthr_k, int nthr_n);
-    int bw(size_t m_blk, size_t k_chunk_size, size_t k_blk, size_t n_blk,
+    size_t bw(size_t m_blk, size_t k_chunk_size, size_t k_blk, size_t n_blk,
             bool is_horizontal) const;
-    int compute(size_t m_blk, size_t k_chunk_size, size_t k_blk,
+    size_t compute(size_t m_blk, size_t k_chunk_size, size_t k_blk,
             size_t n_blk) const;
     float ratio(size_t m_blk, size_t k_chunk_size, size_t k_blk, size_t n_blk,
             bool is_horizontal) const;
@@ -168,6 +242,22 @@ private:
     bool operator<(const matmul_amx_blocking_params_macro_t &other) const;
     bool skip_extendable_k() const;
     bool b_transform_fits_in_l2() const;
+
+    void init_copy_characteristics(
+            layer_perf_characteristics_t &layer_perf_characteristics) const;
+    void calculate_layer_sizes(
+            layer_perf_characteristics_t &layer_perf_characteristics) const;
+    float calculate_strip_mid_cycles(
+            layer_perf_characteristics_t &layer_perf_characteristics,
+            bw_map_t &bw_interpolator) const;
+    float calculate_strip_1_cycles(
+            layer_perf_characteristics_t &layer_perf_characteristics,
+            bw_map_t &bw_interpolator, float strip_mid_cycles) const;
+    float calculate_reduction_cycles(
+            layer_perf_characteristics_t &layer_perf_characteristics,
+            bw_map_t &bw_interpolator) const;
+    float calculate_avx_insts_per_cache_line(
+            layer_perf_characteristics_t &layer_perf_characteristics) const;
 };
 
 class matmul_amx_blocking_params_micro_t : public matmul_amx_blocking_params_t {
@@ -175,8 +265,8 @@ public:
     matmul_amx_blocking_params_micro_t(const brgemm_matmul_conf_t &bgmmc)
         : matmul_amx_blocking_params_t(bgmmc) {}
 
-    void set_blocking_parameters(int nthr_k, int n_blk, int n_chunk_size,
-            int m_blk, int m_chunk_size);
+    void set_blocking_parameters(int nthr_k, dim_t n_blk, dim_t n_chunk_size,
+            dim_t m_blk, dim_t m_chunk_size);
 
     static void find_best_blocking(const brgemm_matmul_conf_t &bgmmc,
             const brgemm_matmul_conf_utils_t &bm_conf_utils,
@@ -191,57 +281,6 @@ private:
     size_t calculate_chunk_memory_size();
     float get_copied_data_reusage_scores() const;
     float get_L2_utilization_scores() const;
-};
-
-class bw_map_t {
-public:
-    bw_map_t() = default;
-
-    float get_bw(int x) const { return linear_interpolation(multicore_bw, x); }
-
-    // All the following bandwidth measurements were taken on an
-    // EMR machine with two NUMA domains, each containing 32 cores.
-
-    // This BW is the BW for read/store when hitting the L1
-    const float l1_load_hit_bw = (float)106.41;
-    const float l1_store_hit_bw = l1_load_hit_bw;
-
-    // This l1 BW is the BW for read when missing the L1
-    const float l1_load_miss_bw = (float)(106.41 / 2.28);
-    // This l1 BW is the BW for store when missing the L1
-    const float l1_store_miss_bw = (float)(106.41 / 2.85);
-    // LLC BW
-    const float llc_bw = (float)6.0;
-
-private:
-    // This dictionary includes DRAM bandwidth for cores that share data.
-    // The key represents the number of cores sharing, and the value is the bandwidth.
-    const std::map<int, float> multicore_bw = {
-            {32, 4.06}, {16, 3.31}, {8, 2.98}, {4, 2.39}, {2, 0.9}, {1, 2.28}};
-
-    float linear_interpolation(
-            const std::map<int, float> &points, float x) const {
-        // Find the interval [x0, x1] where x0 <= x <= x1
-        auto it = points.lower_bound(x);
-        if (it == points.end()) {
-            return points.rbegin()
-                    ->second; // x is greater than the largest x in the map
-        }
-        if (it == points.begin()) {
-            return it->second; // x is less than the smallest x in the map
-        }
-
-        auto it1 = it;
-        auto it0 = std::prev(it);
-
-        int x0 = it0->first;
-        float y0 = it0->second;
-        int x1 = it1->first;
-        float y1 = it1->second;
-
-        // Perform linear interpolation
-        return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
-    }
 };
 
 } // namespace matmul

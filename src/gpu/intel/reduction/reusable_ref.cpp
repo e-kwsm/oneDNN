@@ -64,12 +64,12 @@ ref_conf_t::ref_conf_t(const subproblem_t &subprb, alg_kind_t alg,
 status_t ref_conf_t::init_dispatcher(const subproblem_t &subprb,
         const intel::engine_t &engine, gpu_primitive_attr_t *gpu_attr) {
 
-    compute::named_buffer_t src_buf("SRC");
+    compute::named_buffer_t src_buf(compute::name_id_t::src);
     src_buf.data_type = conf.src_dt;
     src_buf.append_block(dims::outer, subprb.outer_block.block);
     src_buf.append_block(dims::reduction, subprb.reduction_block.block);
     src_buf.append_block(dims::inner, subprb.inner_block.block);
-    compute::named_buffer_t dst_buf("DST", src_buf);
+    compute::named_buffer_t dst_buf(compute::name_id_t::dst, src_buf);
     dst_buf.data_type = conf.dst_dt;
     dst_buf.remove_dim(dims::reduction);
 
@@ -101,7 +101,7 @@ void reusable_ref_t::pd_t::init_scratchpad() {
     }
 }
 
-status_t reusable_ref_t::pd_t::init_conf(impl::engine_t *engine) {
+status_t reusable_ref_t::pd_t::init_conf(const impl::engine_t *engine) {
     const memory_desc_wrapper src_mdw(src_md());
     const memory_desc_wrapper dst_mdw(dst_md());
     const int ndims = src_mdw.ndims();
@@ -160,7 +160,7 @@ status_t reusable_ref_t::pd_t::init_conf(impl::engine_t *engine) {
     }
 
     const intel::engine_t *intel_engine
-            = utils::downcast<intel::engine_t *>(engine);
+            = utils::downcast<const intel::engine_t *>(engine);
     auto *gpu_attr
             = utils::downcast<gpu_primitive_attr_t *>(attr()->gpu_attr_.get());
 
@@ -260,7 +260,7 @@ status_t reusable_ref_t::execute(const exec_ctx_t &ctx) const {
         arg_list.append(pd()->div);
         arg_list.append(pd()->desc()->p);
         arg_list.append(pd()->desc()->eps);
-        arg_list.append(phase.rt_conf.get());
+        append_rt_params(arg_list, phase.rt_conf);
 
         CHECK(parallel_for(ctx, nd_range, kernel, arg_list));
     }

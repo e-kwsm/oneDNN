@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2016 Intel Corporation
+* Copyright 2026 Advanced Micro Devices, Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -36,7 +37,7 @@ namespace impl {
 /** thin wrapper class over \struct memory_desc_t which allows easy
  * manipulations with underlying C structure, which is taken by reference */
 // NOLINTNEXTLINE(readability-identifier-naming)
-struct memory_desc_wrapper : public c_compatible {
+struct memory_desc_wrapper {
     const memory_desc_t *md_;
 
     /** constructor which takes a reference to a constant underlying C memory
@@ -71,6 +72,9 @@ struct memory_desc_wrapper : public c_compatible {
     }
     bool is_cublaslt_blocked_desc() const {
         return format_kind() == format_kind::cublaslt_blocked;
+    }
+    bool is_zen_packed_desc() const {
+        return format_kind() == format_kind::zen_packed;
     }
     bool is_sparse_desc() const { return format_kind() == format_kind::sparse; }
     bool is_grouped_desc() const {
@@ -162,6 +166,11 @@ struct memory_desc_wrapper : public c_compatible {
         return md_->format_desc.cublaslt_blocked_desc;
     }
 
+    const zen_packed_desc_t &zen_packed_desc() const {
+        assert(is_zen_packed_desc());
+        return md_->format_desc.zen_packed_desc;
+    }
+
     const sparse_desc_t &sparse_desc() const {
         assert(is_sparse_desc());
         return md_->format_desc.sparse_desc;
@@ -182,7 +191,12 @@ struct memory_desc_wrapper : public c_compatible {
         return sparse_desc().nnz;
     }
 
-    const dims_t &strides() const { return blocking_desc().strides; }
+    const dims_t &strides() const {
+#if DNNL_EXPERIMENTAL_GROUPED_MEMORY
+        if (is_grouped_desc()) return sparse_desc().grouped_desc.strides;
+#endif
+        return blocking_desc().strides;
+    }
 
     const memory_extra_desc_t &extra() const { return md_->extra; }
 
@@ -217,7 +231,7 @@ struct memory_desc_wrapper : public c_compatible {
      * For the rest data types returns 1. */
     size_t sub_byte_data_type_multiplier() const {
         if (utils::one_of(data_type(), data_type::s4, data_type::u4,
-                    data_type::f4_e2m1, data_type::f4_e3m0))
+                    data_type::f4_e2m1))
             return 2;
         return 1;
     }
@@ -300,6 +314,37 @@ struct memory_desc_wrapper : public c_compatible {
         return buff_size;
     }
 
+    /** returns the number of elements spanned by the descriptor, i.e. one past
+     * the largest linear offset `off_v()` may return. Exceeds `nelems(true)`
+     * for strided descriptors. */
+    size_t span() const {
+        if (utils::one_of(format_kind(), format_kind::undef, format_kind::any)
+                || is_zero() || has_zero_dim())
+            return 0;
+
+        if (has_runtime_dims_or_strides()) return runtime_value_for<size_t>();
+
+        if (is_blocking_desc()) {
+            dims_t blocks = {0};
+            compute_blocks(blocks);
+
+            const auto &bd = blocking_desc();
+
+            dim_t max_size = 0;
+            for (int d = 0; d < ndims(); ++d) {
+                dim_t strided_pdim = padded_dims()[d] / blocks[d];
+                dim_t effective_stride = strided_pdim == 1 ? 1 : bd.strides[d];
+                max_size = nstl::max(max_size, strided_pdim * effective_stride);
+            }
+
+            if (max_size == 1 && bd.inner_nblks != 0) max_size = blk_size();
+            return static_cast<size_t>(max_size);
+        } else {
+            assert(!"unsupported format kind");
+            return 0;
+        }
+    }
+
     /** returns the size required to store described memory note: does not
         include offset0 by default */
     size_t size(int index = 0, bool include_additional_size = true,
@@ -310,7 +355,7 @@ struct memory_desc_wrapper : public c_compatible {
 
         if (utils::one_of(format_kind(), format_kind::blocked,
                     format_kind::wino, format_kind::rnn_packed,
-                    format_kind::cublaslt_blocked)
+                    format_kind::cublaslt_blocked, format_kind::zen_packed)
                 && index != 0) {
             return 0;
         }
@@ -323,23 +368,10 @@ struct memory_desc_wrapper : public c_compatible {
             return rnn_packed_desc().size;
         } else if (is_cublaslt_blocked_desc()) {
             return cublaslt_blocked_desc().size;
+        } else if (is_zen_packed_desc()) {
+            return zen_packed_desc().size;
         } else if (is_blocking_desc()) {
-            dims_t blocks = {0};
-            compute_blocks(blocks);
-
-            const auto &bd = blocking_desc();
-
-            size_t max_size = 0;
-            for (int d = 0; d < ndims(); ++d) {
-                dim_t strided_pdim = padded_dims()[d] / blocks[d];
-                dim_t effective_stride = strided_pdim == 1 ? 1 : bd.strides[d];
-                max_size = nstl::max<size_t>(
-                        max_size, strided_pdim * effective_stride);
-            }
-
-            if (max_size == 1 && bd.inner_nblks != 0) {
-                max_size = static_cast<size_t>(blk_size());
-            }
+            const size_t max_size = span();
 
             // `div_up` guarantees a spot in memory for odd number of half-byte
             // elements. Crucial case is `1` when simple division returns 0.
@@ -712,7 +744,8 @@ inline bool memory_desc_wrapper::similar_to(const memory_desc_wrapper &rhs,
 
     if (one_of(format_kind(), format_kind::undef, format_kind::any))
         return false;
-    if (is_wino_desc() || is_rnn_packed_desc() || is_cublaslt_blocked_desc())
+    if (is_wino_desc() || is_rnn_packed_desc() || is_cublaslt_blocked_desc()
+            || is_zen_packed_desc())
         return false;
 
     const int ds = dim_start;

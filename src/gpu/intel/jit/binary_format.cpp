@@ -176,9 +176,8 @@ public:
         *skip_check = false;
 
         if (hw != HW::Unknown) {
-            auto product = engine->device_info()->gpu_product();
-            binary_format_kernel_t<hw> binary_format_kernel(
-                    engine, compute::device_info_t::ngen_product(product));
+            const ngen::Product &product = engine->device_info()->product();
+            binary_format_kernel_t<hw> binary_format_kernel(engine, product);
             auto status = engine->create_kernel(&kernel, &binary_format_kernel);
             if (status != status::success) return nullptr;
             *skip_check = binary_format_kernel.binaryIsZebin();
@@ -374,9 +373,8 @@ status_t init_mayiuse_ngen_kernels(impl::engine_t *engine,
     // Bail out if the detected architecture is disabled at build time.
     bool arch_enabled = false;
     switch (arch) {
-        case compute::gpu_arch_t::xe_lp:
-            REG_XELP_ISA(arch_enabled = true);
-            break;
+        // xe_lp is intentionally skipped: Xe-LP optimizations are disabled at build time.
+        case compute::gpu_arch_t::xe_lp: break;
         // xe_hp is intentionally skipped: no publicly released hardware.
         case compute::gpu_arch_t::xe_hp: break;
         case compute::gpu_arch_t::xe_hpg:
@@ -394,16 +392,11 @@ status_t init_mayiuse_ngen_kernels(impl::engine_t *engine,
     }
     if (!arch_enabled) return status::success;
 
-    if (arch <= compute::gpu_arch_t::xe3p) {
-        auto status = gpu_supports_binary_format(&mayiuse_ngen_kernels, engine);
-        if (status != status::success) {
-            VWARN(common, runtime,
-                    "nGEN fallback (gpu does not support binary format "
-                    "kernels)");
-            mayiuse_ngen_kernels = false;
-        }
-    } else {
-        mayiuse_ngen_kernels = true;
+    auto status = gpu_supports_binary_format(&mayiuse_ngen_kernels, engine);
+    if (status != status::success) {
+        VWARN(common, runtime,
+                "nGEN fallback (gpu does not support binary format kernels)");
+        mayiuse_ngen_kernels = false;
     }
     return status::success;
 }
