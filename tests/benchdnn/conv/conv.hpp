@@ -29,6 +29,7 @@
 #include "dnnl_common.hpp"
 #include "utils/cfg.hpp"
 #include "utils/perf_report.hpp"
+#include "utils/prb.hpp"
 #include "utils/settings.hpp"
 
 namespace conv {
@@ -103,7 +104,7 @@ struct settings_t : public base_settings_t {
 
     const char *perf_template_csv() const {
         static const std::string args
-                = "%dir%,%sdt%,%stag%,%wtag%,%dtag%,%alg%";
+                = "%dir%,%sdt%,%bia_dt%,%stag%,%wtag%,%dtag%,%alg%";
         return perf_template_csv_base(args);
     }
 
@@ -117,7 +118,7 @@ struct settings_t : public base_settings_t {
     }
 };
 
-struct prb_t : public desc_t {
+struct prb_t : public desc_t, public base_prb_t {
     // A ctor with common interface across all drivers.
     prb_t(const settings_t &s)
         : prb_t(s.desc, s.dir[0], s.dt[0], s.bia_dt[0], s.stag[0], s.wtag[0],
@@ -134,7 +135,7 @@ struct prb_t : public desc_t {
             int64_t mb, const attr_t &attr, const thr_ctx_t &ctx_init,
             const thr_ctx_t &ctx_exe, const impl_filter_t &impl_filter)
         : desc_t(desc)
-        , dir(dir)
+        , base_prb_t(dir, false, attr, ctx_init, ctx_exe, impl_filter)
         , dt(dt)
         , bia_dt_(bia_dt)
         , stag(stag)
@@ -143,11 +144,7 @@ struct prb_t : public desc_t {
         , strides(strides)
         , alg(alg)
         , user_mb(mb)
-        , ops(0)
-        , attr(attr)
-        , ctx_init(ctx_init)
-        , ctx_exe(ctx_exe)
-        , impl_filter(impl_filter) {
+        , ops(0) {
         if (mb) this->mb = mb;
 
         // Broadcast data types if needed
@@ -159,8 +156,6 @@ struct prb_t : public desc_t {
         count_ops();
         repro = set_repro_line(); // must be last in ctor to collect right info
     }
-
-    dir_t dir;
     std::vector<dnnl_data_type_t> dt;
     dnnl_data_type_t bia_dt_; // `_` to avoid conflicting name with bia_dt().
     std::string stag, wtag, dtag;
@@ -168,11 +163,6 @@ struct prb_t : public desc_t {
     mutable alg_t alg; // `mutable` because of `AUTO`.
     int64_t user_mb;
     double ops;
-    bool inplace = false; // Lacks placement, always considered `false`.
-    attr_t attr;
-    thr_ctx_t ctx_init, ctx_exe;
-    impl_filter_t impl_filter;
-
     void count_ops();
     int64_t count_n_acc() const {
         return (dir & FLAG_FWD)    ? kd * kh * kw * ic / g
@@ -186,25 +176,23 @@ struct prb_t : public desc_t {
     dnnl_data_type_t dst_dt() const { return dt[2]; }
     dnnl_data_type_t get_dt(data_kind_t data_kind) const;
 
-    // Used to construct memory desc when dimensions are runtime since such mds
-    // can't be used directly from query and memory objects can't be constructed.
-    benchdnn_dnnl_wrapper_t<dnnl_memory_desc_t> get_md(int arg) const {
-        assert(!"No runtime dimensions support for this driver!");
-        return make_benchdnn_dnnl_wrapper<dnnl_memory_desc_t>(nullptr);
+    static const prb_t *from(const base_prb_t *base_prb) {
+        return downcast<const prb_t *>(base_prb);
     }
 
-    const char *str() const { return repro.c_str(); }
+    void skip_unimplemented(res_t *res) const override;
+    void skip_invalid(res_t *res) const override;
+    std::vector<int> supported_exec_args(
+            bool override_dir_with_fwd) const override;
 
 private:
-    std::string repro;
-
-    std::string set_repro_line();
+    std::string set_repro_line() override;
 };
 
 struct perf_report_t : public base_perf_report_t {
-    perf_report_t(const prb_t *prb, const char *perf_template)
+    perf_report_t(const base_prb_t *base_prb, const char *perf_template)
         : base_perf_report_t(perf_template)
-        , p_(prb)
+        , p_(prb_t::from(base_prb))
         , stag_({normalize_tag(p_->stag, p_->ndims)})
         , wtag_(normalize_tag(p_->wtag, p_->ndims))
         , dtag_(normalize_tag(p_->dtag, p_->ndims)) {}
@@ -219,6 +207,7 @@ struct perf_report_t : public base_perf_report_t {
     const std::vector<dnnl_data_type_t> *sdt() const override {
         return &p_->dt;
     }
+    const dnnl_data_type_t *bia_dt() const override { return &p_->bia_dt_; }
     const attr_t *attr() const override { return &p_->attr; }
     const thr_ctx_t *ctx_init() const override { return &p_->ctx_init; }
     const thr_ctx_t *ctx_exe() const override { return &p_->ctx_exe; }
@@ -277,25 +266,22 @@ inline int64_t dst_off_f(const prb_t *prb, int64_t mb, int64_t g, int64_t oc,
 int fill_data(data_kind_t kind, int exec_arg, const prb_t *prb,
         const cfg_t &cfg, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp, res_t *res);
 
-dnnl_status_t init_pd(init_pd_args_t<prb_t> &init_pd_args);
-void setup_cmp(compare::compare_t &cmp, const prb_t *prb, data_kind_t kind,
-        const args_t &ref_args);
-std::vector<int> supported_exec_args(dir_t dir = FLAG_FWD);
+dnnl_status_t init_pd(init_pd_args_t &init_pd_args);
+void setup_cmp(compare::compare_t &cmp, const base_prb_t *base_prb,
+        data_kind_t kind, const args_t &ref_args);
 int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
-        dnnl_primitive_t prim, const prb_t *prb, res_t *res,
+        dnnl_primitive_t prim, const base_prb_t *base_prb, res_t *res,
         dnnl_primitive_t prim_ref = nullptr);
 
-void skip_unimplemented_prb(const prb_t *prb, res_t *res);
-void skip_invalid_prb(const prb_t *prb, res_t *res);
-void compute_ref(const prb_t *prb, dir_t dir, const args_t &args,
+void compute_ref(const base_prb_t *base_prb, dir_t dir, const args_t &args,
         dnnl_primitive_t prim_ref = nullptr);
 
 int createit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res);
+        const base_prb_t *base_prb, res_t *res);
 int checkit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res);
+        const base_prb_t *base_prb, res_t *res);
 int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res);
+        const base_prb_t *base_prb, res_t *res);
 int bench(int argc, char **argv);
 
 } // namespace conv

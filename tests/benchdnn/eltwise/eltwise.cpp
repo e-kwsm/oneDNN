@@ -21,6 +21,7 @@
 
 #include "oneapi/dnnl/dnnl.h"
 
+#include "utils/dnnl_query.hpp"
 #include "utils/memory.hpp"
 #include "utils/parallel.hpp"
 
@@ -31,8 +32,8 @@
 
 namespace eltwise {
 
-dnnl_status_t init_pd(init_pd_args_t<prb_t> &init_pd_args) {
-    const prb_t *prb = init_pd_args.prb;
+dnnl_status_t init_pd(init_pd_args_t &init_pd_args) {
+    const prb_t *prb = prb_t::from(init_pd_args.base_prb);
     const dir_t dir = init_pd_args.dir;
     res_t *res = init_pd_args.res;
     bool force_f32_dt = init_pd_args.force_f32_dt;
@@ -196,10 +197,10 @@ static float get_eltwise_zero_trust_percent(const prb_t *prb) {
 }
 
 int fill_data(int exec_arg, const prb_t *prb, data_kind_t kind,
-        dnn_mem_t &mem_dt, dnn_mem_t &mem_fp) {
+        dnn_mem_t &mem_dt, dnn_mem_t &mem_fp, res_t *res) {
     const auto nelems = mem_fp.nelems();
     if (nelems == 0) return OK;
-    if (fill_from_file(exec_arg, mem_dt, mem_fp)) return OK;
+    if (fill_from_file(exec_arg, mem_dt, mem_fp, res)) return OK;
 
     // Refer to modes documentation for filling principles.
     if (has_bench_mode_bit(mode_bit_t::bitwise)) {
@@ -281,12 +282,13 @@ int fill_data(int exec_arg, const prb_t *prb, data_kind_t kind,
         }
     });
 
-    SAFE(mem_dt.reorder(mem_fp), WARN);
+    SAFE(mem_dt.reorder(mem_fp, res), WARN);
 
     return OK;
 }
 
-void skip_unimplemented_prb(const prb_t *prb, res_t *res) {
+void prb_t::skip_unimplemented(res_t *res) const {
+    const prb_t *prb = this; // Kept to avoid mass update
     skip_unimplemented_data_type({prb->dt}, prb->dir, res);
     skip_unimplemented_sum_po(prb->attr, res, dnnl_eltwise, prb->dt);
     skip_unimplemented_binary_po(prb->attr, res);
@@ -300,7 +302,8 @@ void skip_unimplemented_prb(const prb_t *prb, res_t *res) {
     }
 }
 
-void skip_invalid_prb(const prb_t *prb, res_t *res) {
+void prb_t::skip_invalid(res_t *res) const {
+    const prb_t *prb = this; // Kept to avoid mass update
     bool is_invalid = false;
     switch (prb->alg) {
         case alg_t::CLIP:
@@ -365,8 +368,9 @@ bool miopen_check_correctness(const prb_t *prb,
     return false;
 }
 
-void setup_cmp(compare::compare_t &cmp, const prb_t *prb, data_kind_t kind,
-        const args_t &ref_args) {
+void setup_cmp(compare::compare_t &cmp, const base_prb_t *base_prb,
+        data_kind_t kind, const args_t &ref_args) {
+    const prb_t *prb = prb_t::from(base_prb);
     const float trh
             = get_eltwise_threshold(prb->dt, prb->alg, prb->dir & FLAG_FWD);
     cmp.set_threshold(trh);
@@ -393,7 +397,7 @@ void setup_cmp(compare::compare_t &cmp, const prb_t *prb, data_kind_t kind,
     cmp.set_driver_check_function(eltwise_add_check);
 }
 
-std::vector<int> supported_exec_args(dir_t dir) {
+std::vector<int> prb_t::supported_exec_args(bool override_dir_with_fwd) const {
     static const std::vector<int> exec_fwd_args = {
             DNNL_ARG_SRC,
             DNNL_ARG_DST,
@@ -403,34 +407,21 @@ std::vector<int> supported_exec_args(dir_t dir) {
             DNNL_ARG_DIFF_DST,
             DNNL_ARG_DIFF_SRC,
     };
-    // Use these args when `dir & FLAG_WEI` or `dir == BWD_W` indicating its
-    // `use_dst` case.
+    // Use these args for the `use_dst` case on backward.
     static const std::vector<int> exec_bwd_use_dst_args = {
             DNNL_ARG_DST,
             DNNL_ARG_DIFF_DST,
             DNNL_ARG_DIFF_SRC,
     };
-    // Since it costs much to enable a work around for `use_dst` at graph
-    // driver, just pass all of args there.
-    static const std::vector<int> exec_bwd_args_graph = {
-            DNNL_ARG_SRC,
-            DNNL_ARG_DST,
-            DNNL_ARG_DIFF_DST,
-            DNNL_ARG_DIFF_SRC,
-    };
-    // This driver uses additional information coming only from `prb` through
-    // the `dir` variable, which is not a clean solution, but the alternative
-    // is to modify the `supported_exec_args` signature and introduce a `param`
-    // struct to pass it to the call and fill according driver needs.
-    return (dir & FLAG_FWD)            ? exec_fwd_args
-            : (driver_name == "graph") ? exec_bwd_args_graph
-            : (dir & FLAG_WEI)         ? exec_bwd_use_dst_args
-                                       : exec_bwd_args;
+    return (override_dir_with_fwd || (dir & FLAG_FWD)) ? exec_fwd_args
+            : use_dst()                                ? exec_bwd_use_dst_args
+                                                       : exec_bwd_args;
 }
 
 int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
-        dnnl_primitive_t prim, const prb_t *prb, res_t *res,
+        dnnl_primitive_t prim, const base_prb_t *base_prb, res_t *res,
         dnnl_primitive_t prim_ref) {
+    const auto *prb = prb_t::from(base_prb);
     if (has_bench_mode_modifier(mode_modifier_t::no_ref_memory)) return OK;
 
     if (!ref_mem_map.empty()) { erase_unused_args(ref_mem_map, mem_map); }
@@ -460,23 +451,24 @@ int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
         switch (exec_arg) {
             case DNNL_ARG_SRC:
                 if (is_fwd_prim)
-                    SAFE(fill_data(exec_arg, prb, SRC, mem, ref_mem), WARN);
+                    SAFE(fill_data(exec_arg, prb, SRC, mem, ref_mem, res),
+                            WARN);
                 // Need a copy of source data for inplace mode for bitwise
                 // testing.
                 if (has_bench_mode_bit(mode_bit_t::bitwise) && prb->inplace) {
                     auto &src_copy = mem_map.at(-exec_arg);
                     SAFE(bool(src_copy) ? OK : FAIL, WARN);
-                    SAFE(src_copy.reorder(mem), WARN);
+                    SAFE(src_copy.reorder(mem, res), WARN);
                 }
                 break;
             case DNNL_ARG_DIFF_DST:
-                SAFE(fill_data(exec_arg, prb, DST, mem, ref_mem), WARN);
+                SAFE(fill_data(exec_arg, prb, DST, mem, ref_mem, res), WARN);
                 // Need a copy of source data for inplace mode for bitwise
                 // testing.
                 if (has_bench_mode_bit(mode_bit_t::bitwise) && prb->inplace) {
                     auto &diff_dst_copy = mem_map.at(-exec_arg);
                     SAFE(bool(diff_dst_copy) ? OK : FAIL, WARN);
-                    SAFE(diff_dst_copy.reorder(mem), WARN);
+                    SAFE(diff_dst_copy.reorder(mem, res), WARN);
                 }
                 break;
             default:
@@ -514,7 +506,8 @@ std::vector<data_kind_t> get_kinds_to_check(const prb_t *prb, dir_t dir) {
 }
 
 int createit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
     v_prim.resize(2); // just fwd or fwd + bwd.
     SAFE(init_prim(prb->ctx_init, v_prim[0], init_pd, prb, res, FLAG_FWD,
                  nullptr, /* is_service_prim = */ prb->dir & FLAG_BWD),
@@ -528,27 +521,31 @@ int createit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
 }
 
 int checkit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
     if (has_bench_mode_bit(mode_bit_t::exec)) {
         SAFE(check_total_size(res), WARN);
         if (v_prim[1]) SAFE(check_total_size(res), WARN);
     }
     if (has_bench_mode_bit(mode_bit_t::corr)) {
-        SAFE(check_caches(v_prim[0], prb, res), WARN);
-        if (v_prim[1]) { SAFE(check_caches(v_prim[1], prb, res), WARN); }
+        SAFE(check_caches(v_prim[0], prb->ctx_init, res), WARN);
+        if (v_prim[1]) {
+            SAFE(check_caches(v_prim[1], prb->ctx_init, res), WARN);
+        }
     }
     return OK;
 }
 
 int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
     set_zmalloc_max_expected_size(res->mem_size_args.zmalloc_expected_size);
 
     const auto &prim = prb->dir & FLAG_FWD ? v_prim[0] : v_prim[1];
 
     dnn_mem_map_t mem_map, ref_mem_map;
-    init_memory_args<prb_t>(
-            mem_map, prb, v_prim[0], supported_exec_args(FLAG_FWD));
+    init_memory_args(
+            mem_map, prb, v_prim[0], res, /*override_dir_with_fwd=*/true);
     TIME_FILL(SAFE(
             init_ref_memory_args(ref_mem_map, mem_map, v_prim[0], prb, res),
             WARN));
@@ -558,15 +555,14 @@ int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
     SAFE(run_execution(v_prim[0], args, res), WARN);
 
     check_correctness(prb, get_kinds_to_check(prb, FLAG_FWD), args, ref_args,
-            setup_cmp, res, FLAG_FWD);
+            compute_ref, setup_cmp, res, FLAG_FWD);
     SAFE(check_bitwise(prim, get_kinds_to_check(prb, FLAG_FWD), args, prb->attr,
                  prb->inplace, res),
             WARN);
 
     if (prb->dir & FLAG_BWD) {
         // Pass same memory map as we need data from forward on backward.
-        init_memory_args<prb_t>(mem_map, prb, v_prim[1],
-                supported_exec_args(prb->use_dst() ? FLAG_WEI : FLAG_BWD));
+        init_memory_args(mem_map, prb, v_prim[1], res);
         TIME_FILL(SAFE(
                 init_ref_memory_args(ref_mem_map, mem_map, v_prim[1], prb, res),
                 WARN));
@@ -577,7 +573,7 @@ int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
         SAFE(run_execution(v_prim[1], args, res), WARN);
 
         check_correctness(prb, get_kinds_to_check(prb, FLAG_BWD), args,
-                ref_args, setup_cmp, res, FLAG_BWD);
+                ref_args, compute_ref, setup_cmp, res, FLAG_BWD);
         SAFE(check_bitwise(prim, get_kinds_to_check(prb, FLAG_BWD), args,
                      prb->attr, prb->inplace, res),
                 WARN);

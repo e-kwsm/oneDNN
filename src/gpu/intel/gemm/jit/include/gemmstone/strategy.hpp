@@ -195,7 +195,7 @@ struct GEMMStrategyPOD : public CommonStrategy {
     bool fmaBoustrophedon = false;               // Use boustrophedon ordering inside FMA/DPAS blocks?
                                     ZPAD(A, 1)
     int fmaSIMD = 0;                             // Vector length for FMA (0 = default = 2 GRFs).
-    int kChain = 1;                              // # of FMAs to chain in k dimension.
+    int kChain = 0;                              // # of FMAs to chain in k dimension.
     int dotVL = 0;                               // If > 0, use dot products of the given length, instead of outer products.
     int wg[3] = {0,0,0};                         // m/n/k workgroup sizes, 0 if unconstrained. Indexed by LoopType.
     WGType forceWGUpdate = WGDynamic;            // Force work group update type.
@@ -214,7 +214,7 @@ struct GEMMStrategyPOD : public CommonStrategy {
     bool slmA = false, slmB = false;             // Whether to copy A/B to SLM.
     bool splitCopy = false;                      // Separate SLM copy and compute threads?
     bool tlbWarmup = false;                      // Enable TLB warmup?
-                                    ZPAD(C, 1)
+    bool tokenAlloc = false;                     // Enable dedicated SWSB token allocation for k loop loads/stores.
     int slmBuffers = 0;                          // # of A/B SLM buffers, 0 for none.
     int unrollKSLM = 0;                          // k unroll for SLM copies (0 = auto = unroll[LoopK]/slmCopies)
     int unrollKSLMMasked = 0;                    //   Alternate value to use with masking (0 = same as unrollKSLM)
@@ -356,7 +356,8 @@ struct GEMMStrategy : public GEMMStrategyPOD
     bool persistentLoop()     const { return persistent || kParallelVariable; }
 
     bool needsMNLocalIDs()    const { return xParallel || (slmBuffers > 0) || cooperativePF || kParallelLocal || persistentLoop()
-                                                       || namedBarriers[LoopM] || namedBarriers[LoopN] || (dpasw && !fixedSystolic); }
+                                                       || namedBarriers[LoopM] || namedBarriers[LoopN] || (dpasw && !fixedSystolic)
+                                                       || (l3PrefetchA || l3PrefetchB); }
     bool needsKLocalIDs()     const { return kParallelLocal || persistentLoop(); }
     bool needsKLoopBarrier()  const { return (barrierFreq > 0) || (slmBuffers > 0); }
     bool needsBarrier()       const { return needsKLoopBarrier() || xParallel || kParallelLocal || fuseBeta || fusePostOps; }

@@ -15,6 +15,7 @@
 *******************************************************************************/
 
 #include "utils/parser.hpp"
+#include "utils/stringstream.hpp"
 
 #include "parser.hpp"
 #include "utils.hpp"
@@ -133,6 +134,22 @@ bool parse_op_kind(std::vector<std::map<size_t, std::string>> &op_kind_map,
     return true;
 }
 
+bool parse_tensor_property(
+        std::vector<std::map<size_t, std::string>> &tensor_property_vec,
+        const char *str, const std::string &option_name) {
+    std::string s;
+    if (!parse_string(s, str, option_name)) return false;
+
+    if (s.find(":") == std::string::npos) {
+        BENCHDNN_PRINT(0, "%s\n",
+                "Error: --tensor-property is not correctly specified with a "
+                "pair of tensor id and target property type.");
+        SAFE_V(FAIL);
+    }
+    parse_key_value(tensor_property_vec, s, option_name);
+    return true;
+}
+
 bool parse_dt(std::vector<dnnl_data_type_t> &dt,
         std::vector<std::map<size_t, dnnl_data_type_t>> &dt_map,
         const char *str, const std::string &option_name) {
@@ -183,7 +200,7 @@ bool parse_graph_expected_n_partitions(
     if (!parse_string(expected_n_partitions_str, str, "expected-n-partitions"))
         return false;
 
-    dnnl::impl::stringstream_t ss(expected_n_partitions_str);
+    stringstream_t ss(expected_n_partitions_str);
 
     std::string expected_n_partitions;
     while (std::getline(ss, expected_n_partitions, ',')) {
@@ -212,7 +229,7 @@ bool parse_graph_fpmath_mode(
     std::string graph_attrs_str;
     if (!parse_string(graph_attrs_str, str, "attr-fpmath")) return false;
 
-    dnnl::impl::stringstream_t ss(graph_attrs_str);
+    stringstream_t ss(graph_attrs_str);
 
     std::string mode;
     while (std::getline(ss, mode, ',')) {

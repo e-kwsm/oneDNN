@@ -22,32 +22,21 @@
 #include <utility>
 #include <vector>
 
-#include "graph/interface/allocator.hpp"
-#include "graph/interface/backend.hpp"
-#include "graph/interface/shape_infer.hpp"
-
 #include "graph/utils/utils.hpp"
 
 #include "graph/backend/dnnl/common.hpp"
 #include "graph/backend/dnnl/dnnl_backend.hpp"
-#include "graph/backend/dnnl/scratchpad.hpp"
 
 #include "common/primitive_desc_iface.hpp"
 #include "common/primitive_iface.hpp"
 #include "common/stream.hpp"
 
-#if DNNL_CPU_RUNTIME != DNNL_RUNTIME_SYCL
-const size_t DNNL_CPU_MEMALIGNMENT = 64;
-#endif
-
 #ifdef DNNL_WITH_SYCL
 #include "oneapi/dnnl/dnnl_sycl.hpp"
-const size_t DNNL_SYCL_MEMALIGNMENT = 64;
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
 #include "oneapi/dnnl/dnnl_ocl.hpp"
-const size_t DNNL_OCL_MEMALIGNMENT = 0;
 #endif
 
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
@@ -59,80 +48,6 @@ namespace dnnl {
 namespace impl {
 namespace graph {
 namespace dnnl_impl {
-
-void *dnnl_allocator_t::malloc(size_t size, const dnnl::engine &p_engine,
-        const graph::allocator_t *alc, allocator_t::mem_type_t type) {
-    if (p_engine.get_kind() == dnnl::engine::kind::cpu) {
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_SYCL
-        return alc->allocate(size, dnnl::sycl_interop::get_device(p_engine),
-                dnnl::sycl_interop::get_context(p_engine),
-                {type, DNNL_SYCL_MEMALIGNMENT});
-#else
-        return alc->allocate(size, {type, DNNL_CPU_MEMALIGNMENT});
-#endif
-    } else if (p_engine.get_kind() == dnnl::engine::kind::gpu) {
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_SYCL
-        return alc->allocate(size, dnnl::sycl_interop::get_device(p_engine),
-                dnnl::sycl_interop::get_context(p_engine),
-                {type, DNNL_SYCL_MEMALIGNMENT});
-#elif DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-        return alc->allocate(size, dnnl::ocl_interop::get_device(p_engine),
-                dnnl::ocl_interop::get_context(p_engine),
-                {type, DNNL_OCL_MEMALIGNMENT});
-#else
-        return nullptr;
-#endif
-    } else {
-        return nullptr;
-    }
-}
-
-void dnnl_allocator_t::free(
-        void *p, const dnnl::engine &p_engine, const allocator_t *alc) {
-    if (p_engine.get_kind() == dnnl::engine::kind::cpu) {
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_SYCL
-        assert(!"use event based free");
-#else
-        return alc->deallocate(p);
-#endif
-    } else if (p_engine.get_kind() == dnnl::engine::kind::gpu) {
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_SYCL \
-        || DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-        assert(!"use event based free");
-#endif
-    }
-}
-
-#ifdef DNNL_WITH_SYCL
-void dnnl_allocator_t::free(void *p, const dnnl::engine &p_engine,
-        const allocator_t *alc, const ::sycl::event &deps) {
-    if (p_engine.get_kind() == dnnl::engine::kind::cpu) {
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_SYCL
-        alc->deallocate(p, dnnl::sycl_interop::get_device(p_engine),
-                dnnl::sycl_interop::get_context(p_engine), deps);
-#else
-        alc->deallocate(p);
-#endif
-    } else if (p_engine.get_kind() == dnnl::engine::kind::gpu) {
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_SYCL
-        alc->deallocate(p, dnnl::sycl_interop::get_device(p_engine),
-                dnnl::sycl_interop::get_context(p_engine), deps);
-#endif
-    }
-}
-#endif
-
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-void dnnl_allocator_t::free(void *p, const dnnl::engine &p_engine,
-        const allocator_t *alc, const cl_event &deps) {
-    if (p_engine.get_kind() != dnnl::engine::kind::gpu) {
-        assert(!"the engine kind should be gpu");
-        return;
-    }
-    alc->deallocate(p, dnnl::ocl_interop::get_device(p_engine),
-            dnnl::ocl_interop::get_context(p_engine), deps);
-}
-#endif
 
 format_tag get_ncx_format(size_t ndim) {
     switch (ndim) {
@@ -164,22 +79,15 @@ dims group_dims(const dims &adims, dim groups) {
     return new_dims;
 }
 
-dnnl::engine make_dnnl_engine(const engine_t &g_engine) {
+dnnl::engine make_dnnl_engine(engine_t &eng) {
     dnnl::engine engine;
-    engine.reset(const_cast<engine_t *>(&g_engine), true); // not own
+    engine.reset(&eng, true); // not own
     return engine;
 }
 
-// The function will throw expection if cpu runtime is none.
-dnnl::engine make_host_engine() {
-    return dnnl::engine(dnnl::engine::kind::cpu, 0);
-}
-
-dnnl::stream make_dnnl_stream(
-        const dnnl::engine &p_engine, const stream_t &g_stream) {
-    UNUSED(p_engine);
+dnnl::stream make_dnnl_stream(stream_t &stream) {
     dnnl::stream strm;
-    strm.reset(const_cast<stream_t *>(&g_stream), true); // not own
+    strm.reset(&stream, true); // not own
     return strm;
 }
 
@@ -456,13 +364,6 @@ bool is_format(const memory::desc &adesc, const std::string &tag) {
     return strides == get_nxc_strides(shape);
 }
 
-bool is_4c_blocked(const memory::desc &adesc) {
-    if (adesc.get_format_kind() != format_kind::blocked) return false;
-
-    return adesc.get_inner_nblks() == 1 && adesc.get_inner_idxs()[0] == 1
-            && adesc.get_inner_blks()[0] == 4;
-}
-
 bool is_plain(const memory::desc &adesc) {
     if (adesc.get_format_kind() != format_kind::blocked) return false;
     return adesc.get_inner_nblks() == 0;
@@ -638,20 +539,6 @@ dnnl::accumulation_mode str2accumulation_mode(
         assert(!"unknown accumulation mode");
         return dnnl::accumulation_mode::strict;
     }
-}
-
-void prolong_temporary_scratchpad_lifetime(const stream_t *g_stream,
-        const std::shared_ptr<temporary_scratchpad_t> &scratchpad) {
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
-    auto *tp_stream
-            = dnnl::impl::utils::downcast<dnnl::impl::cpu::cpu_stream_t *>(
-                    const_cast<stream_t *>(g_stream));
-    tp_stream->before_exec_hook();
-
-    parallel(1, [=](int, int) { UNUSED(scratchpad); });
-
-    tp_stream->after_exec_hook();
-#endif
 }
 
 status_t dnnl_primitive_execute_without_tp_hook(const primitive &prim,

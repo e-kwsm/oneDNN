@@ -78,10 +78,11 @@ oneDNN supports platforms based on the following architectures:
 
 The library is optimized for the following CPUs:
 * Intel 64/AMD64 architecture
-  * Intel Atom(R) processor (at least Intel SSE4.1 support is required)
-  * Intel Core(TM) processor (at least Intel SSE4.1 support is required)
-  * Intel Xeon(R) processor E3, E5, and E7 family (formerly Sandy Bridge,
-    Ivy Bridge, Haswell, and Broadwell)
+  * **[deprecated]** Intel Atom(R) processor (at least Intel SSE4.1 support is required)
+  * **[deprecated]** Intel Core(TM) processor (at least Intel SSE4.1 support is required)
+  * **[deprecated]** Intel Xeon(R) processor E3, E5, and E7 family v1 and v2 lineups
+    (formerly Sandy Bridge, Ivy Bridge and Westmere)
+  * Intel Xeon(R) processor E3, E5, and E7 family v3+ lineups (formerly Haswell and Broadwell)
   * Intel Xeon Scalable processor (formerly Skylake, Cascade Lake, Cooper
     Lake, Ice Lake, Sapphire Rapids, and Emerald Rapids)
   * Intel Xeon CPU Max Series (formerly Sapphire Rapids HBM)
@@ -93,7 +94,7 @@ The library is optimized for the following CPUs:
   * future Intel Xeon processor with Intel AVX10.2 instruction set support
     (code name Diamond Rapids)
 * AArch64 architecture
-  * Arm Neoverse(TM) N1 and V1 processors
+  * Arm Neoverse(TM) N-Series and V-Series
 
 On a CPU based on Intel 64 or on AMD64 architecture, oneDNN detects
 the instruction set architecture (ISA) at runtime and uses just-in-time (JIT)
@@ -111,7 +112,6 @@ require the use of run-time controls to enable them. See
 
 The library is optimized for the following GPUs:
 * Intel discrete GPUs:
-  * Intel Iris Xe MAX Graphics (formerly DG1)
   * Intel Arc(TM) A-Series Graphics (formerly Alchemist)
   * Intel Data Center GPU Flex Series (formerly Arctic Sound)
   * Intel Data Center GPU Max Series (formerly Ponte Vecchio)
@@ -119,12 +119,14 @@ The library is optimized for the following GPUs:
    (formerly Battlemage)
   * future discrete GPUs based on Xe3p-XPC architecture (code name Crescent Island)
 * Intel Graphics integrated with:
-  * 11th-14th Generation Intel Core Processors
   * Intel Graphics for Intel Core Ultra Series 1 processors (formerly Meteor Lake)
   * Intel Graphics for Intel Core Ultra Series 2 processors (formerly Arrow Lake and Lunar Lake)
   * Intel Graphics for Intel Core Ultra Series 3 processors (formerly Panther Lake)
   * Intel Graphics for Intel Core Series 3 processors (formerly Wildcat Lake)
   * Intel Graphics for future Intel Core Ultra processors (code name Nova Lake)
+
+> **NOTE**
+> Optimizations for processors with Intel SSE4.1 support and Intel AVX support are deprecated and will be removed in the future releases.
 
 [CPU dispatcher control]: https://uxlfoundation.github.io/oneDNN/dev_guide_cpu_dispatcher_control.html
 [Linking Guide]: https://uxlfoundation.github.io/oneDNN/dev_guide_link.html
@@ -184,7 +186,7 @@ On a CPU based on Arm AArch64 architecture, oneDNN CPU engine can be built with
 machine learning applications and provides AArch64 optimized implementations
 of core functions. This functionality currently requires that ACL is downloaded
 and built separately. See [Build from Source] section of the Developer Guide for
-details. The minimum supported version of ACL is 52.7.0.
+details. The minimum supported version of ACL is 53.1.0.
 
 [Arm Compute Library (ACL)]: https://github.com/arm-software/ComputeLibrary
 
@@ -214,7 +216,7 @@ GPUs:
 * With SYCL runtime:
   * [Intel oneAPI DPC++/C++ Compiler]
   * OpenCL SDK (with OpenCL 3.0 support)
-  * [oneAPI Level Zero]
+  * [oneAPI Level Zero] with support for API v1.11 or later
   * Intel Graphics Driver with support for OpenCL C 2.0, Intel subgroups
     support, and USM extensions support
 
@@ -259,7 +261,7 @@ oneAPI DPC++/C++ Compiler that supports the target GPU. Refer to
 [disabling hangcheck]: https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/2023-0/gpu-disable-hangcheck.html
 [timeout detection and recovery]: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/timeout-detection-and-recovery
 [TdrDelay]: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/tdr-registry-keys#tdrdelay
-[generic GPU vendor](src/gpu/generic/sycl/README.md)
+[generic GPU vendor]: src/gpu/generic/sycl/README.md
 
 ### Runtime Dependencies
 

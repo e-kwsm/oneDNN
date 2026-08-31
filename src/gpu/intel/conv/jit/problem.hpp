@@ -104,7 +104,7 @@ class problem_t {
 public:
     problem_t() = default;
 
-    status_t init(impl::engine_t *engine, const pd_t *conv_pd);
+    status_t init(const impl::engine_t *engine, const pd_t *conv_pd);
 
     bool is_stride1() const { return sd == 1 && sh == 1 && sw == 1; }
 
@@ -123,10 +123,8 @@ public:
     bool is_s32_accumulator() const { return acc_data_type == data_type::s32; }
     bool is_f64_accumulator() const { return acc_data_type == data_type::f64; }
     bool is_fp4_conv() const {
-        return utils::one_of(
-                       src_data_type, data_type::f4_e2m1, data_type::f4_e3m0)
-                || utils::one_of(
-                        wei_data_type, data_type::f4_e2m1, data_type::f4_e3m0);
+        return utils::one_of(src_data_type, data_type::f4_e2m1)
+                || utils::one_of(wei_data_type, data_type::f4_e2m1);
     }
     bool is_fp8_conv() const {
         return utils::one_of(

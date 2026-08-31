@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2021-2023, 2025 Arm Ltd. and affiliates
+* Copyright 2021-2023, 2025-2026 Arm Ltd. and affiliates
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -46,15 +46,19 @@ arm_compute::DataType get_acl_data_t(
 status_t convert_to_acl_act(alg_kind_t eltwise_alg, float alpha, float beta,
         arm_compute::ActivationLayerInfo &act_info);
 
-// Convert an eltwise_desc_t into an ACL ActivationLayerInfo. Will return
-// unimplemented and a disabled ActivationLayerInfo if the conversion fails
-status_t convert_to_acl_act(
-        const eltwise_desc_t &ed, arm_compute::ActivationLayerInfo &act_info);
-
 // Convert an eltwise post op into an ACL ActivationLayerInfo. Will return
 // unimplemented and a disabled ActivationLayerInfo if the conversion fails
 status_t convert_to_acl_act(const post_ops_t::entry_t::eltwise_t &elt,
         arm_compute::ActivationLayerInfo &act_info);
+
+// Probe whether the post op at post_op_start_index can be fused as an ACL
+// activation. On success, act_info is populated and next_post_op_index is
+// advanced past the fused eltwise. If the post op cannot be fused, the helper
+// leaves act_info disabled, keeps the original start index, and returns
+// success so the caller can execute it through the generic post-op fallback.
+status_t try_fuse_first_acl_post_op(const post_ops_t &post_ops,
+        data_type_t dst_data_type, int post_op_start_index,
+        arm_compute::ActivationLayerInfo &act_info, int &next_post_op_index);
 
 // Convert a memory desc to an arm_compute::TensorInfo. Note that memory desc
 // must be blocking format, plain, dense and have no zero dimensions.

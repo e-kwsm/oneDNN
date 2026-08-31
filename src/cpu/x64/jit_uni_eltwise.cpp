@@ -49,7 +49,7 @@ struct jit_uni_eltwise_kernel_t : public jit_generator_t {
             const eltwise_pd_t *pd, const char *name, cpu_isa_t isa)
         : jit_generator_t(name, isa), pd_(pd) {}
 
-    void operator()(jit_args_t *p) { jit_generator_t::operator()(p); }
+    void operator()(const jit_args_t *p) { jit_generator_t::operator()(p); }
 
 protected:
     const eltwise_pd_t *pd_;
@@ -64,7 +64,9 @@ protected:
         return utils::one_of(
                 data_type(), data_type::f8_e5m2, data_type::f8_e4m3);
     }
-    int dtype_size() const { return types::data_type_size(data_type()); }
+    int dtype_size() const {
+        return static_cast<int>(types::data_type_size(data_type()));
+    }
     cpu_isa_t get_io_isa(cpu_isa_t isa) const {
         // reusing avx512_core instantiation for bf16
         return is_bf16() && is_superset(isa, avx512_core)
@@ -93,8 +95,8 @@ struct jit_uni_kernel_t : public jit_uni_eltwise_kernel_t {
         // using the first 7 vregs can be considered volatile during the call
         // to eltwise injector
         const bool save_state = is_fwd_ ? false : true;
-        eltwise_injector_.reset(new jit_uni_eltwise_injector_t<injector_isa>(
-                this, desc.alg_kind, desc.alpha, desc.beta, 1.f, data_type::f32,
+        eltwise_injector_.reset(new jit_uni_eltwise_injector_t<Vmm>(this,
+                desc.alg_kind, desc.alpha, desc.beta, 1.f, data_type::f32,
                 save_state, reg_injector_table, injector_mask, is_fwd_,
                 pd_->use_dst()));
         io::io_conf_t io_conf;
@@ -233,8 +235,6 @@ struct jit_uni_kernel_t : public jit_uni_eltwise_kernel_t {
 
 private:
     using Vmm = typename cpu_isa_traits_t<isa>::Vmm;
-    static constexpr cpu_isa_t injector_isa
-            = isa == avx512_core_amx ? avx512_core : isa;
 
     const int vlen_;
     const int simd_w_;
@@ -262,7 +262,7 @@ private:
     Vmm vmm_src_odd = Vmm(8);
     Vmm vmm_diff_dst_even = vmm_diff_dst;
     Vmm vmm_diff_dst_odd = Vmm(9);
-    std::unique_ptr<jit_uni_eltwise_injector_t<injector_isa>> eltwise_injector_;
+    std::unique_ptr<jit_uni_eltwise_injector_t<Vmm>> eltwise_injector_;
     io::jit_io_multi_dt_helper_t<Vmm> io_;
 
     /* bf16 and fp8 support */
@@ -278,7 +278,7 @@ private:
 } // namespace
 
 template <cpu_isa_t isa>
-status_t jit_uni_eltwise_fwd_t<isa>::pd_t::init(engine_t *engine) {
+status_t jit_uni_eltwise_fwd_t<isa>::pd_t::init(const engine_t *engine) {
     using namespace alg_kind;
     using namespace data_type;
 
@@ -286,9 +286,6 @@ status_t jit_uni_eltwise_fwd_t<isa>::pd_t::init(engine_t *engine) {
 
     // disabling verbose dispatch messages for unsupported isa for better readability
     if (!mayiuse(isa)) return status::unimplemented;
-
-    static constexpr cpu_isa_t injector_isa
-            = isa == avx512_core_amx ? avx512_core : isa;
 
     VDISPATCH_ELTWISE(is_fwd(), VERBOSE_BAD_PROPKIND);
     VDISPATCH_ELTWISE(utils::one_of(src_md()->data_type, f32, bf16, f16,
@@ -309,8 +306,7 @@ status_t jit_uni_eltwise_fwd_t<isa>::pd_t::init(engine_t *engine) {
             VERBOSE_ISA_DT_MISMATCH);
     VDISPATCH_ELTWISE(!has_zero_dim_memory(), VERBOSE_EMPTY_TENSOR, "data");
     VDISPATCH_ELTWISE(src_d.is_dense(true), VERBOSE_UNSUPPORTED_SPARSE_CFG);
-    VDISPATCH_ELTWISE(
-            eltwise_injector::is_supported(injector_isa, desc_.alg_kind, f32),
+    VDISPATCH_ELTWISE(eltwise_injector::is_supported(isa, desc_.alg_kind, f32),
             VERBOSE_BAD_ALGORITHM);
     // refer to a comment in jit_uni_kernel why this is needed
     VDISPATCH_ELTWISE(IMPLICATION(!src_d.is_dense(), is_zero_preserved()),
@@ -368,7 +364,7 @@ status_t jit_uni_eltwise_fwd_t<isa>::execute(const exec_ctx_t &ctx) const {
 }
 
 template <cpu_isa_t isa>
-status_t jit_uni_eltwise_bwd_t<isa>::pd_t::init(engine_t *engine) {
+status_t jit_uni_eltwise_bwd_t<isa>::pd_t::init(const engine_t *engine) {
     using namespace alg_kind;
     using namespace data_type;
 
@@ -377,9 +373,6 @@ status_t jit_uni_eltwise_bwd_t<isa>::pd_t::init(engine_t *engine) {
     // disabling verbose dispatch messages for unsupported isa for better
     // readability
     if (!mayiuse(isa)) return status::unimplemented;
-
-    static constexpr cpu_isa_t injector_isa
-            = isa == avx512_core_amx ? avx512_core : isa;
 
     VDISPATCH_ELTWISE(!is_fwd(), VERBOSE_BAD_PROPKIND);
     VDISPATCH_ELTWISE(utils::one_of(data_md()->data_type, f32, bf16, f16,
@@ -402,8 +395,8 @@ status_t jit_uni_eltwise_bwd_t<isa>::pd_t::init(engine_t *engine) {
     VDISPATCH_ELTWISE(!has_zero_dim_memory(), VERBOSE_EMPTY_TENSOR, "data");
     VDISPATCH_ELTWISE(set_default_formats_common(), VERBOSE_UNSUPPORTED_TAG);
     VDISPATCH_ELTWISE(data_d.is_dense(true), VERBOSE_UNSUPPORTED_SPARSE_CFG);
-    VDISPATCH_ELTWISE(eltwise_injector::is_isa_supported(injector_isa),
-            VERBOSE_UNSUPPORTED_ISA);
+    VDISPATCH_ELTWISE(
+            eltwise_injector::is_isa_supported(isa), VERBOSE_UNSUPPORTED_ISA);
     VDISPATCH_ELTWISE(eltwise_injector::is_alg_supported(desc_.alg_kind),
             VERBOSE_BAD_ALGORITHM);
     // refer to a comment in jit_uni_kernel why this is needed

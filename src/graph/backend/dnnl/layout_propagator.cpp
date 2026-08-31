@@ -1818,39 +1818,28 @@ status_t layout_propagator_for_sdpa(std::shared_ptr<op_t> &op,
     if (op->get_attr<bool>(op_attr::is_training)) {
         value_ptr stats_val = op->get_output_value(output_idx);
         const logical_tensor_t &stats_lt = stats_val->get_logical_tensor();
-        dnnl::memory::desc stats_md;
-        // For GQA, we need to check the layout of the dnnl_reshape output
-        // following dnnl_sdpa, which is given by the user.
+        const auto stats_dims = ltw(stats_lt).vdims();
+        const auto dense_strides = get_dense_strides(stats_dims);
+        auto stats_strides = dense_strides;
         if (!stats_val->get_consumers().empty()) {
             const auto &consumer_op = stats_val->get_consumers()[0].get_op();
             const logical_tensor_t &consumer_out
                     = consumer_op.get_output_logical_tensor(0);
             if (consumer_op.get_kind() == op_kind::_reshape
                     && ltw(consumer_out).ndims() == 5
-                    && ltw(consumer_out).is_strided()) {
+                    && ltw(consumer_out).is_strided()
+                    && stats_dims.size() == 4) {
                 const auto &ori_strides = ltw(consumer_out).vstrides();
-                std::vector<dim_t> strides = {ori_strides[0], ori_strides[2],
-                        ori_strides[3], ori_strides[4]};
-                stats_md = {ltw(stats_lt).vdims(),
-                        static_cast<dnnl::memory::data_type>(
-                                ltw(stats_lt).data_type()),
-                        strides};
-            } else {
-                // Set default output layout format for sdpa as acbd if user
-                // doesn't specify the layout since no reorder will be required.
-                stats_md = {ltw(stats_lt).vdims(),
-                        static_cast<dnnl::memory::data_type>(
-                                ltw(out_lt).data_type()),
-                        dnnl::memory::format_tag::acbd};
+                stats_strides = {ori_strides[0], ori_strides[2], ori_strides[3],
+                        ori_strides[4]};
             }
-        } else {
-            expected_md = {ltw(out_lt).vdims(),
-                    static_cast<dnnl::memory::data_type>(
-                            ltw(out_lt).data_type()),
-                    dnnl::memory::format_tag::acbd};
         }
-
+        const dnnl::memory::desc stats_md {stats_dims,
+                static_cast<dnnl::memory::data_type>(ltw(stats_lt).data_type()),
+                stats_strides};
         status = fill_layout_info(stats_val, stats_md);
+        VCHECK_LAYOUT_PROPAGATOR(status == status::success, status,
+                "sdpa: failed to fill layout info for the softmax stats");
     }
     return status;
 }
@@ -1960,9 +1949,9 @@ status_t layout_propagator_for_sdpa_bwd(std::shared_ptr<op_t> &op,
 
         std::shared_ptr<primitive_desc_t> sdpa_bwd_pd;
         status = create_sdpa_pd(sdpa_bwd_pd, p_engine.get(), md_q.get(),
-                md_k.get(), md_v.get(), md_dst.get(), md_diff_q.get(),
-                md_diff_k.get(), md_diff_v.get(), md_diff_dst.get(),
-                md_dS.get(), md_attn_mask.get(), md_scale.get(),
+                md_k.get(), md_v.get(), md_dst.get(), md_attn_mask.get(),
+                md_scale.get(), md_diff_q.get(), md_diff_k.get(),
+                md_diff_v.get(), md_diff_dst.get(), md_dS.get(),
                 is_invert_scale, kv_head_number, mask_type, softmax_alg,
                 attr.get(), hint_fwd_pd.get(), qk_attr.get(), vs_attr.get());
         VCHECK_LAYOUT_PROPAGATOR(status == status::success, status,
@@ -2009,30 +1998,18 @@ status_t layout_propagator_for_gated_mlp(std::shared_ptr<op_t> &op,
         const dnnl::engine &p_engine, pd_cache_t &pd_cache,
         const fpmath_t &fpmath, bool use_block_layout,
         subgraph_rewriter_t &rewriter) {
-    UNUSED(p_engine);
-    UNUSED(pd_cache);
-    UNUSED(fpmath);
-    UNUSED(use_block_layout);
     UNUSED(rewriter);
+    const auto pd = gated_mlp_executable_t::create_desc(
+            op, p_engine, pd_cache, fpmath, use_block_layout);
+
+    if (!pd) return status::unimplemented;
 
     value_ptr dst_val = op->get_output_value(0);
-    const logical_tensor_t &dst_lt = dst_val->get_logical_tensor();
+    status_t status = fill_layout_info(dst_val, pd.dst_desc());
+    if (status != status::success) { return status; }
 
-    dnnl::memory::desc expected_md;
-    if (ltw(dst_lt).is_any()) {
-        const auto tag = get_ncx_format(ltw(dst_lt).ndims());
-        expected_md = {ltw(dst_lt).vdims(),
-                static_cast<dnnl::memory::data_type>(ltw(dst_lt).data_type()),
-                tag};
-    } else {
-        expected_md = make_dnnl_memory_desc(dst_lt);
-    }
-    status_t status = fill_layout_info(dst_val, expected_md);
-
-    // fill scratchpads dimensions and data type to scratchpad value_t
-    value_ptr scratchpad_val = op->get_output_value(1);
-    const memory::desc scratchpad_desc;
-    status = fill_layout_info(scratchpad_val, scratchpad_desc);
+    value_ptr spad_val = op->get_output_value(1);
+    status = fill_layout_info(spad_val, pd.scratchpad_desc());
     return status;
 }
 

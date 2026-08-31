@@ -51,7 +51,7 @@ struct jit_avx512_core_bf16_1x1_convolution_fwd_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit_bf16_1x1:", jcp_.isa, ""),
                 jit_avx512_core_bf16_1x1_convolution_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             // Disabling verbose dispatch messages for unsupported isa for
             // better readability.
@@ -205,7 +205,7 @@ struct jit_avx512_core_bf16_1x1_convolution_fwd_t : public primitive_t {
             return status::success;
         }
 
-        status_t depthwise_po_init(engine_t *engine) {
+        status_t depthwise_po_init(const engine_t *engine) {
             using namespace memory_tracking;
             auto &jcp_1x1 = jcp_;
             jit_conv_conf_t *jcp_dw = nullptr;
@@ -300,8 +300,8 @@ struct jit_avx512_core_bf16_1x1_convolution_fwd_t : public primitive_t {
             while (jcp_1x1.nb_load_blocking % jcp_dw->nb_ch_blocking != 0)
                 --jcp_dw->nb_ch_blocking;
 
-            jcp_dw->dw_conv_buffer_oc
-                    = jcp_1x1.nb_load_blocking * jcp_1x1.oc_block;
+            jcp_dw->dw_conv_buffer_oc = static_cast<int>(
+                    jcp_1x1.nb_load_blocking * jcp_1x1.oc_block);
 
             registrar_t scratchpad(scratchpad_registry_);
             registrar_t dw_scratchpad(scratchpad, names::prefix_fusion);
@@ -377,7 +377,7 @@ struct jit_avx512_core_bf16_1x1_convolution_bwd_data_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit_bf16_1x1:", jcp_.isa, ""),
                 jit_avx512_core_bf16_1x1_convolution_bwd_data_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             // disabling verbose dispatch messages for unsupported isa for better readability
             if (!mayiuse(avx512_core)) return status::unimplemented;
@@ -489,7 +489,7 @@ struct jit_avx512_core_bf16_1x1_convolution_bwd_weights_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit_bf16_1x1:", jcp_.isa, ""),
                 jit_avx512_core_bf16_1x1_convolution_bwd_weights_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace prop_kind;
             using namespace data_type;
             assert(engine->kind() == engine_kind::cpu);

@@ -23,6 +23,7 @@
 #include "utils/fill.hpp"
 #include "utils/parser.hpp"
 #include "utils/stream_kind.hpp"
+#include "utils/stringstream.hpp"
 #include "utils/summary.hpp"
 
 #include "dnnl_common.hpp"
@@ -30,7 +31,7 @@
 namespace parser {
 
 bool last_parsed_is_problem = false;
-dnnl::impl::stringstream_t help_ss;
+stringstream_t help_ss;
 
 static const std::string benchdnn_url
         = "https://github.com/uxlfoundation/oneDNN/blob/main/tests/benchdnn";
@@ -304,9 +305,6 @@ attr_t::post_ops_t str2attr_post_ops(const std::string &s) {
             // In that case, we check for the ':' delimiter that separates src1
             // and src2 args, split the string for the two tensors and parse
             // them individually.
-            // TODO: Currently, there is no broadcasting support for the src2
-            // tensor - specifying src2 mask inputs and tags therefore has no
-            // effect on the operation.
 
             if (e.is_binary_kind_with_ternary_op()) {
                 src_delim = '.';
@@ -351,13 +349,6 @@ attr_t::post_ops_t str2attr_post_ops(const std::string &s) {
                     } else {
                         e.binary.src2_mask = src_mask;
                         e.binary.src2_mask_input = attr_t::mask_input_t::mask;
-                        if (e.binary.src2_mask > 0)
-                            BENCHDNN_PRINT(0, "%s \'%s\' %s\n",
-                                    "Error: binary post-op policy for the "
-                                    "src2 tensor",
-                                    mask_input_str.c_str(),
-                                    "is not recognized - broadcasting is not "
-                                    "supported for the ternary tensor.");
                     }
                 } else {
                     // Otherwise, re-direct to policy parsing.
@@ -381,13 +372,13 @@ attr_t::post_ops_t str2attr_post_ops(const std::string &s) {
                         e.binary.src2_policy = src_policy;
                         e.binary.src2_mask_input = attr_t::mask_input_t::policy;
 
-                        if (e.binary.src2_policy != attr_t::policy_t::COMMON) {
+                        if (e.binary.src2_policy
+                                == attr_t::policy_t::POLICY_TOTAL) {
                             BENCHDNN_PRINT(0, "%s \'%s\' %s\n",
                                     "Error: binary post-op policy for the "
                                     "src2 tensor",
                                     mask_input_str.c_str(),
-                                    "is not supported - broadcasting is "
-                                    "not supported for the src2 tensor.");
+                                    "is not recognized.");
                             SAFE_V(FAIL);
                         }
                     }
@@ -698,6 +689,22 @@ bool str2bool(const std::string &str) {
     return false;
 }
 
+execution_mode_t str2execution_mode(const std::string &str) {
+    auto s = utils::lowercase(str);
+    if (s == "direct") {
+        return execution_mode_t::direct;
+    } else if (s == "graph") {
+        return execution_mode_t::graph;
+    } else if (s == "native_graph") {
+        return execution_mode_t::native_graph;
+    } else {
+        BENCHDNN_PRINT(
+                0, "%s", "Error: execution mode value is not recognized.\n");
+        SAFE_V(FAIL);
+    }
+    return execution_mode_t::direct;
+}
+
 } // namespace parsers
 
 // vector types
@@ -793,7 +800,7 @@ bool parse_encoding(std::vector<sparse_options_t> &sparse_options,
 
 // Format: DIM_IDX:NUM_GROUPS:size0+size1+...+sizeN[:max_size][,config2,...]
 // - DIM_IDX is the dimension index, where src MxK * weights KxN = dst MxN
-//   0 = M,  1 = K, 2 = N
+//   0 = M,  1 = K
 // - NUM_GROUPS is the number of tensors in the group (number of experts)
 // - size0+size1+...+sizeN are the '+'-separated sizes for each in the group,
 //   with sum equal to the total size along DIM_IDX
@@ -863,10 +870,10 @@ bool parse_grouped(std::vector<sparse_options_t> &sparse_options,
 
         int variable_dim_idx = static_cast<int>(utils::stoll_safe(dim_idx_str));
 
-        // Validate dimension index (0=M, 1=K, 2=N)
-        if (variable_dim_idx < 0 || variable_dim_idx > 2) {
+        // Validate dimension index (0=M, 1=K)
+        if (variable_dim_idx < 0 || variable_dim_idx > 1) {
             BENCHDNN_PRINT(0,
-                    "Error: dimension index must be 0 (M), 1 (K), or 2 (N), "
+                    "Error: dimension index must be 0 (M) or 1 (K) "
                     "got %d\n",
                     variable_dim_idx);
             SAFE_V(FAIL);
@@ -907,11 +914,13 @@ bool parse_grouped(std::vector<sparse_options_t> &sparse_options,
             SAFE_V(FAIL);
         }
 
-        // Set grouped encoding based on variable_dim_idx
-        // For matmul: src is MxK, weights is KxN, dst is MxN
-        // - dim 0 (M): affects src and dst
-        // - dim 1 (K): affects src and weights
-        // - dim 2 (N): affects weights and dst
+        // Set grouped encoding based on the src varying dim:
+        //  - dim 0 (M varies, 2Dx3D variant)
+        //    src is [total_M, K] (var_dim_idx=0),  wei is dense [G, K, N],
+        //    dst is [total_M, N] (var_dim_idx=0)
+        //  - dim 1 (K/contraction varies, 2Dx2D variant)
+        //    src is [M, total_K] (var_dim_idx=1), wei is [total_K, N] (var_dim_idx=0),
+        //    dst is dense 3D [G, M, N]
         if (variable_dim_idx == 0) {
             v.set_grouped(DNNL_ARG_SRC, variable_dim_idx, group_count, sizes,
                     max_variable_dim);
@@ -920,12 +929,8 @@ bool parse_grouped(std::vector<sparse_options_t> &sparse_options,
         } else if (variable_dim_idx == 1) {
             v.set_grouped(DNNL_ARG_SRC, variable_dim_idx, group_count, sizes,
                     max_variable_dim);
-            v.set_grouped(DNNL_ARG_WEIGHTS, variable_dim_idx, group_count,
-                    sizes, max_variable_dim);
-        } else if (variable_dim_idx == 2) {
-            v.set_grouped(DNNL_ARG_WEIGHTS, variable_dim_idx, group_count,
-                    sizes, max_variable_dim);
-            v.set_grouped(DNNL_ARG_DST, variable_dim_idx, group_count, sizes,
+            v.set_grouped(DNNL_ARG_WEIGHTS,
+                    /* var_dim_idx is different here */ 0, group_count, sizes,
                     max_variable_dim);
         }
 
@@ -1264,7 +1269,7 @@ bool parse_main_help(
               "bnorm\n    * concat\n    * conv\n    * deconv\n    * eltwise\n  "
               "  * ip\n    * lnorm\n    * lrn\n    * matmul\n    * pool\n    * "
               "prelu\n    * reduction\n    * reorder\n    * resampling\n    * "
-              "rnn\n    * shuffle\n    * softmax\n    * sum\n    * "
+              "rnn\n    * sdpa\n    * shuffle\n    * softmax\n    * sum\n    * "
               "zeropad\n\nFor global and specific driver options, use:\n    "
               "benchdnn --<driver> --help\n\nMore details at "
             + benchdnn_url + "\n";
@@ -1500,7 +1505,7 @@ bool parse_ctx(std::vector<thr_ctx_t> &ctx,
                     "(TBB runtime only).\n");
 
     auto str2ctx = [&option_name](const char *str) {
-        thr_ctx_t result = default_thr_ctx;
+        thr_ctx_t result = get_default_thr_ctx();
         try {
             size_t start_pos = 0;
             /* concurrency piece */
@@ -1642,6 +1647,24 @@ static bool parse_memory_kind(
     }
 #endif
     return parsed;
+}
+
+// TODO: remove once the SYCL kernel compiler becomes thread-safe.
+static mode_modifier_t drop_par_create(mode_modifier_t modifier) {
+#ifdef DNNL_EXPERIMENTAL_SYCL_KERNEL_COMPILER
+    if (static_cast<bool>(modifier & mode_modifier_t::par_create)) {
+        static bool reported = false;
+        if (!reported) {
+            BENCHDNN_PRINT(0, "%s\n",
+                    "INFO: `P` mode modifier is ignored in the build with "
+                    "DNNL_EXPERIMENTAL_SYCL_KERNEL_COMPILER=ON.");
+            reported = true;
+        }
+        modifier = static_cast<mode_modifier_t>(static_cast<unsigned>(modifier)
+                & ~static_cast<unsigned>(mode_modifier_t::par_create));
+    }
+#endif
+    return modifier;
 }
 
 static bool parse_mode(
@@ -1837,13 +1860,18 @@ static bool parse_execution_mode(
               "directly.\n"
               "    * `graph` to execute the primitive using a graph backend.\n"
               "          Currently limited to the experimental SYCL Graph on "
-              "DPC++ builds.\n";
-    bool parsed = parse_single_value_option(execution_mode,
-            execution_mode_t::direct, str2execution_mode, str, option_name,
-            help);
+              "DPC++ builds.\n"
+              "    * `native_graph` to execute the primitive using a graph "
+              "backend capturing command buffers directly.\n          "
+              "Currently limited to the experimental SYCL Graph on DPC++ "
+              "builds.\n";
+    bool parsed
+            = parse_single_value_option(execution_mode, default_execution_mode,
+                    parsers::str2execution_mode, str, option_name, help);
 
 #if !defined(DNNL_WITH_SYCL)
-    if (parsed) {
+    // Default execution mode is legit for any build configuration.
+    if (parsed && execution_mode != default_execution_mode) {
         BENCHDNN_PRINT(0,
                 "Error: option `--%s` is supported with DPC++ "
                 "builds only, exiting...\n",
@@ -1891,6 +1919,9 @@ bool parse_bench_settings(const char *str) {
                 << driver_name << ".md)\n\n";
         end_msg = true;
     }
+
+    if (parsed) bench_mode_modifier = drop_par_create(bench_mode_modifier);
+
     return parsed;
 }
 

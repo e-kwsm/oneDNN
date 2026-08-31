@@ -167,7 +167,7 @@ struct DNNL_API brgemm_attr_t {
     // if unrolled kernel is used (use_uker == true)
     // then "max_bs" is the the only batch size that can be used on kernel call
     // else "max_bs" is the maximum batch size that can be used
-    int max_bs;
+    dim_t max_bs;
     int max_top_vpad, max_bottom_vpad;
     int max_top_bpad, max_bottom_bpad;
     dim_t hint_expected_A_size, hint_expected_B_size, hint_expected_C_size;
@@ -215,11 +215,15 @@ struct DNNL_API brgemm_attr_t {
     // bd block. By default are equal to regular leading dimension parameters
     // specified on brgemm creation.
     // Supported by brgemm unrolled kernel for now.
-    int LDA2 {0}, LDB2 {0}, LDC2_M {0}, LDC2_N {0};
+    dim_t LDA2 {0}, LDB2 {0}, LDC2_M {0}, LDC2_N {0};
     // If "true" then batchsize is allowed to change on each kernel call
     // and there is no unrolling by batchsize in kernel
     bool var_bs {false};
     bool postops_only {false};
+    // Force the kernel to populate the C buffer (reg_C) on non-postops
+    // calls, even when dt_c == dt_d and no post-ops. Set when an external
+    // C buffer must be filled (e.g. cross-K partial reduction in dst dtype).
+    bool use_intermediate_c_buffer {false};
     // Hint for bs_group value in brgemm_desc_t
     int hint_bs_group {0};
 
@@ -248,6 +252,9 @@ struct DNNL_API brgemm_attr_t {
     const brgemm_batch_element_t *static_offsets;
     // hint whether to use on the fly copy of A due to unaligned accesses
     bool hint_fused_copy_a = false;
+    // request the ACE compute path; honored only when the descriptor resolves
+    // to an ACE ISA, see brgemm_desc_t::is_ace()
+    bool use_ace = false;
 };
 
 struct brgemm_desc_t {
@@ -257,13 +264,13 @@ struct brgemm_desc_t {
 
     // Note: new added parameters must be taken into account in the brgemm
     // comparison function
-    int bcast_dim = 0; // M;
-    int load_dim = 0; // N;
-    int reduce_dim = 0; // K;
-    int LDA = 0;
-    int LDB = 0;
-    int LDC = 0;
-    int LDD = 0;
+    dim_t bcast_dim = 0; // M;
+    dim_t load_dim = 0; // N;
+    dim_t reduce_dim = 0; // K;
+    dim_t LDA = 0;
+    dim_t LDB = 0;
+    dim_t LDC = 0;
+    dim_t LDD = 0;
 
     bool fused_copy_a = false;
     // we use two isa_ variables
@@ -297,17 +304,29 @@ struct brgemm_desc_t {
     bool with_eltwise = false;
     bool with_binary = false;
     bool skip_zp_b_compensation = false;
+    bool skip_zp_a_compensation = false;
     bool n_bcast_1_load = false;
+    bool fp8_with_f16_vnni_block = false;
 
     brgemm_broadcast_t zp_type_a = brgemm_broadcast_t::none;
     brgemm_broadcast_t zp_type_b = brgemm_broadcast_t::none;
     brgemm_broadcast_t zp_type_c = brgemm_broadcast_t::none;
 
-    // `skip_wei_scales` is controlled by the implementation and not by kernel
-    // API.
     bool skip_wei_scales = false;
-    int is_oc_scale = 0;
+    bool is_single_wei_scale = false;
+    bool is_per_n_wei_scales = false;
+    bool is_per_k_wei_scales = false;
     bool with_src_scales = false;
+    bool is_per_k_src_scales = false;
+    dim_t src_scale_m_stride = 0;
+    data_type_t dt_src_scales = data_type::undef;
+
+    bool with_per_mn_compensation = false;
+
+    bool has_per_k_scales() const {
+        return is_per_k_wei_scales || is_per_k_src_scales;
+    }
+
     bool with_wei_scales = false;
     // `dst_scales` passed as a bare pointer making kernel change multiplication
     // to division was proved to be significantly slower, both for pure divps
@@ -323,14 +342,19 @@ struct brgemm_desc_t {
     brgemm_attr_t brgattr;
 
     // Derived  parameters
-    int LDA2 {0}, LDB2 {0}, LDC2_M {0}, LDC2_N {0};
+    dim_t LDA2 {0}, LDB2 {0}, LDC2_M {0}, LDC2_N {0};
     bool is_blocked = false;
 
-    int bdb = 0, bd_block = 0, bdb_tail = 0;
-    int bdb2 = 0, bd_block2 = 0, bdb2_tail = 0;
-    int ldb = 0, ld_block = 0, ldb_tail = 0;
-    int ldb2 = 0, ld_block2 = 0, ldb2_tail = 0;
-    int rdb = 0, rd_block = 0, rdb_tail = 0;
+    dim_t bdb = 0;
+    int bd_block = 0, bdb_tail = 0;
+    dim_t bdb2 = 0;
+    int bd_block2 = 0, bdb2_tail = 0;
+    dim_t ldb = 0;
+    int ld_block = 0, ldb_tail = 0;
+    dim_t ldb2 = 0;
+    int ld_block2 = 0, ldb2_tail = 0;
+    dim_t rdb = 0;
+    int rd_block = 0, rdb_tail = 0;
     int rd_step = 0, ld_step = 0;
 
     int typesize_A = 0;
@@ -348,7 +372,6 @@ struct brgemm_desc_t {
     bool is_f16 = false, is_f16_tmm = false;
     bool is_f32 = false;
     bool is_bf32 = false;
-    bool is_tf32 = false;
 
     bool has_int8_vnni = false;
 
@@ -358,11 +381,12 @@ struct brgemm_desc_t {
     bool embd_bcst = false;
     bool with_bias = false;
     bool req_s8s8_compensation = false;
+    bool req_src_s8_shift = false;
     // `with_weights_scale_adjust` is controlled by the implementation and not
     // by kernel API.
     bool with_weights_scale_adjust = false;
     brgemm_kernel_innermost_loop_t innermost_loop = brgemm_ld_loop_innermost;
-    int is_M_tail = false;
+    bool is_M_tail = false;
     bool interleave_tilestores_ = false;
     brgemm_prf_t prfA, prfB, prfC;
     bool is_runtime_lda = false;
@@ -382,11 +406,14 @@ struct brgemm_desc_t {
     int gemv_transa_bd_unroll = 0;
     // non-transA: tail along the reduction dimension.
     // transA:     number of valid elements in the final vector accumulator.
+    // Bounded: always < simd width.
     int gemv_tail = 0;
 
     static constexpr int MAX_VPAD = 100;
     static constexpr int AMX_TILES_NUM = 8;
     static constexpr int tilesize = 1024;
+    // AMX accumulator tile element size (always f32, 4 bytes, independent of dt_c)
+    static constexpr int amx_c_tile_elem_size = static_cast<int>(sizeof(float));
 
     void set_attr(const primitive_attr_t *ppdattr);
     void set_dst_md(const memory_desc_t *pdst_md);
@@ -401,7 +428,7 @@ struct brgemm_desc_t {
     // transA:
     //  - number of full vector accumulators updated per reduction step
     //  - equal to `gemv_transa_bd_unroll`
-    dim_t gemv_bd_block() const {
+    int gemv_bd_block() const {
         assert(is_gemv);
         if (!is_gemv) return 0;
         return transA ? gemv_transa_bd_unroll : bd_block;
@@ -416,7 +443,7 @@ struct brgemm_desc_t {
     //   - number of full vector accumulators in the tail block
     //   - the remaining first-level register tail is stored separately in
     //     `gemv_tail`
-    dim_t gemv_bdb_tail() const {
+    int gemv_bdb_tail() const {
         assert(is_gemv);
         if (!is_gemv) return 0;
         const int gemv_transa_simd_w
@@ -453,14 +480,42 @@ struct brgemm_desc_t {
     //                    defined by `gemv_bdb_tail()`
     //   - if `gemv_tail > 0`, one additional accumulator is included for the
     //     final partial vector
-    dim_t gemv_num_acc_blocks(bool is_bdb_tail) const {
+    int gemv_num_acc_blocks(bool is_bdb_tail) const {
         assert(is_gemv);
         if (!gemv_acc_is_vector())
             return is_bdb_tail ? gemv_bdb_tail() : gemv_bd_block();
 
         const bool has_tail_acc = is_bdb_tail && gemv_tail > 0;
-        const dim_t full_accs = is_bdb_tail ? gemv_bdb_tail() : gemv_bd_block();
+        const int full_accs = is_bdb_tail ? gemv_bdb_tail() : gemv_bd_block();
         return full_accs + has_tail_acc;
+    }
+
+    // Returns true when GEMV can use native `vdpbf16ps` instead of
+    // bf16->f32 conversion + `vfmadd231ps`.
+    bool gemv_use_vdpbf16ps() const {
+        assert(is_gemv);
+        return !transA && is_bf16;
+    }
+
+    // Returns true if GEMV uses a single scale value.
+    bool gemv_single_wei_scale() const {
+        assert(is_gemv);
+        // Per-N scales collapse to a single scalar unless `y` is treated as a
+        // row.
+        return !is_per_n_wei_scales || !treat_y_as_row;
+    }
+
+    // Determines if the accumulator dt is integer.
+    //
+    // When the per-k scales or per-MN compensation are present, need to
+    // accumulate in f32 due to precision loss.
+    bool is_integer_acc() const {
+        return is_int8 && !has_per_k_scales() && !with_per_mn_compensation;
+    }
+
+    // Determines if the DQ2PS conversion is needed for the accumulator.
+    bool do_dq2ps_cvt() const {
+        return is_integer_acc() && (alpha != 1.f || beta != 1.f);
     }
 
     // return 'true' when FP8 MAC is not natively supported by the CPU ISA
@@ -480,14 +535,18 @@ struct brgemm_desc_t {
     }
 
     // Tile register decomposition
+    // TMUL tails need their own tile because the tail geometry is baked into
+    // the palette. ACE tiles are fixed-size, so a tail reuses the last tile.
     int get_bd_block2() const noexcept {
-        auto res = (bdb <= bd_block2) ? bdb : (bd_block2 + (bdb_tail ? 1 : 0));
-        return res;
+        return static_cast<int>((bdb <= bd_block2)
+                        ? bdb
+                        : (bd_block2 + ((bdb_tail && !is_ace()) ? 1 : 0)));
     }
 
     int get_ld_block2() const noexcept {
-        auto res = (ldb <= ld_block2) ? ldb : (ld_block2 + (ldb_tail ? 1 : 0));
-        return res;
+        return static_cast<int>((ldb <= ld_block2)
+                        ? ldb
+                        : (ld_block2 + ((ldb_tail && !is_ace()) ? 1 : 0)));
     }
 
     int get_num_C_tiles() const noexcept {
@@ -501,6 +560,7 @@ struct brgemm_desc_t {
     }
 
     int get_num_A_tiles() const noexcept {
+        if (is_ace()) return 0;
         const auto req_tiles = (bdb_tail && bdb > 1) ? 2 : 1;
         const auto max_tiles = AMX_TILES_NUM - get_num_C_tiles() - 1;
         const auto n_tiles = nstl::min(get_bd_block2(), max_tiles);
@@ -516,6 +576,7 @@ struct brgemm_desc_t {
     }
 
     int get_num_B_tiles() const noexcept {
+        if (is_ace()) return 0;
         const auto req_tiles = (ldb_tail && ldb > 1) ? 2 : 1;
         const auto max_tiles
                 = AMX_TILES_NUM - get_num_C_tiles() - get_num_A_tiles();
@@ -531,16 +592,32 @@ struct brgemm_desc_t {
         return (get_num_C_tiles() + get_num_A_tiles() + N);
     }
 
-    int get_convert_wsp_buffer_size() const noexcept {
+    bool can_reuse_input_transform() const noexcept {
+        // FP8 conversion and transform caching share temporary workspace, so
+        // caching would allow converted data to overwrite a saved transform.
+        return !is_fp8_via_convert();
+    }
+
+    bool save_transform_A() const noexcept {
+        return can_reuse_input_transform() && ldb2 > 1;
+    }
+
+    bool save_transform_B() const noexcept {
+        // ACE never caches B: it loads B straight from memory with vmovups,
+        // so no transform buffer is reserved for it.
+        return !is_ace() && can_reuse_input_transform() && bdb2 > 1;
+    }
+
+    dim_t get_convert_wsp_buffer_size() const noexcept {
         if (!is_input_convert()) return 0;
-        const int n_bdb = bd_block2;
-        const int n_rdb = rdb + (rdb_tail != 0);
-        const int n_ldb = ldb + (ldb_tail != 0);
-        const int downcvt_tiles = brgattr.max_bs * n_rdb * (n_bdb + n_ldb);
+        const dim_t n_bdb = bd_block2;
+        const dim_t n_rdb = rdb + (rdb_tail != 0);
+        const dim_t n_ldb = ldb + (ldb_tail != 0);
+        const dim_t downcvt_tiles = brgattr.max_bs * n_rdb * (n_bdb + n_ldb);
         return downcvt_tiles * tilesize;
     }
 
-    int get_fused_copy_a_wsp_buffer_size() const noexcept {
+    dim_t get_fused_copy_a_wsp_buffer_size() const noexcept {
         if (fused_copy_a)
             return brgattr.max_bs * bcast_dim
                     * dnnl::impl::utils::rnd_up(reduce_dim, max_rd_block())
@@ -548,9 +625,34 @@ struct brgemm_desc_t {
         return 0;
     }
 
-    int get_wsp_buffer_size() const noexcept {
-        int sz = 0;
-        if (is_tmm) {
+    int all_rdb() const noexcept {
+        return static_cast<int>(rdb + (rdb_tail != 0));
+    }
+
+    int rd_block_A_size() const noexcept { return rd_block * typesize_A; }
+    int rd_block_B_size() const noexcept { return rd_block * typesize_B; }
+
+    // ACE A transform stores each bd_block in 4 ZMM registers.
+    // It packs 16 rows into 4 ZMMs and transposes to one ZMM per rd_step.
+    static constexpr int ace_zmms_per_bd_block = 4;
+    int ace_transformed_A_bd_block_size() const noexcept {
+        return ace_zmms_per_bd_block
+                * static_cast<int>(cpu_isa_traits_t<avx512_core>::vlen);
+    }
+    int ace_transformed_A_bd_block2_size() const noexcept {
+        return bd_block2 * ace_transformed_A_bd_block_size();
+    }
+
+    dim_t get_wsp_buffer_size() const noexcept {
+        dim_t sz = 0;
+        if (is_ace()) {
+            // ACE transforms and caches A only; B is consumed directly from
+            // its source matrix by the ZMM load path. No C tile area is
+            // reserved either, ACE reads accumulators out with tilemovrow.
+            if (save_transform_A())
+                sz = static_cast<dim_t>(ace_transformed_A_bd_block2_size())
+                        * brgattr.max_bs * all_rdb();
+        } else if (is_tmm) {
             sz = get_num_C_tiles() * tilesize; // postops buffer
             sz += get_convert_wsp_buffer_size();
             if (amx_wary_k_tail()) sz += tilesize;
@@ -613,7 +715,8 @@ struct brgemm_desc_t {
                 brgemm_broadcast_t::none, zp_type_a, zp_type_b, zp_type_c);
         return dt_c != dt_d || with_eltwise || with_binary || with_bias
                 || with_sum || req_s8s8_compensation || has_zero_points
-                || with_src_scales || with_wei_scales || with_dst_scales;
+                || with_src_scales || with_wei_scales || with_dst_scales
+                || brgattr.use_intermediate_c_buffer;
     }
 
     bool can_dispatch_uker() const noexcept {
@@ -623,6 +726,10 @@ struct brgemm_desc_t {
                 && brgattr.use_uker
                 && everyone_is(false, is_runtime_lda, is_runtime_ldb,
                         is_runtime_ldc, is_runtime_ldd);
+    }
+
+    bool is_ace() const noexcept {
+        return brgattr.use_ace && is_superset(isa_impl, cpu_isa_t::avx10_2_ace);
     }
 
     bool is_xf16() const noexcept { return is_bf16 || is_f16; }
@@ -643,12 +750,8 @@ struct brgemm_desc_t {
     bool reduce_by_words() const {
         return is_bf16_tmm || is_f16_tmm || is_input_convert();
     }
-    int max_rd_block() const {
-        return is_tf32 ? 16 : reduce_by_words() ? 32 : 64;
-    }
-    int rd_block_step() const {
-        return is_tf32 ? 1 : (reduce_by_words() && !is_fp8) ? 2 : 4;
-    }
+    int max_rd_block() const { return reduce_by_words() ? 32 : 64; }
+    int rd_block_step() const { return (reduce_by_words() && !is_fp8) ? 2 : 4; }
 
     bool amx_may_extend_k() const {
         return (is_superset(isa_impl, avx512_core_amx) && brgattr.extendable_k
@@ -690,38 +793,39 @@ struct brgemm_dynamic_values_t {
 };
 
 struct brgemm_kernel_params_t {
-    const void *ptr_A;
-    const void *ptr_B;
-    const brgemm_batch_element_t *batch;
-    void *ptr_C;
+    const void *ptr_A = nullptr;
+    const void *ptr_B = nullptr;
+    const brgemm_batch_element_t *batch = nullptr;
+    void *ptr_C = nullptr;
 
-    const void *ptr_bias;
-    void *ptr_D;
+    const void *ptr_bias = nullptr;
+    void *ptr_D = nullptr;
 
     const void *ptr_src_scales = nullptr;
     const void *ptr_wei_scales = nullptr;
     const void *ptr_dst_scales = nullptr;
-    void *ptr_buf;
+    void *ptr_buf = nullptr;
 
-    size_t do_post_ops;
-    size_t do_apply_comp;
-    size_t BS;
+    size_t do_post_ops = 0;
+    size_t do_apply_comp = 0;
+    size_t BS = 0;
 
     /*
      * ptr to table of void * elements that are pointers to post_op binary
      * src1 tensors
      */
-    const void *post_ops_binary_rhs_arg_vec;
-    size_t oc_logical_off;
-    size_t first_mb_matrix_addr_off;
-    size_t dst_row_logical_off;
+    const void *post_ops_binary_rhs_arg_vec = nullptr;
+    size_t oc_logical_off = 0;
+    size_t first_mb_matrix_addr_off = 0;
+    size_t dst_row_logical_off = 0;
 
-    const char *data_C_ptr_;
+    const char *data_C_ptr_ = nullptr;
 
     const void *a_zp_compensations = nullptr;
     const void *b_zp_compensations = nullptr;
     const void *a_zp_values = nullptr;
     const void *c_zp_values = nullptr;
+    const void *ptr_per_mn_compensation = nullptr;
     size_t skip_accm = 0;
     int32_t zp_a_val = 1;
     dim_t dynamic_LDA = 0;
@@ -741,7 +845,7 @@ struct brgemm_kernel_t {
     brgemm_kernel_t() = default;
     virtual ~brgemm_kernel_t() = default;
     virtual status_t create_kernel() = 0;
-    virtual void operator()(brgemm_kernel_params_t *) const = 0;
+    virtual void operator()(const brgemm_kernel_params_t *) const = 0;
     virtual const jit_generator_t *get_jit_generator() const = 0;
     virtual const brgemm_desc_t &get_brg() const = 0;
 };
@@ -758,7 +862,7 @@ struct brgemm_kernel_common_t : public brgemm_kernel_t {
     ~brgemm_kernel_common_t() override;
 
     status_t create_kernel() override;
-    void operator()(brgemm_kernel_params_t *) const override;
+    void operator()(const brgemm_kernel_params_t *) const override;
     const jit_generator_t *get_jit_generator() const override;
     const brgemm_desc_t &get_brg() const override {
         return ((jit_base_brgemm_kernel_t *)brgemm_kernel_)->get_brg();
@@ -775,7 +879,7 @@ struct brgemm_amx_uker_t : public brgemm_kernel_t {
     ~brgemm_amx_uker_t() override;
 
     status_t create_kernel() override;
-    void operator()(brgemm_kernel_params_t *) const override;
+    void operator()(const brgemm_kernel_params_t *) const override;
     const jit_generator_t *get_jit_generator() const override;
     const brgemm_desc_t &get_brg() const override {
         return ((jit_base_brgemm_kernel_t *)brgemm_kernel_)->get_brg();
@@ -793,7 +897,7 @@ struct brdgmm_kernel_t : public brgemm_kernel_t {
     ~brdgmm_kernel_t() override;
 
     status_t create_kernel() override;
-    void operator()(brgemm_kernel_params_t *) const override;
+    void operator()(const brgemm_kernel_params_t *) const override;
     const jit_generator_t *get_jit_generator() const override;
     const brgemm_desc_t &get_brg() const override {
         return ((jit_base_brgemm_kernel_t *)brgemm_kernel_)->get_brg();
@@ -807,7 +911,7 @@ private:
 
 /// @param bias Vector of bias (vector length is N)
 /// @param scales - Vector of scale factor values which represents combination
-///     scale factors for matrixes A and B. If brgemm_desc_t::is_oc_scale = true
+///     scale factors for matrixes A and B. If brgemm_desc_t::is_per_n_scale = true
 ///     vector length is N otherwise it must be broadcasted to vector of simd
 ///     width length
 /// @param binary_post_ops_rhs - Ptr to table of pointers to tensors used as rhs
@@ -847,7 +951,8 @@ struct brgemm_post_ops_data_t {
             int32_t zp_a_val = 1, bool do_only_comp = false,
             bool do_only_zp_a_val = false, const void *src_scales = nullptr,
             const void *wei_scales = nullptr, const void *dst_scales = nullptr,
-            const void *a_zp_values = nullptr)
+            const void *a_zp_values = nullptr,
+            const void *per_mn_compensation = nullptr)
         : bias(bias)
         , binary_post_ops_rhs(binary_post_ops_rhs)
         , oc_logical_off(oc_logical_off)
@@ -864,7 +969,8 @@ struct brgemm_post_ops_data_t {
         , src_scales(src_scales)
         , wei_scales(wei_scales)
         , dst_scales(dst_scales)
-        , a_zp_values(a_zp_values) {}
+        , a_zp_values(a_zp_values)
+        , per_mn_compensation(per_mn_compensation) {}
 
     const void *bias = nullptr;
     const void *binary_post_ops_rhs = nullptr;
@@ -883,6 +989,7 @@ struct brgemm_post_ops_data_t {
     const void *wei_scales = nullptr;
     const void *dst_scales = nullptr;
     const void *a_zp_values = nullptr;
+    const void *per_mn_compensation = nullptr;
 };
 
 } // namespace x64

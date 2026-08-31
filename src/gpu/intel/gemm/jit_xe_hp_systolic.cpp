@@ -32,7 +32,7 @@ namespace gemm {
 
 using namespace gemmstone;
 
-status_t xe_hp_systolic_t::pd_t::init(impl::engine_t *engine) {
+status_t xe_hp_systolic_t::pd_t::init(const impl::engine_t *engine) {
     using namespace prop_kind;
     using namespace data_type;
     using namespace primitive_kind;
@@ -40,7 +40,7 @@ status_t xe_hp_systolic_t::pd_t::init(impl::engine_t *engine) {
     using arch_t = compute::gpu_arch_t;
 
     assert(engine->kind() == engine_kind::gpu);
-    auto *intel_engine = utils::downcast<intel::engine_t *>(engine);
+    const auto *intel_engine = utils::downcast<const intel::engine_t *>(engine);
 
     VDISPATCH_GEMM(intel_engine->mayiuse_ngen_kernels(),
             VERBOSE_UNSUPPORTED_DEVICE_FEATURE, "ngen kernels");
@@ -118,7 +118,8 @@ status_t xe_hp_systolic_t::pd_t::init(impl::engine_t *engine) {
                            utils::one_of(d->bias_type(), d->a_type(), f32)
                                    && d->bias_mask() < 8),
             VERBOSE_UNSUPPORTED_BIAS_CFG);
-
+    VDISPATCH_GEMM(!attr()->scales_.has_host_scalars(),
+            VERBOSE_UNSUPPORTED_FEATURE, "host scalars");
     // Limit scope of large buffer implementation support as the ability test
     // large buffers is limited by testing time.
     VDISPATCH_GEMM(std::max({memory_desc_wrapper(src_md(0)).size(),

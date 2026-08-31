@@ -26,17 +26,24 @@ namespace binary_injector_utils {
 std::vector<const void *> prepare_binary_args(const post_ops_t &post_ops,
         const exec_ctx_t &ctx, const unsigned first_arg_idx_offset) {
     std::vector<const void *> post_ops_binary_rhs_arg_vec;
+    if (post_ops.len() == 0) return post_ops_binary_rhs_arg_vec;
     post_ops_binary_rhs_arg_vec.reserve(post_ops.entry_.size());
 
     unsigned idx = first_arg_idx_offset;
     for (const auto &post_op : post_ops.entry_) {
         if (post_op.is_binary()) {
-            post_ops_binary_rhs_arg_vec.emplace_back(CTX_IN_MEM(const void *,
-                    DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_1));
+            auto append_arg = [&](int arg, const memory_desc_t &md) {
+                const auto *base = CTX_IN_MEM(const char *, arg);
+                const memory_desc_wrapper mdw(md);
+                post_ops_binary_rhs_arg_vec.emplace_back(
+                        base + mdw.offset0() * mdw.data_type_size());
+            };
+
+            append_arg(DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_1,
+                    post_op.binary.src1_desc);
             if (post_op.is_binary_with_ternary_op()) {
-                post_ops_binary_rhs_arg_vec.emplace_back(CTX_IN_MEM(
-                        const void *,
-                        DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_2));
+                append_arg(DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_2,
+                        post_op.binary.src2_desc);
             }
         } else if (post_op.is_prelu()) {
             auto *arg = CTX_IN_MEM(const void *,

@@ -43,6 +43,8 @@
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
 #include <CL/cl.h>
+
+#include "xpu/ocl/utils.hpp"
 #endif
 
 namespace std {
@@ -174,7 +176,7 @@ public:
     virtual status_t compile(compiled_partition_t *compiled_partition,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs,
-            const engine_t *aengine) const
+            engine_t *aengine) const
             = 0;
 
     /// get partition_impl id
@@ -275,11 +277,11 @@ public:
     /// @param inplace_pairs The inplace pairs that used to indicate
     ///     which input and output tensor given on execute can share
     ///     same memory buffer
-    compiled_partition_impl_t(const engine_t &engine,
+    compiled_partition_impl_t(engine_t *engine,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs,
             const std::vector<inplace_pair_t> &inplace_pairs)
-        : engine_(&engine)
+        : engine_(engine)
         , inputs_(inputs)
         , outputs_(outputs)
         , inplace_pairs_(inplace_pairs) {}
@@ -349,27 +351,31 @@ public:
     ///     would like to manage device resource by its own, it may ignore
     ///     stream object. By doing this, it won’t support custom op
     ///     implemented outside oneDNN Graph.
-    virtual status_t execute(const stream_t *astream,
+    virtual status_t execute(stream_t *astream,
             const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs)
+            const std::vector<tensor_t> &outputs, const tensor_t *scratchpad)
             = 0;
 
 #ifdef DNNL_WITH_SYCL
-    virtual status_t execute_sycl(const stream_t *astream,
+    virtual status_t execute_sycl(stream_t *astream,
             const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs,
+            const std::vector<tensor_t> &outputs, const tensor_t *scratchpad,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event)
             = 0;
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    virtual status_t execute_ocl(const stream_t *astream,
+    virtual status_t execute_ocl(stream_t *astream,
             const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &ocl_deps, cl_event *ocl_event)
+            const std::vector<tensor_t> &outputs, const tensor_t *scratchpad,
+            const std::vector<xpu::ocl::wrapper_t<cl_event>> &ocl_deps,
+            xpu::ocl::wrapper_t<cl_event> &ocl_event)
             = 0;
 #endif
+
+    /// Returns the required scratchpad size in bytes.
+    virtual size_t get_scratchpad_size() const = 0;
 
 protected:
     /// The engine which this compiled_partition_impl_t is specialized

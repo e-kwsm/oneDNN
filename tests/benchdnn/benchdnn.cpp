@@ -44,6 +44,7 @@
 #include "reorder/reorder.hpp"
 #include "resampling/resampling.hpp"
 #include "rnn/rnn.hpp"
+#include "sdpa/sdpa.hpp"
 #include "self/self.hpp"
 #include "shuffle/shuffle.hpp"
 #include "softmax/softmax.hpp"
@@ -76,8 +77,6 @@ bool allow_enum_tags_only {true};
 int test_start {0};
 bool attr_same_pd_check {false};
 bool check_ref_impl {false};
-
-execution_mode_t execution_mode {execution_mode_t::direct};
 
 int main(int argc, char **argv) {
     using namespace parser;
@@ -141,6 +140,8 @@ int main(int argc, char **argv) {
         resampling::bench(--argc, ++argv);
     } else if (!strcmp("--reduction", argv[0])) {
         reduction::bench(--argc, ++argv);
+    } else if (!strcmp("--sdpa", argv[0])) {
+        sdpa::bench(--argc, ++argv);
     } else if (!strcmp("--zeropad", argv[0])) {
         zeropad::bench(--argc, ++argv);
     } else if (!strcmp("--brgemm", argv[0])) {
@@ -164,7 +165,7 @@ int main(int argc, char **argv) {
     print_impl_names_csv_summary();
 
     // Failed cases summary.
-    if (has_bench_mode_bit(mode_bit_t::corr) && summary.failed_cases
+    if (!has_bench_mode_bit(mode_bit_t::perf) && summary.failed_cases
             && !benchdnn_stat.failed_cases.empty()) {
         printf("===========================================================\n");
         printf("= Failed cases summary (--summary=no-failures to disable) =\n");

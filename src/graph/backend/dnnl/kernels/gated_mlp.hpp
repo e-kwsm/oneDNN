@@ -43,8 +43,8 @@ private:
     std::shared_ptr<kernel_base_t> kernel;
 
 public:
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *engine, const std::vector<logical_tensor_t> &inputs,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *engine,
+            const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override {
         const engine_kind_t ekind = engine->kind();
         bool enable_ukernel = false;
@@ -53,7 +53,8 @@ public:
 
         status_t ret = status::unimplemented;
 
-        if (enable_ukernel) {
+        // TODO: quantized fused gated mlp is not supported yet.
+        if (enable_ukernel && !quantized) {
             kernel = std::make_shared<
                     gated_mlp_primitive_kernel_t<quantized>>();
             ret = kernel->compile_impl(part, engine, inputs, outputs);
@@ -71,40 +72,45 @@ public:
         return ret;
     }
 
-    // Use large partition kernel as defautl. Turn the env var to 0 to select
-    // gated_mlp primitive.
     bool force_primitive() const {
         const int force = graph::utils::getenv_int_internal(
-                "GRAPH_GATED_MLP_FORCE_PRIMITIVE", 1);
+                "GRAPH_GATED_MLP_FORCE_PRIMITIVE", 0);
         return force > 0;
     }
 
-    status_t execute_impl(const stream_t *stream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs) override {
-        return kernel->execute_impl(stream, inputs, outputs);
+    status_t execute_impl(stream_t *stream, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf) override {
+        return kernel->execute_impl(stream, inputs, outputs, scratchpad_buf);
     }
 
 #ifdef DNNL_WITH_SYCL
-    status_t sycl_execute_impl(const stream_t *stream,
+    status_t sycl_execute_impl(stream_t *stream,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &deps,
             ::sycl::event *event) override {
-        return kernel->sycl_execute_impl(stream, inputs, outputs, deps, event);
+        return kernel->sycl_execute_impl(
+                stream, inputs, outputs, scratchpad_buf, deps, event);
     }
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    status_t ocl_execute_impl(const stream_t *stream,
+    status_t ocl_execute_impl(stream_t *stream,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &deps, cl_event *event) override {
-        return kernel->ocl_execute_impl(stream, inputs, outputs, deps, event);
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &deps, ocl_event_t &event) override {
+        return kernel->ocl_execute_impl(
+                stream, inputs, outputs, scratchpad_buf, deps, event);
     }
 #endif
 
     std::string str() const override { return kernel->str(); }
+    size_t get_scratchpad_size() const override {
+        return kernel->get_scratchpad_size();
+    }
 };
 } // namespace dnnl_impl
 } // namespace graph

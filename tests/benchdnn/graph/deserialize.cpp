@@ -20,10 +20,12 @@
 #include <map>
 #include <numeric>
 #include <queue>
-#include <sstream>
 #include <stdexcept>
 
+#include "dnn_types.hpp"
+
 #include "deserialize.hpp"
+#include "utils/stringstream.hpp"
 
 namespace graph {
 
@@ -553,7 +555,7 @@ std::ostream &operator<<(std::ostream &s, const deserialized_lt_t &dlt) {
 }
 
 std::string deserialized_lt_t::get_string() const {
-    dnnl::impl::stringstream_t ss;
+    stringstream_t ss;
     ss << *this;
     return ss.str();
 }
@@ -623,7 +625,7 @@ std::ostream &operator<<(std::ostream &s, const deserialized_op_t &dop) {
 }
 
 std::string deserialized_op_t::get_string() const {
-    dnnl::impl::stringstream_t ss;
+    stringstream_t ss;
     ss << *this;
     return ss.str();
 }
@@ -636,14 +638,14 @@ std::ostream &operator<<(std::ostream &s, const deserialized_graph_t &dg) {
 }
 
 std::string deserialized_graph_t::get_string() const {
-    dnnl::impl::stringstream_t ss;
+    stringstream_t ss;
     ss << *this;
     return ss.str();
 }
 
 dnnl::graph::graph deserialized_graph_t::to_graph(
         const graph_fpmath_mode_t &fpmath_mode) const {
-    const auto &engine = get_graph_engine();
+    const dnnl::engine &engine = get_graph_engine();
     dnnl::graph::graph g(engine.get_kind());
     g.set_fpmath_mode(static_cast<dnnl::fpmath_mode>(
                               str2fpmath_mode(fpmath_mode.mode_.c_str())),
@@ -1025,8 +1027,7 @@ bool deserialized_graph_t::check_tensor_with_mb(size_t tensor_id,
                 != unsupport_mb_rewrite_ops_.end()) {
             // those unsupport op need rewrite dst_shape / weight_shape also
             ret = false;
-        } else if (std::find(bwd_ops_.begin(), bwd_ops_.end(), aop.kind_)
-                != bwd_ops_.end()) {
+        } else if (is_backward(aop.kind_)) {
             // bwd ops have multiple inputs with mb
             ret = false;
             if (tensor_id == aop.in_lts_[0].id_
@@ -1076,6 +1077,13 @@ bool deserialized_graph_t::check_tensor_with_mb(size_t tensor_id,
 
     mb_rewrite_ret.emplace(tensor_id, ret);
     return ret;
+}
+
+bool deserialized_graph_t::has_backward_op() const {
+    return std::any_of(
+            ops_.begin(), ops_.end(), [](const deserialized_op_t &aop) {
+        return is_backward(aop.kind_);
+    });
 }
 
 } // namespace graph

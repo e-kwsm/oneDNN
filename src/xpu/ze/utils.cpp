@@ -21,14 +21,14 @@ namespace impl {
 namespace xpu {
 namespace ze {
 
-status_t ze_initialize() {
+ze_result_t ze_initialize() {
     static std::once_flag flag;
-    static status_t status = status::success;
+    static ze_result_t ze_status = ZE_RESULT_SUCCESS;
     std::call_once(flag, [&] {
         auto _init_drivers
                 = find_ze_symbol<decltype(&::zeInitDrivers)>("zeInitDrivers");
         if (!_init_drivers) {
-            status = status::runtime_error;
+            ze_status = ZE_RESULT_ERROR_UNINITIALIZED;
             return;
         }
 
@@ -37,13 +37,10 @@ status_t ze_initialize() {
         desc.stype = ZE_STRUCTURE_TYPE_INIT_DRIVER_TYPE_DESC;
         desc.pNext = nullptr;
         desc.flags = ZE_INIT_DRIVER_TYPE_FLAG_GPU;
-        if (_init_drivers(&driver_count, nullptr, &desc) != ZE_RESULT_SUCCESS) {
-            status = status::runtime_error;
-            return;
-        }
+        ze_status = _init_drivers(&driver_count, nullptr, &desc);
     });
 
-    return status;
+    return ze_status;
 }
 
 xpu::device_uuid_t get_device_uuid(ze_device_handle_t device) {
@@ -54,9 +51,9 @@ xpu::device_uuid_t get_device_uuid(ze_device_handle_t device) {
     device_properties.stype = ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
     device_properties.pNext = nullptr;
 
-    auto status = ze::zeDeviceGetProperties(device, &device_properties);
-    MAYBE_UNUSED(status);
-    assert(status == status::success);
+    auto ze_status = ze::zeDeviceGetProperties(device, &device_properties);
+    MAYBE_UNUSED(ze_status);
+    assert(ze_status == ZE_RESULT_SUCCESS);
 
     const auto &device_id = device_properties.uuid.id;
 
@@ -71,17 +68,17 @@ xpu::device_uuid_t get_device_uuid(ze_device_handle_t device) {
 
 status_t get_device_index(size_t *index, ze_device_handle_t device) {
     uint32_t driver_count = 0;
-    CHECK(ze::zeDriverGet(&driver_count, nullptr));
+    ZE_CHECK(ze::zeDriverGet(&driver_count, nullptr));
     if (driver_count <= 0) return status::invalid_arguments;
 
     std::vector<ze_driver_handle_t> drivers(driver_count);
-    CHECK(ze::zeDriverGet(&driver_count, drivers.data()));
+    ZE_CHECK(ze::zeDriverGet(&driver_count, drivers.data()));
 
     uint32_t device_count = 0;
-    CHECK(ze::zeDeviceGet(drivers[0], &device_count, nullptr));
+    ZE_CHECK(ze::zeDeviceGet(drivers[0], &device_count, nullptr));
 
     std::vector<ze_device_handle_t> devices(device_count);
-    CHECK(ze::zeDeviceGet(drivers[0], &device_count, devices.data()));
+    ZE_CHECK(ze::zeDeviceGet(drivers[0], &device_count, devices.data()));
 
     for (size_t i = 0; i < device_count; i++) {
         if (device == devices[i]) {
@@ -122,6 +119,31 @@ ze_memory_type_t get_pointer_type(
     return memory_allocation_properties.type;
 }
 
+status_t create_kernel(ze_kernel_handle_t &kernel,
+        ze_module_handle_t module_handle, const std::string &akernel_name) {
+    std::string kernel_name(akernel_name);
+    if (kernel_name.empty()) {
+        // Re-used the approach from OCL backend.
+        // Handle cases when kernel name is not available (they mostly come from
+        // ngen) by querying the kernel name from the module.
+        uint32_t count = 1;
+        const char *name = nullptr;
+        ZE_CHECK(xpu::ze::zeModuleGetKernelNames(module_handle, &count, &name));
+
+        kernel_name = std::string(name);
+        assert(!kernel_name.empty());
+        if (kernel_name.empty()) return status::runtime_error;
+    }
+
+    ze_kernel_desc_t kernel_desc {};
+    kernel_desc.stype = ZE_STRUCTURE_TYPE_KERNEL_DESC;
+    kernel_desc.pKernelName = kernel_name.c_str();
+
+    ZE_CHECK(xpu::ze::zeKernelCreate(module_handle, &kernel_desc, &kernel));
+
+    return status::success;
+}
+
 status_t append_memory_copy(ze_command_list_handle_t list,
         std::mutex &list_mutex, void *dst, const void *src, size_t size,
         ze_event_handle_t out_event, uint32_t num_deps_events,
@@ -129,7 +151,7 @@ status_t append_memory_copy(ze_command_list_handle_t list,
     std::lock_guard<std::mutex> guard(list_mutex);
 
     // This function is not thread-safe, guarding it with exclusive access.
-    CHECK(ze::zeCommandListAppendMemoryCopy(
+    ZE_CHECK(ze::zeCommandListAppendMemoryCopy(
             list, dst, src, size, out_event, num_deps_events, deps_events));
 
     return status::success;
@@ -142,7 +164,7 @@ status_t append_memory_fill(ze_command_list_handle_t list,
     std::lock_guard<std::mutex> guard(list_mutex);
 
     // This function is not thread-safe, guarding it with exclusive access.
-    CHECK(ze::zeCommandListAppendMemoryFill(list, dst, pattern, pattern_size,
+    ZE_CHECK(ze::zeCommandListAppendMemoryFill(list, dst, pattern, pattern_size,
             size, out_event, num_deps_events, deps_events));
 
     return status::success;

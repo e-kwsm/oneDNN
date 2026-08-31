@@ -35,6 +35,10 @@ GEMMSTONE_NAMESPACE_START
 #endif
 #endif
 
+#if GEMMSTONE_ENABLE_COPY_PLAN_DUMP
+#include <iostream>
+#endif
+
 class CopyPlan;
 
 struct CopyOperand
@@ -78,8 +82,38 @@ struct CopyOperand
     friend CopyOperand abs(CopyOperand o) { o.abs = true; return o; }
 
 #if GEMMSTONE_ENABLE_COPY_PLAN_DUMP
-    void dump() const;
+    void dump(std::ostream &os) const;
+    void dump() const { dump(std::cout); }
 #endif
+};
+
+struct CopyRange {
+    int start = 0x7FFFFFFF, end = -1;
+
+    constexpr bool operator<(const CopyRange &r) const {
+        return (start < r.start) || (start == r.start && end < r.end);
+    }
+
+    constexpr bool operator==(const CopyRange &r) const {
+        return start == r.start && end == r.end;
+    }
+
+    constexpr bool operator!=(const CopyRange &r) const {
+        return !operator==(r);
+    }
+
+    constexpr operator bool() const { return start <= end; }
+
+    CopyRange &operator|=(const CopyRange &r) {
+        start = std::min(start, r.start);
+        end = std::max(end, r.end);
+        return *this;
+    }
+
+    std::string str() const {
+        if (!*this) return "(nil)";
+        return "[" + std::to_string(start) + ", " + std::to_string(end) + "]";
+    }
 };
 
 struct CopyInstruction
@@ -87,12 +121,11 @@ struct CopyInstruction
     ngen::Opcode op;
     uint8_t ctrl;
     int simd = 0;
-    int16_t cnumMin, cnumMax;
     uint16_t phase = 0, spread = 0;
     CopyOperand dst, src0, src1, src2, flag;
     ngen::ConditionModifier cmod = ngen::ConditionModifier::none;
     bool atomic = false, sat = false;
-    int16_t cnumSub = 0;
+    CopyRange range;
 
     void invalidate()       { simd = 0; }
     bool isInvalid()  const { return (simd == 0); }
@@ -110,7 +143,8 @@ struct CopyInstruction
     inline void execute(Generator &g);
 
 #if GEMMSTONE_ENABLE_COPY_PLAN_DUMP
-    void dump(const CopyPlan &plan) const;
+    void dump(std::ostream &os, const CopyPlan &plan, bool sortInfo = false) const;
+    void dump(const CopyPlan &plan, bool sortInfo = false) const { dump(std::cout, plan, sortInfo); }
 #endif
 };
 
@@ -120,10 +154,9 @@ struct CopyTemporary
 
     int bytes = 0, align = 0, offset = 0;
     bool flag = false;
-    int16_t cnumMin = 0x7FFF;
-    int16_t cnumMax = -1;
     uint16_t phaseMin = 0xFFFF;
     int assignment = -1;
+    CopyRange range;
 
     explicit CopyTemporary(int bytes_, int align_, int offset_ = 0)
             : bytes(bytes_), align(align_), offset(offset_) {}
@@ -132,8 +165,7 @@ struct CopyTemporary
 
 protected:
     void usedBy(const CopyInstruction &i) {
-        cnumMin = std::min(cnumMin, i.cnumMin);
-        cnumMax = std::max(cnumMax, i.cnumMax);
+        range |= i.range;
         phaseMin = std::min(phaseMin, i.phase);
     }
 
@@ -192,14 +224,16 @@ public:
     int tempFlagBytes() const;
 
 #if GEMMSTONE_ENABLE_COPY_PLAN_DUMP
-    void dump(int n = -1) const;
+    void dump(std::ostream &os, int n, bool sortInfo) const;
+    void dump(int n, bool sortInfo = false) const { dump(std::cout, n, sortInfo); }
+    void dump(bool sortInfo = false) const { dump((int)insns.size(), sortInfo); }
     int cycleCount() const;
 #endif
 
 protected:
     ngen::HW hw;
     bool systolicAvailable;
-    bool freezeCNums = false;
+    bool freezeRange = false;
     std::vector<CopyInstruction> insns, newInsns;
     std::vector<CopyTemporary> temps;
     CopyInstruction invalidInsn;
@@ -228,8 +262,7 @@ protected:
     void repositionDst(CopyInstruction &i, int stride, int offset);
 
     void checkNoSubbytes();
-    void collapseCNums();
-    bool trySwapCNumRanges(int16_t min0, int16_t max0, int16_t min1);
+    bool trySwapRanges(const CopyRange &range, int start);
 
     void distributePhases();
     void split2DRegions();
@@ -245,7 +278,6 @@ protected:
     void plan4BitShifts(CopyInstruction &i);
     void planInt4Downconversion(CopyInstruction &i);
     void planEmulatedSIMD1(CopyInstruction &i);
-    void planEmulatedBF8ToBF(CopyInstruction &i);
     void planEmulatedHF8ToHF(CopyInstruction &i);
     void planEmulatedHF8ToBF(CopyInstruction &i);
     void planEmulatedHFToHF8(CopyInstruction &i);
@@ -273,9 +305,10 @@ protected:
     void optimizeIntegerDownconvert();
     void optimizeSaturate();
     void optimizeMoveToIntPipe();
+    void optimizeTranspose();
 
     CopyOperand bfImmediate(uint16_t bits, bool ternary);
-    CopyOperand zipImmediates(const CopyOperand &o1, const CopyOperand &o2);
+    CopyOperand zipImmediates(const CopyOperand &o1, const CopyOperand &o2, uint8_t stride);
 
     bool bfArithmeticOK(const CopyInstruction &i) const;
 };

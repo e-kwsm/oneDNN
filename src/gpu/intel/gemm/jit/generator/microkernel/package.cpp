@@ -22,35 +22,63 @@ namespace microkernel {
 
 using namespace ngen;
 
-Package::Status Package::finalize() {
+Package::Status Package::finalize(const ClobberSet &knownClobbers) {
     using namespace ngen;
 
-    auto status = Status::Success;
+    auto &status = this->status;
+    status = Status::Success;
 
     auto product = npack::decodeHWIPVersion(gmdidCompat);
     auto hw = getCore(product.family);
 
-    if (hw == HW::Unknown) return Status::UnsupportedHW;
+    if (hw == HW::Unknown) {
+        status = Status::UnsupportedHW;
+        return status;
+    }
 
     Decoder decoder(hw, binary);
-    DependencyRegion dstRegion;
 
-    /* Track clobbered registers at full register granularity for simplicity. */
-    std::array<bool, GRF::maxRegs() + 1> clobbered = {false};
+    auto clobbered = knownClobbers;
+    int maxAccIdx = -1;
 
     for (; !decoder.done(); decoder.advance()) {
         // Check for systolic usage.
         auto op = decoder.opcode();
         systolic |= (op == Opcode::dpas || op == Opcode::dpasw);
 
-        // Get destination region and add to clobbers.
-        if (decoder.getOperandRegion(dstRegion, -1)) {
-            if (dstRegion.unspecified) {
-                // Indirect destination -- cannot reliably detect clobbers.
-                status = Status::UncertainClobbers;
+        // Get destination region and add to clobbers. This indeterminate for
+        // indirect or variable sized destinations. In this case, rely on
+        // knownClobbers.
+        DependencyRegion dstRegion;
+        if (!decoder.getOperandRegion(dstRegion, -1)) continue;
+
+        if (dstRegion.rf == RegFileGRF) {
+            if (dstRegion.unspecified
+                && !(dstRegion.isValid() && knownClobbers[dstRegion.base])) {
+                    status = Status::UncertainClobbers;
             } else
                 for (int j = 0; j < dstRegion.size; j++)
                     clobbered[dstRegion.base + j] = true;
+        }
+
+        // Allow acc/flag ARF destinations only if declared in knownClobbers.
+        if (dstRegion.rf == RegFileARF) {
+            ARFType dstType = static_cast<ARFType>(dstRegion.base >> 4);
+            int arfIdx = dstRegion.base & 0xF;
+            int arfLen = dstRegion.size;
+            bool known = false;
+            if (dstType == ARFType::acc) {
+                known = true;
+                for (int j = arfIdx; j < arfIdx + arfLen; j++)
+                    known &= knownClobbers.acc(j);
+                maxAccIdx = std::max(maxAccIdx, arfIdx + arfLen - 1);
+            } else if (dstType == ARFType::f) {
+                known = true;
+                for (int j = arfIdx; j < arfIdx + arfLen; j++)
+                    known &= knownClobbers.flag(j);
+            }
+            if (!known)
+                status = Status::UncertainClobbers;
         }
     }
 
@@ -71,6 +99,8 @@ Package::Status Package::finalize() {
             len = 0;
         }
     }
+    if (len > 0)
+        clobbers.emplace_back(RegisterRange(base * regBytes, len * regBytes));
 
     // Capture GRF usage from clobbers and arguments.
     uint32_t last = 0;
@@ -83,6 +113,12 @@ Package::Status Package::finalize() {
             last = std::max(last, range.boffset + range.blen);
 
     grfMin = (last + regBytes - 1) / regBytes;
+
+    int nacc = AccumulatorRegister::count(hw, grfMin);
+    if (nacc <= maxAccIdx) {
+        // Upgrade to 8 accumulators
+        grfMin = 256;
+    }
 
     // Generate LUID from hash of kernel. Later, the cataloguer can update it in case of collisions.
     uint32_t luid = 0;

@@ -29,6 +29,7 @@
 #include <locale>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <memory>
 #include <string>
@@ -439,7 +440,7 @@ template <typename T, typename U, typename W, typename... Args>
 inline T nd_iterator_init(T start, U &x, const W &X, Args &&...tuple) {
     start = nd_iterator_init(start, utils::forward<Args>(tuple)...);
     x = start % X;
-    return start / X;
+    return static_cast<T>(start / X);
 }
 
 inline bool nd_iterator_step() {
@@ -466,7 +467,7 @@ inline bool nd_iterator_jump(U &cur, const U end, W &x, const Y &X) {
         return true;
     } else {
         cur += max_jump;
-        x += max_jump;
+        x += static_cast<W>(max_jump);
         return false;
     }
 }
@@ -821,7 +822,7 @@ public:
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE or copy at http://www.boost.org/LICENSE_1_0.txt)
 template <typename T>
-static size_t hash_combine(size_t seed, const T &v) {
+inline size_t hash_combine(size_t seed, const T &v) {
     return seed ^= std::hash<T> {}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 }
 
@@ -906,42 +907,6 @@ struct nop_deleter_t {
 template <typename T>
 using maybe_unique_ptr = std::unique_ptr<T, nop_deleter_t>;
 #endif // DNNL_MAYBE_UNIQUE_PTR_IS_UNIQUE
-
-// Common abstraction to manipulate nibbles in memory as pairs
-struct nibble2_t {
-
-    // constructs a nibble pair from a pair of uint8_t values
-    nibble2_t(uint8_t low_, uint8_t high_) : low(low_), high(high_) {}
-
-    // constructs a nibble pairs from an uin8_t, taking its low and high part
-    nibble2_t(uint8_t pack_) : low(pack_ & 0xf), high((pack_ >> 4) & 0xf) {}
-
-    // sets low (idx=0) or high (idx=1)  nibble.
-    inline void set(uint8_t val, int idx) {
-        switch (idx) {
-            case 0: low = val; return;
-            case 1: high = val; return;
-            default: assert(!"Out of range index"); return;
-        }
-    }
-
-    // returns low (idx = 0) or high (idx = 1) nibble in a uint8_t
-    inline uint8_t get(int idx) const {
-        switch (idx) {
-            case 0: return low;
-            case 1: return high;
-            default: assert(!"out of range index"); return 0;
-        }
-    }
-
-    // returns pair of nibbles as uint8t
-    inline uint8_t get() const { return static_cast<uint8_t>(high << 4 | low); }
-
-private:
-    uint8_t low : 4;
-    uint8_t high : 4;
-};
-static_assert(sizeof(nibble2_t) == 1, "nibble2_t must be 1 byte");
 
 /// Iterates through a binary integer
 /// usage:

@@ -19,6 +19,7 @@
 
 #include "src/common/float4.hpp"
 #include "src/common/int4.hpp"
+#include "src/common/nibble.hpp"
 #include "src/common/nstl.hpp"
 
 namespace dnnl {
@@ -41,7 +42,7 @@ TEST(test_limits, uint4) {
 }
 
 TEST(test_limits, f4_e2m1) {
-    test_limits<impl::float4_e2m1_t>(6.0f, -6.0f, 1.0f);
+    test_limits<impl::float4_e2m1_t>(6.0f, -6.0f, 0.5f);
 }
 
 template <typename T>

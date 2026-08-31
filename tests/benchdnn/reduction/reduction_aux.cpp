@@ -14,9 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <sstream>
-
 #include "reduction.hpp"
+#include "utils/stringstream.hpp"
 
 namespace reduction {
 
@@ -76,8 +75,7 @@ dnnl_alg_kind_t alg2alg_kind(alg_t alg) {
 }
 
 std::string prb_t::set_repro_line() {
-    dnnl::impl::stringstream_t s;
-    dump_global_params(s);
+    stringstream_t s;
     settings_t def;
 
     if (canonical || sdt != def.sdt[0]) s << "--sdt=" << sdt << " ";

@@ -1,7 +1,7 @@
 /*******************************************************************************
 * Copyright 2021 Intel Corporation
 * Copyright 2021-2023 FUJITSU LIMITED
-* Copyright 2025 Arm Ltd. and affiliates
+* Copyright 2025-2026 Arm Ltd. and affiliates
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -252,7 +252,7 @@ struct jit_bnorm_s8_t<sve_512> : public jit_bnorm_base_t<sve_512> {
     void prepare_tail_mask() override {
         if (!c_tail_) return;
 
-        set_preg(tail_opmask.s, c_tail_, X_TMP_0, X_TMP_1);
+        set_preg(tail_opmask.s, c_tail_, X_TMP_0);
     }
 
     void load_mean_and_var(const ZReg &vmean, const ZReg &vsqrtvar, size_t offt,
@@ -309,7 +309,7 @@ struct jit_bnorm_s8_t<sve_512> : public jit_bnorm_base_t<sve_512> {
             L(mb_sp_loop);
             {
                 if (need_tail) {
-                    set_preg(p_tmp0.s, c_tail_, X_TMP_0, X_TMP_1);
+                    set_preg(p_tmp0.s, c_tail_, X_TMP_0);
                     ld1sb(v.s, p_tmp0 / T_z, ptr(src_ptr()));
                 } else {
                     ld1sb(v.s, P_ALL_ONE / T_z, ptr(src_ptr()));
@@ -357,7 +357,7 @@ struct jit_bnorm_s8_t<sve_512> : public jit_bnorm_base_t<sve_512> {
 namespace bnorm_s8_impl {
 
 template <cpu_isa_t isa>
-struct driver_t : public c_compatible {
+struct driver_t {
     driver_t(const batch_normalization_pd_t *pd) : pd_(pd), ker_(pd_) {}
     ~driver_t() = default;
 
@@ -411,7 +411,7 @@ using namespace utils;
 
 template <cpu_isa_t isa>
 status_t jit_uni_batch_normalization_s8_fwd_t<isa>::pd_t::init(
-        engine_t *engine) {
+        const engine_t *engine) {
     auto desired_fmt_tag = (ndims() == 4) ? nhwc : ndhwc;
 
     bool ok = true && mayiuse(isa) && is_fwd() && !has_zero_dim_memory()

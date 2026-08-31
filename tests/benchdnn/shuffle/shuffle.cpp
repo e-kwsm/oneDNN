@@ -30,11 +30,11 @@
 
 namespace shuffle {
 
-int fill_src(
-        int exec_arg, const prb_t *prb, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp) {
+int fill_src(int exec_arg, const prb_t *prb, dnn_mem_t &mem_dt,
+        dnn_mem_t &mem_fp, res_t *res) {
     const auto nelems = mem_fp.nelems();
     if (nelems == 0) return OK;
-    if (fill_from_file(exec_arg, mem_dt, mem_fp)) return OK;
+    if (fill_from_file(exec_arg, mem_dt, mem_fp, res)) return OK;
 
     // Refer to modes documentation for filling principles.
     if (has_bench_mode_bit(mode_bit_t::bitwise)) {
@@ -64,13 +64,13 @@ int fill_src(
         mem_fp.set_f32_elem(i, round_to_nearest_representable(prb->dt, value));
     });
 
-    SAFE(mem_dt.reorder(mem_fp), WARN);
+    SAFE(mem_dt.reorder(mem_fp, res), WARN);
 
     return OK;
 }
 
-dnnl_status_t init_pd(init_pd_args_t<prb_t> &init_pd_args) {
-    const prb_t *prb = init_pd_args.prb;
+dnnl_status_t init_pd(init_pd_args_t &init_pd_args) {
+    const prb_t *prb = prb_t::from(init_pd_args.base_prb);
     res_t *res = init_pd_args.res;
     bool force_f32_dt = init_pd_args.force_f32_dt;
 
@@ -102,19 +102,20 @@ dnnl_status_t init_pd(init_pd_args_t<prb_t> &init_pd_args) {
     return dnnl_success;
 }
 
-void skip_unimplemented_prb(const prb_t *prb, res_t *res) {
+void prb_t::skip_unimplemented(res_t *res) const {
+    const prb_t *prb = this; // Kept to avoid mass update
     skip_unimplemented_data_type({prb->dt}, prb->dir, res);
     skip_unimplemented_sum_po(prb->attr, res, dnnl_shuffle, prb->dt);
     skip_unimplemented_binary_po(prb->attr, res);
     skip_unimplemented_prelu_po(prb->attr, res, dnnl_shuffle);
 }
 
-void skip_invalid_prb(const prb_t *prb, res_t *res) {}
+void prb_t::skip_invalid(res_t *res) const {}
 
-void setup_cmp(compare::compare_t &cmp, const prb_t *prb, data_kind_t kind,
-        const args_t &ref_args) {}
+void setup_cmp(compare::compare_t &cmp, const base_prb_t *base_prb,
+        data_kind_t kind, const args_t &ref_args) {}
 
-std::vector<int> supported_exec_args(dir_t dir) {
+std::vector<int> prb_t::supported_exec_args(bool override_dir_with_fwd) const {
     static const std::vector<int> exec_fwd_args = {
             DNNL_ARG_SRC,
             DNNL_ARG_DST,
@@ -123,12 +124,14 @@ std::vector<int> supported_exec_args(dir_t dir) {
             DNNL_ARG_DIFF_SRC,
             DNNL_ARG_DIFF_DST,
     };
-    return (dir & FLAG_FWD) ? exec_fwd_args : exec_bwd_args;
+    return (override_dir_with_fwd || (dir & FLAG_FWD)) ? exec_fwd_args
+                                                       : exec_bwd_args;
 }
 
 int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
-        dnnl_primitive_t prim, const prb_t *prb, res_t *res,
+        dnnl_primitive_t prim, const base_prb_t *base_prb, res_t *res,
         dnnl_primitive_t prim_ref) {
+    const auto *prb = prb_t::from(base_prb);
     if (has_bench_mode_modifier(mode_modifier_t::no_ref_memory)) return OK;
 
     const auto &ref_engine = get_cpu_engine();
@@ -153,10 +156,10 @@ int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
 
         switch (exec_arg) {
             case DNNL_ARG_SRC:
-                SAFE(fill_src(exec_arg, prb, mem, ref_mem), WARN);
+                SAFE(fill_src(exec_arg, prb, mem, ref_mem, res), WARN);
                 break;
             case DNNL_ARG_DIFF_DST:
-                SAFE(fill_src(exec_arg, prb, mem, ref_mem), WARN);
+                SAFE(fill_src(exec_arg, prb, mem, ref_mem, res), WARN);
                 break;
             default: break;
         }
@@ -182,31 +185,34 @@ std::vector<data_kind_t> get_kinds_to_check(const prb_t *prb) {
 }
 
 int createit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
     v_prim.resize(1);
     SAFE(init_prim(prb->ctx_init, v_prim[0], init_pd, prb, res), WARN);
     return OK;
 }
 
 int checkit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
     if (has_bench_mode_bit(mode_bit_t::exec)) {
         SAFE(check_total_size(res), WARN);
     }
     if (has_bench_mode_bit(mode_bit_t::corr)) {
-        SAFE(check_caches(v_prim[0], prb, res), WARN);
+        SAFE(check_caches(v_prim[0], prb->ctx_init, res), WARN);
     }
     return OK;
 }
 
 int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
     set_zmalloc_max_expected_size(res->mem_size_args.zmalloc_expected_size);
 
     const auto &prim = v_prim[0];
 
     dnn_mem_map_t mem_map, ref_mem_map;
-    init_memory_args<prb_t>(mem_map, prb, prim, supported_exec_args(prb->dir));
+    init_memory_args(mem_map, prb, prim, res);
     TIME_FILL(SAFE(
             init_ref_memory_args(ref_mem_map, mem_map, prim, prb, res), WARN));
 
@@ -214,8 +220,8 @@ int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
 
     SAFE(run_execution(prim, args, res), WARN);
 
-    check_correctness(prb, get_kinds_to_check(prb), args, ref_args, setup_cmp,
-            res, prb->dir);
+    check_correctness(prb, get_kinds_to_check(prb), args, ref_args, compute_ref,
+            setup_cmp, res, prb->dir);
     SAFE(check_bitwise(prim, get_kinds_to_check(prb), args, prb->attr,
                  prb->inplace, res),
             WARN);

@@ -184,7 +184,7 @@
 #define REG_SDPA_P(...) __VA_ARGS__
 #else
 #define REG_SDPA_P(...) \
-    { nullptr }
+    {}
 #endif
 
 #if BUILD_PRIMITIVE_ALL || BUILD_SHUFFLE
@@ -209,18 +209,6 @@
 #endif
 
 // Primitive CPU ISA section is in src/cpu/platform.hpp
-
-#if BUILD_PRIMITIVE_GPU_ISA_ALL || BUILD_XELP
-#define REG_XELP_ISA(...) __VA_ARGS__
-#else
-#define REG_XELP_ISA(...)
-#endif
-
-#if BUILD_PRIMITIVE_GPU_ISA_ALL || BUILD_XEHP
-#define REG_XEHP_ISA(...) __VA_ARGS__
-#else
-#define REG_XEHP_ISA(...)
-#endif
 
 #if BUILD_PRIMITIVE_GPU_ISA_ALL || BUILD_XEHPG
 #define REG_XEHPG_ISA(...) __VA_ARGS__

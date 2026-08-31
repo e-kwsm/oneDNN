@@ -1,5 +1,6 @@
 /******************************************************************************
  * Copyright 2025 ZTE Corporation
+ * Copyright 2026 Intel Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +28,8 @@
 #include "cpu/cpu_inner_product_pd.hpp"
 #include "cpu/platform.hpp"
 
+#include "cpu/rv64/cpu_isa_traits.hpp"
+
 namespace dnnl {
 namespace impl {
 namespace cpu {
@@ -36,10 +39,14 @@ struct rvv_inner_product_fwd_t : public primitive_t {
     struct pd_t : public cpu_inner_product_fwd_pd_t {
         using cpu_inner_product_fwd_pd_t::cpu_inner_product_fwd_pd_t;
 
-        DECLARE_COMMON_PD_T_("RISCV64GCV", rvv_inner_product_fwd_t);
+        DECLARE_COMMON_PD_T("jit:rvv", rvv_inner_product_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             UNUSED(engine);
+
+            // V is not part of the RV64 baseline and the JIT kernel emits vector
+            // instructions, so gate on runtime ISA detection.
+            VDISPATCH_INNER_PRODUCT(mayiuse(v), VERBOSE_UNSUPPORTED_ISA);
 
             const auto src_type = src_md(0)->data_type;
             const auto wei_type = weights_md(0)->data_type;
@@ -96,8 +103,10 @@ struct rvv_inner_product_fwd_t : public primitive_t {
                 const data_type_t &bia_type) const {
             using namespace data_type;
             const bool dst_ok = utils::one_of(dst_type, f32, s32, s8, u8);
-            const bool src_wei_ok = (src_type == f32 && wei_type == f32)
-                    || (src_type == s8 && wei_type == s8)
+            // This implementation is registered only for the int8 (xi8:s8)
+            // dispatch list; f32 inner product is served by the gemm/brgemm
+            // implementations. Gate to exactly what the JIT kernel implements.
+            const bool src_wei_ok = (src_type == s8 && wei_type == s8)
                     || (src_type == u8 && wei_type == s8);
             const bool bia_ok = IMPLICATION(
                     with_bias(), utils::one_of(bia_type, f32, src_type));

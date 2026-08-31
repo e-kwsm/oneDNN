@@ -30,7 +30,8 @@ namespace ocl {
 status_t stream_impl_t::copy(impl::stream_t *stream,
         const memory_storage_t &src, const memory_storage_t &dst, size_t size,
         const xpu::event_t &deps, xpu::event_t &out_dep,
-        xpu::stream_profiler_t *stream_profiler) {
+        xpu::stream_profiler_t *stream_profiler,
+        xpu::verbose_profiler_t *verbose_profiler) {
 
     if (size == 0) return status::success;
 
@@ -46,8 +47,9 @@ status_t stream_impl_t::copy(impl::stream_t *stream,
     const cl_event *events_ptr = events.data();
 
     xpu::ocl::wrapper_t<cl_event> out_event;
-    bool need_out_event
-            = is_profiling_enabled() || flags() & stream_flags::out_of_order;
+    bool need_out_event = is_profiling_enabled()
+            || stream->is_verbose_profiler_enabled()
+            || flags() & stream_flags::out_of_order;
     cl_event *out_event_ptr = need_out_event ? &out_event.unwrap() : nullptr;
 
     if (dst.engine()->kind() == engine_kind::gpu
@@ -177,10 +179,19 @@ status_t stream_impl_t::copy(impl::stream_t *stream,
         return status::success;
     }
 
+    // Event registration for profilers is managed to allow the
+    // verbose_profiler_t operate independently from other profilers
+    // without forced profiling flags or double-move issues.
     if (is_profiling_enabled()) {
-        auto ocl_event = utils::make_unique<xpu::ocl::event_t>(
+        auto profiler_event = utils::make_unique<xpu::ocl::event_t>(
                 std::vector<xpu::ocl::wrapper_t<cl_event>> {out_event});
-        stream_profiler->register_event(std::move(ocl_event));
+        stream_profiler->register_event(std::move(profiler_event));
+    }
+
+    if (verbose_profiler) {
+        auto verbose_event = std::make_shared<xpu::ocl::event_t>(
+                std::vector<xpu::ocl::wrapper_t<cl_event>> {out_event});
+        verbose_profiler->register_event(verbose_event);
     }
 
     if (flags() & stream_flags::out_of_order)
@@ -192,7 +203,8 @@ status_t stream_impl_t::copy(impl::stream_t *stream,
 status_t stream_impl_t::fill(impl::stream_t *stream,
         const memory_storage_t &dst, uint8_t pattern, size_t size,
         const xpu::event_t &deps, xpu::event_t &out_dep,
-        xpu::stream_profiler_t *stream_profiler) {
+        xpu::stream_profiler_t *stream_profiler,
+        xpu::verbose_profiler_t *verbose_profiler) {
     using namespace dnnl::impl::utils;
 
     const auto *ocl_dst
@@ -210,8 +222,9 @@ status_t stream_impl_t::fill(impl::stream_t *stream,
     const cl_event *events_ptr = events.data();
 
     xpu::ocl::wrapper_t<cl_event> out_event;
-    bool need_out_event
-            = is_profiling_enabled() || flags() & stream_flags::out_of_order;
+    bool need_out_event = is_profiling_enabled()
+            || stream->is_verbose_profiler_enabled()
+            || flags() & stream_flags::out_of_order;
     cl_event *out_event_ptr = need_out_event ? &out_event.unwrap() : nullptr;
 
     if (ocl_dst->memory_kind() == xpu::ocl::memory_kind::usm) {
@@ -228,10 +241,19 @@ status_t stream_impl_t::fill(impl::stream_t *stream,
         OCL_CHECK(err);
     }
 
+    // Event registration for profilers is managed to allow the
+    // verbose_profiler_t operate independently from other profilers
+    // without forced profiling flags or double-move issues.
     if (is_profiling_enabled()) {
-        auto ocl_event = utils::make_unique<xpu::ocl::event_t>(
+        auto profiler_event = utils::make_unique<xpu::ocl::event_t>(
                 std::vector<xpu::ocl::wrapper_t<cl_event>> {out_event});
-        stream_profiler->register_event(std::move(ocl_event));
+        stream_profiler->register_event(std::move(profiler_event));
+    }
+
+    if (verbose_profiler) {
+        auto verbose_event = std::make_shared<xpu::ocl::event_t>(
+                std::vector<xpu::ocl::wrapper_t<cl_event>> {out_event});
+        verbose_profiler->register_event(verbose_event);
     }
 
     if (flags() & stream_flags::out_of_order)
@@ -247,15 +269,30 @@ status_t stream_impl_t::barrier() {
     return status::success;
 }
 
+status_t stream_impl_t::init_verbose_profiler(engine_kind_t kind) {
+    use_verbose_profiler_ = false;
+    if (!get_verbose(verbose_t::exec_profile)) return status::success;
+    if (kind != engine_kind::gpu) return status::success;
+    // verbose profiling support is only for in-order queues
+    if (flags() & stream_flags::out_of_order) return status::success;
+    use_verbose_profiler_ = true;
+    return status::success;
+}
+
+bool stream_impl_t::queue_has_profiling() const {
+    cl_command_queue_properties ocl_queue_props = 0;
+    cl_int err = clGetCommandQueueInfo(queue_, CL_QUEUE_PROPERTIES,
+            sizeof(ocl_queue_props), &ocl_queue_props, nullptr);
+    return (err == CL_SUCCESS && (ocl_queue_props & CL_QUEUE_PROFILING_ENABLE));
+}
+
 const xpu::ocl::context_t &stream_impl_t::ocl_ctx() const {
-    static xpu::ocl::context_t empty_ctx {};
-    return ctx_.get(empty_ctx);
+    return ctx_.get();
 }
 
 xpu::ocl::context_t &stream_impl_t::ocl_ctx() {
-    const xpu::ocl::context_t &ctx
-            = const_cast<const stream_impl_t *>(this)->ocl_ctx();
-    return *const_cast<xpu::ocl::context_t *>(&ctx);
+    static xpu::ocl::context_t empty_ctx {};
+    return ctx_.get_or_set(empty_ctx);
 }
 
 xpu::context_t &stream_impl_t::ctx() {

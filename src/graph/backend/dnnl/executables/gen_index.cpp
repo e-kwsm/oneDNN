@@ -89,10 +89,19 @@ void genindex_executable_t::execute(const stream &stream,
         const std::unordered_map<int, memory> &args) const {
     if (get_verbose(dnnl::impl::verbose_t::exec_profile,
                 dnnl::impl::component_t::graph)) {
-        stream.get()->wait();
+        bool block_on_wait = true;
+#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
+        dnnl::threadpool_interop::threadpool_iface *tp = nullptr;
+        auto st = stream.get()->get_threadpool(&tp);
+        block_on_wait = st == dnnl::impl::status::success && tp
+                && !(tp->get_flags()
+                        & dnnl::threadpool_interop::threadpool_iface::
+                                ASYNCHRONOUS);
+#endif
+        if (block_on_wait) stream.get()->wait();
         double start_ms = dnnl::impl::get_msec();
         execute_impl(stream, args);
-        stream.get()->wait();
+        if (block_on_wait) stream.get()->wait();
         double duration_ms = dnnl::impl::get_msec() - start_ms;
         VPROF(start_ms, graph, exec, VERBOSE_profile, info_.c_str(),
                 duration_ms);
@@ -122,6 +131,7 @@ std::optional<::sycl::event> genindex_executable_t::execute_sycl_impl(
     }
 #if (DNNL_GPU_RUNTIME != DNNL_RUNTIME_NONE) \
         && (DNNL_GPU_VENDOR == DNNL_VENDOR_INTEL)
+    double start_ms = dnnl::impl::get_msec();
     auto compute_stream
             = dnnl::impl::utils::downcast<gpu::intel::stream_t *>(stream.get());
     compute::range_t gws = {static_cast<size_t>(nelems_)};
@@ -139,7 +149,9 @@ std::optional<::sycl::event> genindex_executable_t::execute_sycl_impl(
             sycl_stream->sycl_ctx().get_deps(),
             sycl_stream->sycl_ctx().get_deps());
     auto return_event = sycl_stream->get_output_event();
-
+    if (sycl_stream->is_verbose_profiler_enabled())
+        sycl_stream->run_verbose_profiler(info_, start_ms,
+                static_cast<uint64_t>(dnnl::impl::component_t::graph));
     sycl_stream->after_exec_hook();
     return return_event;
 #else
@@ -155,13 +167,18 @@ std::optional<::sycl::event> genindex_executable_t::execute_sycl(
         const std::vector<::sycl::event> &deps) const {
     if (get_verbose(dnnl::impl::verbose_t::exec_profile,
                 dnnl::impl::component_t::graph)) {
-        stream.get()->wait();
-        double start_ms = dnnl::impl::get_msec();
-        execute_sycl_impl(stream, args, deps);
-        stream.get()->wait();
-        double duration_ms = dnnl::impl::get_msec() - start_ms;
-        VPROF(start_ms, graph, exec, VERBOSE_profile, info_.c_str(),
-                duration_ms);
+        if (!stream.get()->is_verbose_profiler_enabled()) {
+            stream.get()->wait();
+            double start_ms = dnnl::impl::get_msec();
+            execute_sycl_impl(stream, args, deps);
+            stream.get()->wait();
+            double duration_ms = dnnl::impl::get_msec() - start_ms;
+            VPROF(start_ms, graph, exec, VERBOSE_profile, info_.c_str(),
+                    duration_ms);
+        } else {
+            execute_sycl_impl(stream, args, deps);
+        }
+
         return std::nullopt; // no event returned in profiling mode
     } else {
         return execute_sycl_impl(stream, args, deps);
@@ -170,10 +187,11 @@ std::optional<::sycl::event> genindex_executable_t::execute_sycl(
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-cl_event genindex_executable_t::execute_ocl_impl(const stream &stream,
+ocl_event_t genindex_executable_t::execute_ocl_impl(const stream &stream,
         const std::unordered_map<int, memory> &args,
-        const std::vector<cl_event> &deps) const {
+        const std::vector<ocl_event_t> &deps) const {
 #if DNNL_GPU_VENDOR == DNNL_VENDOR_INTEL
+    double start_ms = dnnl::impl::get_msec();
     auto compute_stream
             = dnnl::impl::utils::downcast<gpu::intel::stream_t *>(stream.get());
 
@@ -190,10 +208,8 @@ cl_event genindex_executable_t::execute_ocl_impl(const stream &stream,
     ocl_stream->before_exec_hook();
 
     if (!deps.empty()) {
-        std::vector<xpu::ocl::wrapper_t<cl_event>> events(deps.size());
-        for (size_t i = 0; i < deps.size(); i++)
-            events[i] = xpu::ocl::wrapper_t<cl_event>(deps[i], true);
-        ocl_stream->ocl_ctx().set_deps(events);
+        ocl_stream->ocl_ctx().set_deps(
+                std::vector<ocl_event_t>(deps.begin(), deps.end()));
     }
 
     kernel_.parallel_for(*compute_stream, nd_range, arg_list,
@@ -204,9 +220,11 @@ cl_event genindex_executable_t::execute_ocl_impl(const stream &stream,
         auto last = ocl_stream->get_output_event();
         return_event = last.release();
     }
-
+    if (ocl_stream->is_verbose_profiler_enabled())
+        ocl_stream->run_verbose_profiler(info_, start_ms,
+                static_cast<uint64_t>(dnnl::impl::component_t::graph));
     ocl_stream->after_exec_hook();
-    return return_event;
+    return ocl_event_t(return_event);
 #else
     assertm(false,
             "genindex opexcutable is only implemented for intel vendor "
@@ -215,19 +233,23 @@ cl_event genindex_executable_t::execute_ocl_impl(const stream &stream,
 #endif
 }
 
-cl_event genindex_executable_t::execute_ocl(const stream &stream,
+ocl_event_t genindex_executable_t::execute_ocl(const stream &stream,
         const std::unordered_map<int, memory> &args,
-        const std::vector<cl_event> &deps) const {
+        const std::vector<ocl_event_t> &deps) const {
     if (get_verbose(dnnl::impl::verbose_t::exec_profile,
                 dnnl::impl::component_t::graph)) {
-        stream.get()->wait();
-        double start_ms = dnnl::impl::get_msec();
-        execute_ocl_impl(stream, args, deps);
-        stream.get()->wait();
-        double duration_ms = dnnl::impl::get_msec() - start_ms;
-        VPROF(start_ms, graph, exec, VERBOSE_profile, info_.c_str(),
-                duration_ms);
-        return nullptr; // no event returned in profiling mode
+        if (!stream.get()->is_verbose_profiler_enabled()) {
+            stream.get()->wait();
+            double start_ms = dnnl::impl::get_msec();
+            execute_ocl_impl(stream, args, deps);
+            stream.get()->wait();
+            double duration_ms = dnnl::impl::get_msec() - start_ms;
+            VPROF(start_ms, graph, exec, VERBOSE_profile, info_.c_str(),
+                    duration_ms);
+        } else {
+            execute_ocl_impl(stream, args, deps);
+        }
+        return {};
     } else {
         return execute_ocl_impl(stream, args, deps);
     }

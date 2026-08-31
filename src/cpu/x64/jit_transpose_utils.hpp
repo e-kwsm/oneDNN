@@ -34,7 +34,7 @@ struct jit_trans_src_t {
         int ch_work;
     };
 
-    virtual void operator()(ctx_t *ctx) = 0;
+    virtual void operator()(const ctx_t *ctx) = 0;
     virtual status_t create_kernel() = 0;
 
     jit_trans_src_t(const jit_conv_conf_t *conf) : conf_(conf) {}
@@ -63,7 +63,7 @@ struct jit_trans_dst_t {
     jit_trans_dst_t(const jit_conv_conf_t *conf) : conf_(conf) {}
     virtual ~jit_trans_dst_t() = default;
 
-    virtual void operator()(ctx_t *ctx) = 0;
+    virtual void operator()(const ctx_t *ctx) = 0;
     virtual status_t create_kernel() = 0;
     const jit_conv_conf_t *conf_;
 };
@@ -90,7 +90,7 @@ struct jit_transpose4x16_src_t : public jit_generator_t {
 private:
     static const int typesize = sizeof(float);
 
-    int src_stride = 0, tr_src_stride = 0;
+    dim_t src_stride = 0, tr_src_stride = 0;
 
     Xbyak::Reg64 imm_addr64 = rbx;
 
@@ -112,8 +112,8 @@ private:
     Xbyak::Reg64 reg_tr_src_tmp = r13;
     Xbyak::Reg32 regw_tmp = r14d;
 
-    void transpose_block(int ur, int nrows);
-    void transpose(int nrows);
+    void transpose_block(dim_t ur, dim_t nrows);
+    void transpose(dim_t nrows);
     void generate() override;
 };
 

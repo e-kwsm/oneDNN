@@ -14,12 +14,11 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <sstream>
-
 #include <assert.h>
 #include <stdlib.h>
 
 #include "lrn/lrn.hpp"
+#include "utils/stringstream.hpp"
 
 namespace lrn {
 
@@ -168,8 +167,7 @@ std::ostream &operator<<(std::ostream &s, const desc_t &d) {
 }
 
 std::string prb_t::set_repro_line() {
-    dnnl::impl::stringstream_t s;
-    dump_global_params(s);
+    stringstream_t s;
     settings_t def;
 
     if (canonical || dir != def.dir[0]) s << "--dir=" << dir << " ";

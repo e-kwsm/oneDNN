@@ -40,7 +40,7 @@ struct jit_avx2_convolution_fwd_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", jcp_.isa, ""),
                 jit_avx2_convolution_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
 
             VDISPATCH_CONV(is_fwd(), VERBOSE_BAD_PROPKIND);
@@ -137,7 +137,7 @@ struct jit_avx2_convolution_bwd_data_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", avx2, ""),
                 jit_avx2_convolution_bwd_data_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
 
             VDISPATCH_CONV(desc()->prop_kind == prop_kind::backward_data,
@@ -225,7 +225,7 @@ struct jit_avx2_convolution_bwd_weights_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", avx2, ""),
                 jit_avx2_convolution_bwd_weights_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
 
             VDISPATCH_CONV(desc()->prop_kind == prop_kind::backward_weights,
@@ -307,14 +307,17 @@ struct jit_avx2_convolution_bwd_weights_t : public primitive_t {
 
             if (with_bias()) {
                 reducer_bia_conf_.init(reduce_balancer_t(max_threads,
-                        jcp_.oc_block, jcp_.ngroups * jcp_.nb_oc, jcp_.mb,
-                        max_buffer_size, true));
+                        static_cast<int>(jcp_.oc_block),
+                        static_cast<int>(jcp_.ngroups * jcp_.nb_oc),
+                        static_cast<int>(jcp_.mb), max_buffer_size, true));
             }
 
             reducer_wei_conf_.init(reduce_balancer_t(max_threads,
-                    jcp_.kd * jcp_.kh * jcp_.kw * jcp_.ic_block * jcp_.oc_block,
-                    jcp_.ngroups * jcp_.nb_ic * jcp_.nb_oc, jcp_.mb * jcp_.od,
-                    max_buffer_size, true));
+                    static_cast<int>(jcp_.kd * jcp_.kh * jcp_.kw * jcp_.ic_block
+                            * jcp_.oc_block),
+                    static_cast<int>(jcp_.ngroups * jcp_.nb_ic * jcp_.nb_oc),
+                    static_cast<int>(jcp_.mb * jcp_.od), max_buffer_size,
+                    true));
         }
     };
 

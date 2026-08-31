@@ -143,9 +143,6 @@
 #endif
 #endif
 
-// When defined, primitive cache stores runtime objects.
-#cmakedefine DNNL_USE_RT_OBJECTS_IN_PRIMITIVE_CACHE
-
 // When defined, DPCPP is supported.
 #cmakedefine DNNL_WITH_SYCL
 
@@ -226,8 +223,6 @@
 #cmakedefine01 BUILD_AMX
 // Primitives GPU ISA controls
 #cmakedefine01 BUILD_PRIMITIVE_GPU_ISA_ALL
-#cmakedefine01 BUILD_XELP
-#cmakedefine01 BUILD_XEHP
 #cmakedefine01 BUILD_XEHPG
 #cmakedefine01 BUILD_XEHPC
 #cmakedefine01 BUILD_XE2

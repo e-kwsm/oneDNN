@@ -72,7 +72,7 @@ status_t calculate_plain_transpose_blocks(dim_t &batch, dim_t &M, dim_t &K,
     // drop all unit dims as they they will break the calculations. Removing
     // unit dims will not change the physical memory reorder problem.
     dims_t non_unit_dims {};
-    dim_t non_unit_dim = 0;
+    int non_unit_dim = 0;
     for (dim_t i = 0; i < src_md.ndims; i++) {
         if (src_md.dims[i] == 1) continue;
         non_unit_dims[non_unit_dim++] = src_md.dims[i];
@@ -97,9 +97,13 @@ status_t calculate_plain_transpose_blocks(dim_t &batch, dim_t &M, dim_t &K,
         sort_dst_indices[i] = i;
     }
     std::sort(sort_src_indices, sort_src_indices + id.ndims(),
-            [id](int a, int b) { return id.strides()[a] > id.strides()[b]; });
+            [id](dim_t a, dim_t b) {
+        return id.strides()[a] > id.strides()[b];
+    });
     std::sort(sort_dst_indices, sort_dst_indices + od.ndims(),
-            [od](int a, int b) { return od.strides()[a] > od.strides()[b]; });
+            [od](dim_t a, dim_t b) {
+        return od.strides()[a] > od.strides()[b];
+    });
     // make sure physical layout is dense and there is no magical
     // padding.
     for (dim_t i = id.ndims() - 1; i > 0; i--)
@@ -147,8 +151,8 @@ status_t calculate_plain_transpose_blocks(dim_t &batch, dim_t &M, dim_t &K,
 
     // find first umatching stride by division
     dim_t lm_idx = -1;
-    int prev_M_src = src_over_dst[l_idx],
-        prev_1_over_M_dst = dst_over_src[l_idx];
+    dim_t prev_M_src = src_over_dst[l_idx],
+          prev_1_over_M_dst = dst_over_src[l_idx];
     // here we are checking to make sure all indexes are the same in src/dst
     // and dst/src arrays (comparing with prev_h_src and prev_h_dst). If its
     // different, then both src/dst and dst/src arrays should be different. In
@@ -175,8 +179,8 @@ status_t calculate_plain_transpose_blocks(dim_t &batch, dim_t &M, dim_t &K,
     // Only case this might be possible is unit strides after batch.
     VDISPATCH_REORDER_IC(lm_idx != -1, VERBOSE_UNSUPPORTED_MEM_STRIDE);
 
-    int prev_1_over_K_src = src_over_dst[lm_idx],
-        prev_K_dst = dst_over_src[lm_idx];
+    dim_t prev_1_over_K_src = src_over_dst[lm_idx],
+          prev_K_dst = dst_over_src[lm_idx];
     // Here we make sure the last strides divs are the same. If not, then this
     // means that one of the l+m, l+m+1, ..., l+m+n indexes is not in the same
     // order as in src. For example in src, looking at memory view, it can be
@@ -265,8 +269,8 @@ status_t init_conf(matmul::brgemm_matmul_conf_t &conf,
     return status::success;
 }
 
-status_t brgemm_matmul_copy_reorder_t::pd_t::init(
-        engine_t *engine, engine_t *src_engine, engine_t *dst_engine) {
+status_t brgemm_matmul_copy_reorder_t::pd_t::init(const engine_t *engine,
+        const engine_t *src_engine, const engine_t *dst_engine) {
     using namespace status;
 
     CHECK(cpu_reorder_pd_t::init(engine, src_engine, dst_engine));
@@ -354,9 +358,9 @@ status_t brgemm_matmul_copy_reorder_t::pd_t::init(
 }
 
 status_t brgemm_matmul_copy_reorder_t::pd_t::create(reorder_pd_t **reorder_pd,
-        engine_t *engine, const primitive_attr_t *attr, engine_t *src_engine,
-        const memory_desc_t *src_md, engine_t *dst_engine,
-        const memory_desc_t *dst_md) {
+        const engine_t *engine, const primitive_attr_t *attr,
+        const engine_t *src_engine, const memory_desc_t *src_md,
+        const engine_t *dst_engine, const memory_desc_t *dst_md) {
     using namespace status;
 
     VDISPATCH_REORDER_IC(impl::is_dense_format_kind({src_md, dst_md}),
