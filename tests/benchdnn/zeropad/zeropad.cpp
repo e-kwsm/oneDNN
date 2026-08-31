@@ -113,7 +113,8 @@ static dnnl_status_t perf_func(
     return dnnl_impl_zero_pad(args[0].memory, stream);
 }
 
-void skip_unimplemented_prb(const prb_t *prb, res_t *res) {
+void prb_t::skip_unimplemented(res_t *res) const {
+    const prb_t *prb = this; // Kept to avoid mass update
     skip_unimplemented_data_type({prb->dt}, FWD_D, res);
 
     if (is_nvidia_gpu() || is_amd_gpu()) {
@@ -125,7 +126,7 @@ void skip_unimplemented_prb(const prb_t *prb, res_t *res) {
 int doit(const prb_t *prb, res_t *res) {
     if (bench_mode == bench_mode_t::list) return res->state = LISTED, OK;
 
-    skip_unimplemented_prb(prb, res);
+    prb->skip_unimplemented(res);
     if (res->state == SKIPPED) return OK;
 
     auto data_md = dnn_mem_t::init_md(
@@ -159,7 +160,7 @@ int doit(const prb_t *prb, res_t *res) {
         res->obytes = dnnl_memory_desc_get_size(data_md)
                 - dnnl_memory_desc_get_size(plain_data_md);
     }
-    return measure_perf(default_thr_ctx, res, perf_func_, args);
+    return measure_perf(get_default_thr_ctx(), res, perf_func_, args);
 }
 
 } // namespace zeropad

@@ -36,9 +36,9 @@ struct ref_sycl_eltwise_fwd_t : public gpu::generic::sycl::primitive_t {
     struct pd_t : public gpu_eltwise_fwd_pd_t {
         using gpu_eltwise_fwd_pd_t::gpu_eltwise_fwd_pd_t;
 
-        DECLARE_COMMON_PD_T("dpcpp:ref:any", ref_sycl_eltwise_fwd_t);
+        DECLARE_COMMON_PD_T("sycl:ref:any", ref_sycl_eltwise_fwd_t);
 
-        status_t init(impl::engine_t *engine) {
+        status_t init(const impl::engine_t *engine) {
             using sm = primitive_attr_t::skip_mask_t;
 
             const memory_desc_wrapper src_d(src_md());
@@ -101,9 +101,9 @@ struct ref_sycl_eltwise_bwd_t : public gpu::generic::sycl::primitive_t {
     struct pd_t : public gpu_eltwise_bwd_pd_t {
         using gpu_eltwise_bwd_pd_t::gpu_eltwise_bwd_pd_t;
 
-        DECLARE_COMMON_PD_T("dpcpp:ref:any", ref_sycl_eltwise_bwd_t);
+        DECLARE_COMMON_PD_T("sycl:ref:any", ref_sycl_eltwise_bwd_t);
 
-        status_t init(impl::engine_t *engine) {
+        status_t init(const impl::engine_t *engine) {
             using namespace data_type;
 
             const memory_desc_wrapper diff_src_d(diff_src_md());

@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2016 Intel Corporation
+* Copyright 2026 Advanced Micro Devices, Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -94,7 +95,6 @@ namespace types {
 inline size_t data_type_size(data_type_t data_type) {
     using namespace data_type;
     switch ((int)data_type) {
-        case f4_e3m0: return sizeof(prec_traits_t<f4_e3m0>::type);
         case f4_e2m1: return sizeof(prec_traits_t<f4_e2m1>::type);
         case e8m0: return sizeof(prec_traits_t<e8m0>::type);
         case f8_e5m2: return sizeof(prec_traits_t<f8_e5m2>::type);
@@ -121,7 +121,6 @@ inline size_t elements_to_bytes(data_type_t data_type, size_t count) {
     using namespace data_type;
     switch ((int)data_type) {
         case f4_e2m1:
-        case f4_e3m0:
         case s4:
         case u4: return (count + 1) >> 1;
         default: return data_type_size(data_type) * count;
@@ -132,7 +131,6 @@ inline size_t bytes_to_elements(data_type_t data_type, size_t bytes) {
     using namespace data_type;
     switch ((int)data_type) {
         case f4_e2m1:
-        case f4_e3m0:
         case s4:
         case u4: return bytes * 2;
         default: return utils::div_up(bytes, data_type_size(data_type));
@@ -151,7 +149,6 @@ inline T min_value(data_type_t data_type) {
         return static_cast<T>( \
                 nstl::numeric_limits<prec_traits_t<x>::type>::min())
     switch (data_type) {
-        CASE(f4_e3m0);
         CASE(f4_e2m1);
         CASE(e8m0);
         CASE(f8_e5m2);
@@ -181,7 +178,6 @@ inline T max_value(data_type_t data_type) {
         return static_cast<T>( \
                 nstl::numeric_limits<prec_traits_t<x>::type>::max())
     switch (data_type) {
-        CASE(f4_e3m0);
         CASE(f4_e2m1);
         CASE(e8m0);
         CASE(f8_e5m2);
@@ -212,7 +208,6 @@ inline float max_value(data_type_t data_type) {
         return static_cast<float>( \
                 nstl::numeric_limits<prec_traits_t<x>::type>::max())
     switch (data_type) {
-        CASE(f4_e3m0);
         CASE(f4_e2m1);
         CASE(e8m0);
         CASE(f8_e5m2);
@@ -251,7 +246,6 @@ inline T lowest_value(data_type_t data_type) {
         return static_cast<T>( \
                 nstl::numeric_limits<prec_traits_t<x>::type>::lowest())
     switch (data_type) {
-        CASE(f4_e3m0);
         CASE(f4_e2m1);
         CASE(e8m0);
         CASE(f8_e5m2);
@@ -281,7 +275,35 @@ inline T digits(data_type_t data_type) {
         return static_cast<T>( \
                 nstl::numeric_limits<prec_traits_t<x>::type>::digits)
     switch (data_type) {
-        CASE(f4_e3m0);
+        CASE(f4_e2m1);
+        CASE(e8m0);
+        CASE(f8_e5m2);
+        CASE(f8_e4m3);
+        CASE(f16);
+        CASE(bf16);
+        CASE(f32);
+        CASE(f64);
+        CASE(s64);
+        CASE(s32);
+        CASE(s8);
+        CASE(u8);
+        CASE(s4);
+        CASE(u4);
+        case data_type::undef:
+        default: assert(!"unknown data_type");
+    }
+    return static_cast<T>(0); /* not supposed to be reachable */
+#undef CASE
+}
+
+template <typename T>
+inline T epsilon_value(data_type_t data_type) {
+    using namespace data_type;
+#define CASE(x) \
+    case x: \
+        return static_cast<T>( \
+                nstl::numeric_limits<prec_traits_t<x>::type>::epsilon())
+    switch (data_type) {
         CASE(f4_e2m1);
         CASE(e8m0);
         CASE(f8_e5m2);
@@ -312,7 +334,6 @@ inline float round_to_dt(data_type_t data_type, float val) {
                 static_cast<typename prec_traits_t<x>::type>(val))
 
     switch (data_type) {
-        CASE(f4_e3m0);
         CASE(f4_e2m1);
         CASE(e8m0);
         CASE(f8_e5m2);
@@ -475,7 +496,6 @@ inline data_type_t default_accum_data_type(
     // true
     if (one_of(src_dt, s8, u8, u4, s4) && (dst_dt != f32 || strict)) return s32;
 
-    if (one_of(f4_e3m0, src_dt, dst_dt)) return f32;
     if (one_of(f4_e2m1, src_dt, dst_dt)) return f32;
     if (one_of(f8_e5m2, src_dt, dst_dt)) return f32;
     if (one_of(f8_e4m3, src_dt, dst_dt)) return f32;
@@ -518,7 +538,6 @@ inline data_type_t default_accum_data_type(data_type_t src_dt,
             return f32;
     }
 
-    if (one_of(f4_e3m0, src_dt, wei_dt, dst_dt)) return f32;
     if (one_of(f4_e2m1, src_dt, wei_dt, dst_dt)) return f32;
     if (one_of(f8_e5m2, src_dt, wei_dt, dst_dt)) return f32;
     if (one_of(f8_e4m3, src_dt, wei_dt, dst_dt)) return f32;
@@ -668,6 +687,15 @@ inline bool operator==(const memory_desc_t &lhs, const memory_desc_t &rhs) {
     else if (lhs.format_kind == format_kind::sparse)
         return types::sparse_desc_is_equal(
                 lhs.format_desc.sparse_desc, rhs.format_desc.sparse_desc);
+    else if (lhs.format_kind == format_kind::zen_packed)
+        return lhs.format_desc.zen_packed_desc.size
+                == rhs.format_desc.zen_packed_desc.size
+                && lhs.format_desc.zen_packed_desc.per_slice_size
+                == rhs.format_desc.zen_packed_desc.per_slice_size
+                && lhs.format_desc.zen_packed_desc.gemm_src_dt
+                == rhs.format_desc.zen_packed_desc.gemm_src_dt
+                && lhs.format_desc.zen_packed_desc.weights_transposed
+                == rhs.format_desc.zen_packed_desc.weights_transposed;
     return true;
 }
 
@@ -1033,6 +1061,7 @@ inline bool operator==(const sdpa_desc_t &lhs, const sdpa_desc_t &rhs) {
             && COMPARE_DESC_MEMBERS(vs_zero_points)
             && COMPARE_DESC_MEMBERS(dS_desc)
             && COMPARE_DESC_MEMBERS(dst_desc)
+            && COMPARE_DESC_MEMBERS(stats_desc)
             && COMPARE_DESC_MEMBERS(diff_dst_desc)
             && COMPARE_DESC_MEMBERS(diff_q_desc)
             && COMPARE_DESC_MEMBERS(diff_k_desc)
@@ -1100,105 +1129,6 @@ inline memory_desc_t cvt_sparse_packed2blocked(
     blocked_md.format_desc.blocking = blk_desc;
     blocked_md.format_kind = format_kind::blocked;
     return blocked_md;
-}
-
-/** returns true if strides are compatible with memory_desc_t */
-inline status_t memory_desc_strides_check(
-        const memory_desc_t &md, const dims_t strides) {
-    if (strides == nullptr || md.ndims == 0
-            || md.format_kind != format_kind::blocked)
-        return status::success;
-
-    dims_t blocks = {0};
-    int perm[DNNL_MAX_NDIMS] = {0};
-    for (int d = 0; d < md.ndims; ++d) {
-        // no strides check needed for empty tensor
-        if (md.padded_dims[d] == 0) return status::success;
-
-        // no strides verification for runtime dims
-        const bool has_runtime_dim
-                = any_runtime_value(strides[d], md.padded_dims[d]);
-        if (has_runtime_dim) return status::success;
-
-        perm[d] = d;
-        blocks[d] = 1;
-    }
-
-    dim_t block_size = 1;
-    const auto &blk = md.format_desc.blocking;
-    for (int iblk = 0; iblk < blk.inner_nblks; ++iblk) {
-        blocks[blk.inner_idxs[iblk]] *= blk.inner_blks[iblk];
-        block_size *= blk.inner_blks[iblk];
-    }
-
-    // A custom comparator to yield linear order on perm
-    auto idx_sorter = [&](const int a, const int b) -> bool {
-        if (strides[a] == strides[b] && md.padded_dims[a] == md.padded_dims[b])
-            return a < b;
-        else if (strides[a] == strides[b])
-            return md.padded_dims[a] < md.padded_dims[b];
-        else
-            return strides[a] < strides[b];
-    };
-    std::sort(perm, perm + md.ndims, idx_sorter);
-
-    // tracks max stride for integral overflow checks
-    dim_t max_stride = 1;
-    int max_stride_d = 0;
-
-    dim_t min_stride = block_size;
-    for (int idx = 0; idx < md.ndims; ++idx) {
-        const int d = perm[idx];
-
-        // Make an exception for strides[d] == 0 as it has broadcast semantics
-        // Note: owing to being sorted, these are the initial strides
-
-        // FIXME: make an exception for dims[d] == 1 with the
-        // assumption that no code applies that stride when the only
-        // index accessed for that dimension is 0. This is because PT
-        // can use "dummy" padding in those situations
-        if ((strides[d] == 0) || (md.padded_dims[d] == 1))
-            continue;
-        else if (strides[d] < min_stride)
-            VCONDCHECK(common, create, check, memory, false,
-                    status::invalid_arguments, VERBOSE_INTEGRAL_OVERFLOW_DIM,
-                    "strides", d);
-
-        // update min_stride for next iteration
-        const auto padded_dim = md.padded_dims[d];
-
-        const dim_t blocks_ratio = padded_dim / blocks[d];
-        VCONDCHECK(common, create, check, memory,
-                IMPLICATION(
-                        strides[d] > 0 && block_size > 0 && blocks_ratio > 0,
-                        strides[d] <= std::numeric_limits<dim_t>::max()
-                                        / (block_size * blocks_ratio)),
-                status::invalid_arguments, VERBOSE_INTEGRAL_OVERFLOW_DIM,
-                "strides", d);
-
-        min_stride = block_size * strides[d] * (padded_dim / blocks[d]);
-        if (max_stride <= strides[d]) {
-            max_stride = strides[d];
-            max_stride_d = d;
-        }
-    }
-
-    const size_t dt_size = types::data_type_size(md.data_type);
-
-    // guard against integral overflow due to strides exceeding numeric limits
-    if (!is_runtime_value(md.padded_dims[max_stride_d])) {
-        size_t dim_val = static_cast<size_t>(
-                md.padded_dims[max_stride_d] / blocks[max_stride_d]);
-        dim_val = dim_val == (size_t)max_stride ? 1 : dim_val;
-        VCONDCHECK(common, create, check, memory,
-                (dim_val <= SIZE_MAX / max_stride), status::invalid_arguments,
-                VERBOSE_INTEGRAL_OVERFLOW_DIM, "padded_dims", max_stride_d);
-        VCONDCHECK(common, create, check, memory,
-                (dt_size && ((dim_val * max_stride) <= SIZE_MAX / dt_size)),
-                status::invalid_arguments, VERBOSE_INTEGRAL_OVERFLOW_DIM,
-                "padded_dims", max_stride_d);
-    }
-    return status::success;
 }
 
 inline status_t memory_desc_init_by_strides(
@@ -1361,15 +1291,15 @@ format_tag_t memory_desc_matches_one_of_tag(
     }
     return format_tag::undef;
 }
+inline bool any_memory_desc_host_scalar(const memory_desc_t *md) {
+    return md != nullptr && md->format_kind == format_kind::host_scalar;
+}
+
 template <typename... Args>
 inline bool any_memory_desc_host_scalar(const memory_desc_t *md, Args... mds) {
     if (md != nullptr && md->format_kind == format_kind::host_scalar)
         return true;
     return any_memory_desc_host_scalar(mds...);
-}
-
-inline bool any_memory_desc_host_scalar(const memory_desc_t *md) {
-    return md != nullptr && md->format_kind == format_kind::host_scalar;
 }
 
 } // namespace impl

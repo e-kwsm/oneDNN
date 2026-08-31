@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2021-2025 Arm Ltd. and affiliates
+* Copyright 2021-2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,8 +18,8 @@
 #ifndef CPU_AARCH64_ACL_INNER_PRODUCT_HPP
 #define CPU_AARCH64_ACL_INNER_PRODUCT_HPP
 
-#include "cpu/aarch64/acl_post_ops.hpp"
 #include "cpu/aarch64/acl_utils.hpp"
+#include "cpu/aarch64/post_ops_fallback.hpp"
 #include "cpu/cpu_inner_product_pd.hpp"
 
 #include "arm_compute/runtime/experimental/operators/CpuFullyConnected.h"
@@ -48,14 +49,14 @@ struct acl_inner_product_fwd_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("acl", acl_inner_product_fwd_t);
 
-        status_t init(engine_t *engine);
+        status_t init(const engine_t *engine);
 
         acl_ip_conf_t aip_ = utils::zero<decltype(aip_)>();
 
-        acl_post_ops_t post_ops;
+        post_ops_fallback_t post_ops;
 
-        status_t init_conf_ip(
-                engine_t *engine, format_kind_t weights_format_kind_received);
+        status_t init_conf_ip(const engine_t *engine,
+                format_kind_t weights_format_kind_received);
     }; // pd_t
 
     // constructor
@@ -73,6 +74,7 @@ private:
     }
     std::unique_ptr<arm_compute::experimental::op::CpuFullyConnected>
             inner_product_op_;
+    post_ops_fallback_t post_ops_;
 }; // acl_inner_product_fwd_t
 
 } // namespace aarch64

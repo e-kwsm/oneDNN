@@ -40,7 +40,7 @@ where *matmul-knobs* are:
             default. Refer to [encodings](knobs_encoding.md) for details.
  - `--grouped=DIM_IDX:NUM_GROUPS:size0+size1+...+sizeN[:max_size]` -- specifies
             grouped encoding for a given dimension to execute grouped GEMM.
-            `DIM_IDX` is the dimension index (`0` is `M`, `1` is `K`, `2` is `N`),
+            `DIM_IDX` is the dimension index (`0` is `M`, `1` is `K`),
             `NUM_GROUPS` is the number of tensors in a group or number of experts,
             `size0+size1+...+sizeN` are `+`-separated sizes or resolved variable
             dimensions, and optional `max_size` is the max variable dim hint for
@@ -53,6 +53,9 @@ where *matmul-knobs* are:
             are sizes of each group with total `32+0+32+96 = 160`.
             Example: `--grouped=0:4:8+8+8+8:8` specifies max group size of `8`.
             Example: `--grouped=0:4:8+8+8+8,0:3:2+6+8` iterates over two configs.
+            Note: a binary post-op with `mask = 0` (e.g.
+            `--attr-post-ops=mul:f32:0`) is applied per group (`[G, 1]`,
+            e.g. NVFP4 global scale), not a whole-tensor.
  - `--match=REGEX` -- skip problems not matching the regular expression in
             `REGEX`. By default no pattern is applied (run everything).
             Note: Windows may interpret only string arguments surrounded by

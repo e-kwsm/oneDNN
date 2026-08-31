@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2021 Intel Corporation
+* Copyright 2026 Arm Ltd. and affiliates
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -40,7 +41,7 @@ struct ref_matmul_int8_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("ref_int8:any", ref_matmul_int8_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             using smask_t = primitive_attr_t::skip_mask_t;
             const auto src_type = src_md(0)->data_type;
@@ -75,55 +76,18 @@ struct ref_matmul_int8_t : public primitive_t {
                     VERBOSE_UNSUPPORTED_POSTOP);
             VDISPATCH_MATMUL(ref_post_ops_t::post_ops_ok(attr()->post_ops_),
                     VERBOSE_UNSUPPORTED_POSTOP);
-            VDISPATCH_MATMUL(attr_scales_ok(), VERBOSE_UNSUPPORTED_SCALES_CFG);
-            CHECK(attr_zero_points_ok(engine));
+            CHECK(attr_scales_ok(engine,
+                    {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST},
+                    {quantization_mode::static_sazp},
+                    {{DNNL_ARG_SRC, {src_qmask_M()}}}));
+            CHECK(attr_zero_points_ok(engine,
+                    {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST},
+                    {quantization_mode::static_sazp}));
             VDISPATCH_MATMUL(set_default_formats(), VERBOSE_UNSUPPORTED_TAG);
             VDISPATCH_MATMUL(
                     attr_.set_default_formats(dst_md(0)) == status::success,
                     VERBOSE_UNSUPPORTED_POSTOP);
 
-            return status::success;
-        }
-
-    private:
-        status_t attr_zero_points_ok(engine_t *engine) const {
-            const auto &zp = attr()->zero_points_;
-            if (!zp.has_default_values(DNNL_ARG_SRC)) {
-                int mask_src = zp.get_mask(DNNL_ARG_SRC);
-                VDISPATCH_MATMUL(utils::one_of(mask_src, 0, src_qmask_K(),
-                                         src_qmask_M() + src_qmask_K()),
-                        VERBOSE_UNSUPPORTED_ZP_CFG);
-
-                if (!zp.get(DNNL_ARG_SRC).has_default_groups()) {
-                    const auto gM = zp.get_group(DNNL_ARG_SRC, 0);
-                    VDISPATCH_MATMUL(gM == 1, VERBOSE_UNSUPPORTED_ZP_CFG);
-
-                    const auto gK = zp.get_group(DNNL_ARG_SRC, 1);
-                    VDISPATCH_MATMUL(IMPLICATION(gK > 1, K() % gK == 0),
-                            VERBOSE_UNSUPPORTED_ZP_CFG);
-                }
-            }
-            /* weights decompression requires zero points support */
-            if (!zp.has_default_values(DNNL_ARG_WEIGHTS)) {
-                if (!zp.get(DNNL_ARG_WEIGHTS).has_default_groups()) {
-                    const auto gK = zp.get_group(DNNL_ARG_WEIGHTS, 0);
-                    VDISPATCH_MATMUL(IMPLICATION(gK > 1, K() % gK == 0),
-                            VERBOSE_UNSUPPORTED_ZP_CFG);
-
-                    const auto gN = zp.get_group(DNNL_ARG_WEIGHTS, 1);
-                    VDISPATCH_MATMUL(IMPLICATION(gN > 1, N() % gN == 0),
-                            VERBOSE_UNSUPPORTED_ZP_CFG);
-
-                    // Only one non-unit group is supported.
-                    VDISPATCH_MATMUL(utils::one_of(1, gK, gN),
-                            VERBOSE_UNSUPPORTED_ZP_CFG);
-                }
-            }
-            if (!zp.has_default_values(DNNL_ARG_DST)) {
-                int mask_dst = zp.get_mask(DNNL_ARG_DST);
-                VDISPATCH_MATMUL(utils::one_of(mask_dst, 0, wei_qmask_N()),
-                        VERBOSE_UNSUPPORTED_ZP_CFG);
-            }
             return status::success;
         }
     };

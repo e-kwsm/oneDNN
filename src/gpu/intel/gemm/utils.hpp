@@ -102,8 +102,7 @@ static inline status_t create_2d_desc(memory_desc_t *md_2d, int d0, int d1,
 static inline status_t create_gemm_desc(gemm_desc_t *_gemm_desc,
         const memory_desc_t *a_md, const memory_desc_t *b_md,
         const memory_desc_t *c_md, const memory_desc_t *bias_md,
-        data_type_t acc_dt, engine_t *engine,
-        sum_ab_t sum_ab = sum_ab::sum_none,
+        data_type_t acc_dt, sum_ab_t sum_ab = sum_ab::sum_none,
         data_type_t sum_ab_dt = data_type::undef) {
     auto gemm_desc = gemm_desc_t();
     gemm_desc.primitive_kind = primitive_kind::gemm;
@@ -114,26 +113,20 @@ static inline status_t create_gemm_desc(gemm_desc_t *_gemm_desc,
     gemm_desc.acc_type = acc_dt;
     gemm_desc.sum_ab = sum_ab;
     gemm_desc.sum_ab_type = sum_ab_dt;
-    // Downgrade accumulation type for f16 if allowed.
-    if (engine->mayiuse_f16_accumulator_with_f16()
-            && utils::everyone_is(
-                    data_type::f16, a_md->data_type, b_md->data_type)) {
-        gemm_desc.acc_type = data_type::f16;
-    }
     *_gemm_desc = gemm_desc;
     return status::success;
 }
 
 static inline status_t create_gemm_pd(
-        std::shared_ptr<primitive_desc_t> &gemm_pd_, engine_t *engine,
+        std::shared_ptr<primitive_desc_t> &gemm_pd_, const engine_t *engine,
         const memory_desc_t *a_md, const memory_desc_t *b_md,
         const memory_desc_t *c_md, const memory_desc_t *bias_md,
         data_type_t acc_dt, const primitive_attr_t *attr, bool skip_ref = false,
         sum_ab_t sum_ab = sum_ab::sum_none,
         data_type_t sum_ab_dt = data_type::undef) {
     gemm_desc_t gemm_desc;
-    CHECK(create_gemm_desc(&gemm_desc, a_md, b_md, c_md, bias_md, acc_dt,
-            engine, sum_ab, sum_ab_dt));
+    CHECK(create_gemm_desc(
+            &gemm_desc, a_md, b_md, c_md, bias_md, acc_dt, sum_ab, sum_ab_dt));
 
     primitive_attr_t gemm_attr = *attr;
 
@@ -142,14 +135,13 @@ static inline status_t create_gemm_pd(
 
     gemm_pd_ = *(++it);
     if (!gemm_pd_) return status::unimplemented;
-    if (skip_ref && strstr(gemm_pd_->name(), "ref") != nullptr)
-        return status::unimplemented;
+    if (skip_ref && is_ref_impl(gemm_pd_.get())) return status::unimplemented;
 
     return status::success;
 }
 
 static inline bool is_md_gemm_compatible_plain_format(
-        const memory_desc_t *md, bool is_dst = false) {
+        const memory_desc_t *md, bool is_dst = false, bool may_bcast = false) {
 
     if (md->format_kind != format_kind::blocked) return false;
 
@@ -157,11 +149,15 @@ static inline bool is_md_gemm_compatible_plain_format(
 
     if (blk_desc.inner_nblks != 0) return false;
 
-    return (md->dims[md->ndims - 1] == 1
-                   || blk_desc.strides[md->ndims - 1] == 1)
-            || (!is_dst
-                    && (md->dims[md->ndims - 2] == 1
-                            || blk_desc.strides[md->ndims - 2] == 1));
+    const int m_dim = md->ndims - 1, n_dim = md->ndims - 2;
+    const bool m_inner = md->dims[m_dim] == 1 || blk_desc.strides[m_dim] == 1;
+    const bool n_inner = md->dims[n_dim] == 1 || blk_desc.strides[n_dim] == 1;
+    const bool m_bcast = may_bcast && md->dims[m_dim] == 1;
+    const bool n_bcast = may_bcast && md->dims[n_dim] == 1;
+
+    return m_bcast    ? n_inner
+            : n_bcast ? m_inner
+                      : m_inner || (!is_dst && n_inner);
 }
 
 } // namespace impl

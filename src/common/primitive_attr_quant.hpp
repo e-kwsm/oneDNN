@@ -35,9 +35,9 @@
 #include "common/utils.hpp"
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
-#include <unordered_map>
 
 namespace dnnl {
 namespace impl {
@@ -45,7 +45,7 @@ namespace impl {
 struct quant_entry_t;
 const quant_entry_t &default_quant_entry();
 
-struct quant_entry_t : public c_compatible {
+struct quant_entry_t {
     quant_entry_t() = default;
     quant_entry_t(const quant_entry_t &e) = default;
     ~quant_entry_t() = default;
@@ -180,7 +180,7 @@ private:
 
 std::ostream &operator<<(std::ostream &ss, const quant_entry_t &e);
 
-struct quant_entries_t : public c_compatible {
+struct quant_entries_t {
     quant_entries_t(data_type_t default_data_type)
         : default_data_type_(default_data_type) {}
 
@@ -252,7 +252,12 @@ struct quant_entries_t : public c_compatible {
     data_type_t get_data_type(int arg) const {
         return get(arg).get_data_type();
     }
-    dim_t get_group(int arg, int d) const { return get(arg).get_group(d); }
+
+    dim_t get_group(int arg, int d) const {
+        dim_t group = get(arg).get_group(d);
+        assert(group != 0 && "wrong dimension used");
+        return group;
+    }
 
     bool has_host_scalars() const {
         for (const auto &e : entries_) {

@@ -52,7 +52,7 @@ endif()
 
 set(PROJECT_NAME "oneDNN")
 set(PROJECT_FULL_NAME "oneAPI Deep Neural Network Library (oneDNN)")
-set(PROJECT_VERSION "3.13.0")
+set(PROJECT_VERSION "3.14.0")
 
 project(${PROJECT_NAME} VERSION "${PROJECT_VERSION}" LANGUAGES C CXX)
 
@@ -86,14 +86,13 @@ string(TOUPPER "${CMAKE_BUILD_TYPE}" UPPERCASE_CMAKE_BUILD_TYPE)
 
 set(LIB_PACKAGE_NAME "dnnl")
 
-include("cmake/dnnl_compat.cmake")
-
 include("cmake/utils.cmake")
 include("cmake/options.cmake")
 include("cmake/SYCL.cmake")
 include("cmake/OpenMP.cmake")
 include("cmake/TBB.cmake")
 include("cmake/Threadpool.cmake")
+include("cmake/ZenDNN.cmake")
 include("cmake/OpenCL.cmake")
 include("cmake/LevelZero.cmake")
 include("cmake/platform.cmake")

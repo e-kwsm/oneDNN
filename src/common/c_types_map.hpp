@@ -160,7 +160,6 @@ const alg_kind_t eltwise_mx_scale = (alg_kind_t)(internal_only_start + 3);
 using data_type_t = dnnl_data_type_t;
 namespace data_type {
 const data_type_t undef = dnnl_data_type_undef;
-const data_type_t f4_e3m0 = dnnl_f4_e3m0;
 const data_type_t f4_e2m1 = dnnl_f4_e2m1;
 const data_type_t e8m0 = dnnl_e8m0;
 const data_type_t f8_e5m2 = dnnl_f8_e5m2;
@@ -247,6 +246,7 @@ const format_kind_t internal_only_start = (format_kind_t)(1 << 8);
 const format_kind_t wino = internal_only_start;
 const format_kind_t rnn_packed = (format_kind_t)(internal_only_start + 1);
 const format_kind_t cublaslt_blocked = (format_kind_t)(internal_only_start + 2);
+const format_kind_t zen_packed = (format_kind_t)(internal_only_start + 3);
 } // namespace format_kind
 
 #ifdef DNNL_EXPERIMENTAL_PROFILING

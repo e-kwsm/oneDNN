@@ -28,7 +28,8 @@ namespace sycl {
 status_t stream_impl_t::copy(impl::stream_t *stream,
         const memory_storage_t &src, const memory_storage_t &dst, size_t size,
         const xpu::event_t &deps, xpu::event_t &out_dep,
-        xpu::stream_profiler_t *stream_profiler) {
+        xpu::stream_profiler_t *stream_profiler,
+        xpu::verbose_profiler_t *verbose_profiler) {
 
     if (size == 0) return status::success;
     // TODO: add src and dst sizes check
@@ -136,10 +137,19 @@ status_t stream_impl_t::copy(impl::stream_t *stream,
         });
     }
 
+    // Event registration for profilers is managed to allow the
+    // verbose_profiler_t operate independently from other profilers without
+    // forced profiling flags or double-move issues.
     if (is_profiling_enabled()) {
-        auto sycl_event = utils::make_unique<xpu::sycl::event_t>(
+        auto profiler_event = utils::make_unique<xpu::sycl::event_t>(
                 std::vector<::sycl::event> {e});
-        stream_profiler->register_event(std::move(sycl_event));
+        stream_profiler->register_event(std::move(profiler_event));
+    }
+
+    if (verbose_profiler) {
+        auto verbose_event = std::make_shared<xpu::sycl::event_t>(
+                std::vector<::sycl::event> {e});
+        verbose_profiler->register_event(verbose_event);
     }
 
     xpu::sycl::event_t::from(out_dep).events = {e};
@@ -149,7 +159,8 @@ status_t stream_impl_t::copy(impl::stream_t *stream,
 
 status_t stream_impl_t::fill(const memory_storage_t &dst, uint8_t pattern,
         size_t size, const xpu::event_t &deps, xpu::event_t &out_dep,
-        xpu::stream_profiler_t *stream_profiler) {
+        xpu::stream_profiler_t *stream_profiler,
+        xpu::verbose_profiler_t *verbose_profiler) {
     auto *sycl_dst
             = utils::downcast<const xpu::sycl::memory_storage_base_t *>(&dst);
     bool usm = sycl_dst->memory_kind() == xpu::sycl::memory_kind::usm;
@@ -182,12 +193,20 @@ status_t stream_impl_t::fill(const memory_storage_t &dst, uint8_t pattern,
         });
     }
 
+    // Event registration for profilers is managed to allow the
+    // verbose_profiler_t operate independently from other profilers without
+    // forced profiling flags or double-move issues.
     if (is_profiling_enabled()) {
-        auto sycl_event = utils::make_unique<xpu::sycl::event_t>(
+        auto profiler_event = utils::make_unique<xpu::sycl::event_t>(
                 std::vector<::sycl::event> {out_event});
-        stream_profiler->register_event(std::move(sycl_event));
+        stream_profiler->register_event(std::move(profiler_event));
     }
 
+    if (verbose_profiler) {
+        auto verbose_event = std::make_shared<xpu::sycl::event_t>(
+                std::vector<::sycl::event> {out_event});
+        verbose_profiler->register_event(verbose_event);
+    }
     xpu::sycl::event_t::from(out_dep).events = {out_event};
     return status::success;
 }
@@ -197,21 +216,33 @@ status_t stream_impl_t::barrier() {
     return status::success;
 }
 
-const xpu::sycl::context_t &stream_impl_t::sycl_ctx() const {
-    static xpu::sycl::context_t empty_ctx {};
-    return ctx_.get(empty_ctx);
+status_t stream_impl_t::init_verbose_profiler(engine_kind_t kind) {
+    use_verbose_profiler_ = false;
+    if (!get_verbose(verbose_t::exec_profile)) return status::success;
+    if (kind != engine_kind::gpu) return status::success;
+    // verbose profiling support is only for in-order queues
+    if (flags() & stream_flags::out_of_order) return status::success;
+
+    // The queue may not be set yet at this point; in that case the profiler
+    // is re-initialized once the queue is created. When the queue is
+    // available, verify that the backend supports verbose profiling.
+    if (queue_) {
+        const auto backend = queue_->get_backend();
+        if (!utils::one_of(backend, ::sycl::backend::ext_oneapi_level_zero,
+                    ::sycl::backend::opencl)) {
+            return status::success;
+        }
+    }
+    use_verbose_profiler_ = true;
+    return status::success;
 }
 
 xpu::sycl::context_t &stream_impl_t::sycl_ctx() {
-    const xpu::sycl::context_t &ctx
-            = const_cast<const stream_impl_t *>(this)->sycl_ctx();
-    return *const_cast<xpu::sycl::context_t *>(&ctx);
+    static xpu::sycl::context_t empty_ctx {};
+    return ctx_.get_or_set(empty_ctx);
 }
 
 xpu::context_t &stream_impl_t::ctx() {
-    return sycl_ctx();
-}
-const xpu::context_t &stream_impl_t::ctx() const {
     return sycl_ctx();
 }
 
@@ -224,14 +255,10 @@ const xpu::context_t &stream_impl_t::ctx() const {
     // dummy task is needed to not get an error related to empty
     // kernel.
     auto e = queue()->submit([&](::sycl::handler &cgh) {
-        register_deps(cgh);
+        cgh.depends_on(sycl_ctx().get_sycl_deps().events);
         cgh.single_task<class dnnl_dummy_kernel>([]() {});
     });
     return e;
-}
-
-void stream_impl_t::register_deps(::sycl::handler &cgh) const {
-    cgh.depends_on(sycl_ctx().get_sycl_deps().events);
 }
 
 } // namespace sycl

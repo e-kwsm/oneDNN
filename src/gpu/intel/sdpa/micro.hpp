@@ -82,7 +82,7 @@ struct micro_fwd_params_t : trivially_serializable_t<micro_fwd_params_t> {
     bool invert_scale, with_attn_scale, with_host_scale, with_attn_mask,
             broadcast_mask_q, with_causal_mask;
     uint8_t padding1[2] = {0};
-    int subgroup_size, d_max;
+    int subgroup_size, d_max_kq, d_max_v;
 
     bool d_full, arch_gte_hpc;
     bool block_q, block_a, block_2d_a;
@@ -90,6 +90,7 @@ struct micro_fwd_params_t : trivially_serializable_t<micro_fwd_params_t> {
     bool remainder_q;
     uint8_t padding2[5] = {0};
     int prefetch_d_max;
+    int prefetch_v_max;
 
     bool softmax_inf_as_zero;
     bool q_arrive_await_barrier;
@@ -149,7 +150,9 @@ struct micro_bwd_params_t : trivially_serializable_t<micro_bwd_params_t> {
     bool with_dS;
     bool require_stateless_addressing;
     bool dropout, dropout_output_mask, dropout_offset, dropout_host_scalars;
-    uint8_t padding2[3] = {0};
+    bool k_in_slm;
+    bool direct_dQ;
+    uint8_t padding2[1] = {0};
 
     micro_bwd_ukernel_params_t ukernel_config;
 };
@@ -162,15 +165,28 @@ struct micro_fwd_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("ocl:micro:reusable", micro_fwd_t);
 
-        status_t init(impl::engine_t *engine) {
+        status_t init(const impl::engine_t *engine) {
             using namespace data_type;
             using smask_t = primitive_attr_t::skip_mask_t;
+
+            const auto *intel_engine
+                    = utils::downcast<const intel::engine_t *>(engine);
+            auto *dev_info = intel_engine->device_info();
+            arch_ = dev_info->gpu_arch();
+            sg_size_ = dev_info->min_subgroup_size();
 
             VDISPATCH_SDPA(is_fwd(), VERBOSE_BAD_PROPKIND);
             memory_desc_wrapper qry_mdw(desc()->qry_md());
             memory_desc_wrapper key_mdw(desc()->key_md());
             memory_desc_wrapper val_mdw(desc()->val_md());
             memory_desc_wrapper dst_mdw(dst_md());
+
+            bool is_f32 = (qry_mdw.data_type() == data_type::f32);
+            use_systolic_ukernel_
+                    = intel_engine->mayiuse(compute::device_ext_t::
+                                      intel_subgroup_matrix_multiply_accumulate)
+                    && !is_f32; // f32 -> non-systolic kernel only
+
             VDISPATCH_SDPA(
                     utils::everyone_is(4, qry_mdw.ndims(), key_mdw.ndims(),
                             val_mdw.ndims(), dst_mdw.ndims()),
@@ -233,8 +249,6 @@ struct micro_fwd_t : public primitive_t {
                     VERBOSE_UNSUPPORTED_DT);
             VDISPATCH_SDPA(set_default_formats() == status::success,
                     VERBOSE_UNSUPPORTED_TAG);
-            VDISPATCH_SDPA(desc()->values() == desc()->head_size(),
-                    "values does not match head size");
 
             if (utils::one_of(desc()->key_md()->data_type, u4, s4)) {
                 VDISPATCH_SDPA(desc()->keys() % 2 == 0,
@@ -258,6 +272,15 @@ struct micro_fwd_t : public primitive_t {
                     static_cast<long int>(desc()->qry_md()->dims[1]),
                     static_cast<long int>(desc()->key_md()->dims[1]),
                     static_cast<long int>(desc()->val_md()->dims[1]));
+
+            // Asymmetric heads are only supported when the QK head size is at
+            // least the V head size (d_qk >= d_v). The kernel config is chosen
+            // from d_qk, so its V-side tile can only hold d_v when d_v <= d_qk.
+            VDISPATCH_SDPA(desc()->head_size() >= desc()->values(),
+                    "the QK head size(%ld) must be greater than or equal to"
+                    " the V head size(%ld)",
+                    static_cast<long int>(desc()->head_size()),
+                    static_cast<long int>(desc()->values()));
 
             VDISPATCH_SDPA(utils::one_of(kq_acc_dt(), f16, f32),
                     "KQ accumulation data type should be f16 or f32");
@@ -321,13 +344,42 @@ struct micro_fwd_t : public primitive_t {
                         vgs, static_cast<long int>(desc()->val_md()->dims[3]));
             }
 
-            CHECK(init_conf_microkernels(engine));
-            CHECK(init_conf(engine));
             VDISPATCH_SDPA(IMPLICATION((arch() == compute::gpu_arch_t::xe_hpc)
                                            && (desc()->qry_md()->data_type
                                                    == data_type::f32),
                                    with_causal_mask()),
                     "fused f32 SDPA only optimized for causal mask"); //TODO: update when performance improved
+            VDISPATCH_SDPA(
+                    IMPLICATION(arch() == compute::gpu_arch_t::xe_hpg
+                                    && !attr()->dropout_.has_default_values(),
+                            attr()->dropout_.use_host_scalars_),
+                    "fused SDPA FWD with device dropout not supported "
+                    "for xe_hpg");
+
+            if (desc()->prop_kind == prop_kind::forward_training) {
+                const memory_desc_wrapper stats_mdw(desc()->stats_md());
+                if (!stats_mdw.is_zero()) {
+                    bool dense = stats_mdw.is_plain();
+                    if (dense) {
+                        const auto &strides = stats_mdw.strides();
+                        const auto *sdims = stats_mdw.dims();
+                        dim_t expected = 1;
+                        for (int i = stats_mdw.ndims() - 1; i >= 0; --i) {
+                            if (strides[i] != expected) {
+                                dense = false;
+                                break;
+                            }
+                            expected *= (sdims[i] > 0 ? sdims[i] : 1);
+                        }
+                    }
+                    VDISPATCH_SDPA(dense,
+                            "fused sdpa training requires densely packed "
+                            "softmax stats");
+                }
+            }
+
+            CHECK(init_conf_microkernels(engine));
+            CHECK(init_conf(engine));
 
             return status::success;
         }
@@ -343,13 +395,22 @@ struct micro_fwd_t : public primitive_t {
         int sg_size() const { return sg_size_; }
         bool use_systolic_ukernel() const { return use_systolic_ukernel_; }
 
-        // Block size for head_size, which must be hard-coded into the kernel.
-        int d_max() const {
+        // Block size for the Q/K head dim, baked into the kernel.
+        int d_max_kq() const {
             int head_size = into<int>(desc()->head_size());
             for (int i = 32; i <= 1024; i *= 2)
                 if (head_size <= i) return i;
             return head_size;
         }
+        // Block size for the V/output head dim, baked into the kernel.
+        int d_max_v() const {
+            int v_size = into<int>(desc()->values());
+            for (int i = 32; i <= 1024; i *= 2)
+                if (v_size <= i) return i;
+            return v_size;
+        }
+        // Alias kept for ukernel tileC/tileR sites that use the KQ dimension.
+        int d_max() const { return d_max_kq(); }
 
         compute::gpu_arch_t arch() const { return arch_; }
         micro_fwd_params_t conf;
@@ -359,8 +420,8 @@ struct micro_fwd_t : public primitive_t {
         bool use_systolic_ukernel_ = true;
         compute::gpu_arch_t arch_ = compute::gpu_arch_t::unknown;
 
-        status_t init_conf_microkernels(impl::engine_t *engine);
-        status_t init_conf(impl::engine_t *engine);
+        status_t init_conf_microkernels(const impl::engine_t *engine);
+        status_t init_conf(const impl::engine_t *engine);
 
         status_t set_default_format(memory_desc_t &md, bool allow_transpose) {
             using namespace format_tag;
@@ -397,10 +458,25 @@ struct micro_bwd_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("ocl:micro:reusable", micro_bwd_t);
 
-        status_t init(impl::engine_t *engine) {
+        status_t init(const impl::engine_t *engine) {
             using namespace data_type;
 
+            const auto *intel_engine
+                    = utils::downcast<const intel::engine_t *>(engine);
+            auto *dev_info = intel_engine->device_info();
+            arch_ = dev_info->gpu_arch();
+            sg_size_ = dev_info->min_subgroup_size();
+
             VDISPATCH_SDPA(!is_fwd(), VERBOSE_BAD_PROPKIND);
+
+            VDISPATCH_SDPA(arch_ != compute::gpu_arch_t::xe_hpg,
+                    "fused SDPA BWD not supported for xe_hpg");
+
+            bool is_f32 = (desc()->qry_md()->data_type == data_type::f32);
+            use_systolic_ukernel_
+                    = intel_engine->mayiuse(compute::device_ext_t::
+                                      intel_subgroup_matrix_multiply_accumulate)
+                    && !is_f32; // f32 -> non-systolic kernel only
 
             VDISPATCH_SDPA(utils::everyone_is(4, desc()->qry_md()->ndims,
                                    desc()->key_md()->ndims,
@@ -493,8 +569,6 @@ struct micro_bwd_t : public primitive_t {
             CHECK(init_default_ws());
             VDISPATCH_SDPA(compare_ws(hint_fwd_pd_), VERBOSE_WS_MISMATCH);
 
-            VDISPATCH_SDPA(arch() != compute::gpu_arch_t::xe_hpg,
-                    "fused SDPA BWD not supported for xe_hpg");
             CHECK(init_conf_microkernels(engine));
             CHECK(init_conf(engine));
             CHECK(init_scratchpad(engine));
@@ -533,9 +607,9 @@ struct micro_bwd_t : public primitive_t {
         bool use_systolic_ukernel_ = true;
         compute::gpu_arch_t arch_ = compute::gpu_arch_t::unknown;
 
-        status_t init_scratchpad(impl::engine_t *engine);
-        status_t init_conf_microkernels(impl::engine_t *engine);
-        status_t init_conf(impl::engine_t *engine);
+        status_t init_scratchpad(const impl::engine_t *engine);
+        status_t init_conf_microkernels(const impl::engine_t *engine);
+        status_t init_conf(const impl::engine_t *engine);
 
         status_t set_default_format(memory_desc_t &md, bool allow_transpose) {
             using namespace format_tag;

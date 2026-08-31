@@ -21,7 +21,6 @@
 #include "gpu/intel/gemm/jit/gen_kernel.hpp"
 #include "gpu/intel/gemm/utils.hpp"
 #include "gpu/intel/jit/eltwise_injector.hpp"
-#include "gpu/intel/jit/utils/type_bridge.hpp"
 #include "gpu/intel/utils.hpp"
 
 namespace dnnl {
@@ -67,7 +66,7 @@ int quant_entry_ndims(
 }
 } // anonymous namespace
 
-status_t pd_t::init_post_ops(impl::engine_t *engine) {
+status_t pd_t::init_post_ops(const impl::engine_t *engine) {
     using namespace primitive_kind;
     using namespace alg_kind;
     using namespace data_type;
@@ -80,14 +79,13 @@ status_t pd_t::init_post_ops(impl::engine_t *engine) {
 
     bool ok = true;
     int prelu_count = 0;
-    const int num_orig_postops = post_ops_.len();
     for (int i = 0; i < post_ops_.len(); i++) {
         const auto &e = post_ops_.entry_[i];
         switch (e.kind) {
             case binary:
                 ok &= supported_binary_op(e.binary.alg)
                         && is_md_gemm_compatible_plain_format(
-                                &e.binary.src1_desc);
+                                &e.binary.src1_desc, false, true);
                 binary_srcs_.push_back(
                         binary_src_t {binary_src_t::binary, int(i)});
                 non_scale_po_ = true;
@@ -120,6 +118,22 @@ status_t pd_t::init_post_ops(impl::engine_t *engine) {
 
     VDISPATCH_GEMM(ok, VERBOSE_UNSUPPORTED_POSTOP);
 
+    if (with_sum_) {
+        const auto idx = post_ops_.find(primitive_kind::sum);
+        const auto &sum = post_ops_.entry_[idx].sum;
+        if (beta_ * sum.zero_point != 0) {
+            post_ops_t::entry_t::eltwise_t linear {
+                    eltwise_linear, 1.0f, 1.0f, -beta_ * sum.zero_point};
+            post_ops_t::entry_t linear_entry;
+            linear_entry.kind = primitive_kind::eltwise;
+            linear_entry.eltwise = linear;
+            post_ops_.entry_.insert(
+                    post_ops_.entry_.begin() + idx, linear_entry);
+            binary_srcs_.insert(binary_srcs_.begin() + idx,
+                    binary_src_t {binary_src_t::none, idx});
+        }
+    }
+
     // If scales are present, convert them and any bias to binary post-ops.
     //   Exception: 2D scales.
     // Also convert bias to binary post-op if dst zp are present.
@@ -134,8 +148,7 @@ status_t pd_t::init_post_ops(impl::engine_t *engine) {
     if (bias_via_binary_) {
         VDISPATCH_GEMM_SC(post_ops_.prepend_binary(binary_add, &d->bias_desc),
                 "%s: bias via binary post-op", VERBOSE_UNSUPPORTED_POSTOP);
-        binary_srcs_.insert(
-                binary_srcs_.begin(), binary_src_t {binary_src_t::bias, 0});
+        binary_srcs_.emplace(binary_srcs_.begin(), binary_src_t::bias, 0);
     }
     non_scale_po_ |= bias_via_binary_;
 
@@ -156,15 +169,14 @@ status_t pd_t::init_post_ops(impl::engine_t *engine) {
                         post_ops_.append_binary(binary_div, &scale_md),
                         "%s: %s scales via binary post-op",
                         VERBOSE_UNSUPPORTED_POSTOP, arg2str(arg).c_str());
-                binary_srcs_.push_back(
-                        binary_src_t {binary_src_t::scales, arg});
+                binary_srcs_.emplace_back(binary_src_t::scales, arg);
             } else {
                 VDISPATCH_GEMM_SC(
                         post_ops_.prepend_binary(binary_mul, &scale_md),
                         "%s: %s scales via binary post-op",
                         VERBOSE_UNSUPPORTED_POSTOP, arg2str(arg).c_str());
-                binary_srcs_.insert(binary_srcs_.begin(),
-                        binary_src_t {binary_src_t::scales, arg});
+                binary_srcs_.emplace(
+                        binary_srcs_.begin(), binary_src_t::scales, arg);
             }
             converted = true;
         }
@@ -186,8 +198,7 @@ status_t pd_t::init_post_ops(impl::engine_t *engine) {
         if (converted) b_quant.scale_ndims = -1;
     }
 
-    bool try_c_scale = !c_scales.is_host_scalar()
-            || (c_scales.is_host_scalar() && num_orig_postops > 0);
+    bool try_c_scale = !c_scales.is_host_scalar() || !with_inlined_c_scale();
     if (!c_scales.has_default_values() && try_c_scale) {
         bool converted;
         CHECK(maybe_convert_scales_to_postop(c_scale_md_, DNNL_ARG_C,
@@ -201,7 +212,14 @@ status_t pd_t::init_post_ops(impl::engine_t *engine) {
     return status::success;
 }
 
-bool pd_t::dy_quant_enabled() {
+bool pd_t::with_inlined_c_scale() const {
+    if (!with_c_scales()) return false;
+    const auto &c_scales = attr()->scales_.get(DNNL_ARG_C);
+    if (!c_scales.is_host_scalar()) return false;
+    return !non_scale_po_ && !with_sum_;
+}
+
+bool pd_t::dy_quant_enabled() const {
     const auto d = desc();
     using namespace data_type;
     bool all_f8 = (utils::one_of(d->a_type(), f8_e5m2, f8_e4m3)
@@ -213,12 +231,12 @@ bool pd_t::dy_quant_enabled() {
             || all_f8;
 }
 
-bool pd_t::wei_decomp() {
+bool pd_t::wei_decomp() const {
     const auto d = desc();
     using namespace data_type;
     return (utils::one_of(d->c_type(), f32, f16, bf16, f8_e5m2, f8_e4m3)
                    && utils::one_of(d->a_type(), u8, s8, s4, u4, f8_e4m3,
-                           f8_e5m2, f4_e2m1, f4_e3m0)
+                           f8_e5m2, f4_e2m1)
                    && utils::one_of(
                            d->b_type(), f16, f32, bf16, f8_e5m2, f8_e4m3))
             && types::data_type_bits(d->a_type())
@@ -226,11 +244,11 @@ bool pd_t::wei_decomp() {
             && attr()->mayiconvert(d->a_type(), f32);
 }
 
-bool pd_t::quant_enabled() {
+bool pd_t::quant_enabled() const {
     return wei_decomp() || dy_quant_enabled();
 }
 
-status_t pd_t::init_attrs(impl::engine_t *engine) {
+status_t pd_t::init_attrs(const impl::engine_t *engine) {
     wei_decomp_ = wei_decomp();
     dy_quant_enabled_ = dy_quant_enabled();
     quant_enabled_ = quant_enabled();
@@ -340,7 +358,7 @@ status_t pd_t::init_attrs(impl::engine_t *engine) {
     return status::success;
 }
 
-status_t pd_t::zp_ok(impl::engine_t *engine) {
+status_t pd_t::zp_ok(const impl::engine_t *engine) {
     using namespace data_type;
     auto &attr_zps = attr()->zero_points_;
     if (attr_zps.has_default_values()) return status::success;
@@ -355,6 +373,13 @@ status_t pd_t::zp_ok(impl::engine_t *engine) {
             = wei_decomp_ || (a_int4 && dy_quant_enabled_);
 
     if (!a_zps.has_default_values()) {
+        const bool has_prB
+                = !attr()->precomputed_reductions_.has_default_values(
+                        DNNL_ARG_B);
+        // The src_zp x wei_zp term is unaccounted for in the generator.
+        // Disable this path.
+        VDISPATCH_GEMM(IMPLICATION(has_prB, b_zps.has_default_values()),
+                VERBOSE_UNSUPPORTED_ZP_CFG);
         // Groups determine supported masks.
         if (!a_zps.has_default_groups()) {
             VDISPATCH_GEMM(valid_2d_mask(cmask_a_, ndims, weights_upconversion),
@@ -366,8 +391,6 @@ status_t pd_t::zp_ok(impl::engine_t *engine) {
                     VERBOSE_UNSUPPORTED_ZP_CFG);
             // Zero points with non-trivial groups only supported with
             // precomputed reductions or when target tensor is being dequantized.
-            bool has_prB = !attr()->precomputed_reductions_.has_default_values(
-                    DNNL_ARG_B);
             // TODO: Re-examine this condition
             bool is_dequantized = !dy_quant_enabled_ || !b_int4 || a_int4;
             VDISPATCH_GEMM(IMPLICATION(a_zp_2d(), is_dequantized || has_prB),
@@ -425,7 +448,7 @@ status_t pd_t::zp_ok(impl::engine_t *engine) {
     return status::success;
 }
 
-status_t pd_t::gs_ok(impl::engine_t *engine) {
+status_t pd_t::gs_ok(const impl::engine_t *engine) {
     auto &attr_gs = attr()->precomputed_reductions_;
     if (attr_gs.has_default_values()) return status::success;
 
@@ -445,7 +468,7 @@ status_t pd_t::gs_ok(impl::engine_t *engine) {
     return status::success;
 }
 
-status_t pd_t::scales_ok(impl::engine_t *engine) {
+status_t pd_t::scales_ok(const impl::engine_t *engine) {
     const auto &scales = attr()->scales_;
     if (scales.has_default_values()) return status::success;
     int ndims = desc()->a_desc.ndims;
@@ -567,7 +590,7 @@ status_t pd_t::init_GEMMProblem(
     using namespace gemmstone;
     problem = {};
 
-    problem.product = get_ngen_product(*engine->device_info());
+    problem.product = engine->device_info()->product();
     bool has_systolic
             = engine->mayiuse(compute::device_ext_t::
                               intel_subgroup_matrix_multiply_accumulate)
@@ -788,8 +811,8 @@ status_t pd_t::init_GEMMProblem(
     problem.sumA = (reduce_ab == sum_ab::sum_b_col);
     problem.sumB = (reduce_ab == sum_ab::sum_a_row);
     if (swap_ab_) std::swap(problem.sumA, problem.sumB);
-    problem.forceGroupSumsA = a_quant.force_gs;
-    problem.forceGroupSumsB = b_quant.force_gs;
+    problem.hasGroupSumsA = a_quant.force_gs;
+    problem.hasGroupSumsB = b_quant.force_gs;
 
     problem.postOps.cStochasticRound = dst_sround;
 
@@ -797,6 +820,7 @@ status_t pd_t::init_GEMMProblem(
         problem.autoTypeConversions(has_systolic);
 
     if (problem.needsAGroupSums()) {
+        VDISPATCH_GEMM(problem.hasGroupSumsA, VERBOSE_UNSUPPORTED_ZP_CFG);
         data_type_t gs_dt = a_quant.gs_type == data_type::undef
                 ? data_type::s32
                 : a_quant.gs_type;
@@ -806,6 +830,7 @@ status_t pd_t::init_GEMMProblem(
         if (problem.aqGroupK == 0) problem.aqGroupK = problem.bqGroupK;
     }
     if (problem.needsBGroupSums()) {
+        VDISPATCH_GEMM(problem.hasGroupSumsB, VERBOSE_UNSUPPORTED_ZP_CFG);
         data_type_t gs_dt = b_quant.gs_type == data_type::undef
                 ? data_type::s32
                 : b_quant.gs_type;
@@ -871,28 +896,31 @@ dim_t pd_t::scale_stride(int idx, int arg) const {
     gpu_assert(utils::one_of(arg, DNNL_ARG_A, DNNL_ARG_B));
     const memory_desc_t *md_ptr
             = (arg == DNNL_ARG_A) ? &a_scale_md_ : &b_scale_md_;
-    gpu_assert(memory_desc_wrapper(md_ptr).is_plain())
-            << "Expected plain scale_md_";
-    if (md_ptr->dims[idx] == 1) return 0;
-    return md_ptr->format_desc.blocking.strides[idx];
+    const memory_desc_wrapper mdw(md_ptr);
+    if (mdw.is_host_scalar_desc()) return 0;
+    gpu_assert(mdw.is_plain()) << "Expected plain scale_md_";
+    if (mdw.dims()[idx] == 1) return 0;
+    return mdw.strides()[idx];
 }
 
 dim_t pd_t::zp_stride(int idx, int arg) const {
     gpu_assert(utils::one_of(arg, DNNL_ARG_A, DNNL_ARG_B));
     const memory_desc_t *md_ptr = (arg == DNNL_ARG_A) ? &a_zp_md_ : &b_zp_md_;
-    gpu_assert(memory_desc_wrapper(md_ptr).is_plain())
-            << "Expected plain zp_md_";
-    if (md_ptr->dims[idx] == 1) return 0;
-    return md_ptr->format_desc.blocking.strides[idx];
+    const memory_desc_wrapper mdw(md_ptr);
+    if (mdw.is_host_scalar_desc()) return 0;
+    gpu_assert(mdw.is_plain()) << "Expected plain zp_md_";
+    if (mdw.dims()[idx] == 1) return 0;
+    return mdw.strides()[idx];
 }
 
 dim_t pd_t::gs_stride(int idx, int arg) const {
     gpu_assert(utils::one_of(arg, DNNL_ARG_A, DNNL_ARG_B));
     const memory_desc_t *md_ptr = (arg == DNNL_ARG_A) ? &a_gs_md_ : &b_gs_md_;
-    gpu_assert(memory_desc_wrapper(md_ptr).is_plain())
-            << "Expected plain gs_md_";
-    if (md_ptr->dims[idx] == 1) return 0;
-    return md_ptr->format_desc.blocking.strides[idx];
+    const memory_desc_wrapper mdw(md_ptr);
+    if (mdw.is_host_scalar_desc()) return 0;
+    gpu_assert(mdw.is_plain()) << "Expected plain gs_md_";
+    if (mdw.dims()[idx] == 1) return 0;
+    return mdw.strides()[idx];
 }
 
 } // namespace jit

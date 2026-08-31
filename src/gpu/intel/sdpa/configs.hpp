@@ -123,8 +123,9 @@ fwd_config_t *choose_config(compute::gpu_arch_t arch, dim_t head_size,
         dim_t seq, bool is_thin_q, bool is_quantized, bool is_integrated,
         bool is_fma, bool is_f32, bool is_f16_accumulate);
 bwd_config_t *choose_bwd_config(compute::gpu_arch_t arch, dim_t head_size,
-        dim_t qry, dim_t seq, bool is_thin_q, bool is_quantized,
-        bool is_integrated, bool is_fma, bool is_f32);
+        dim_t qry, dim_t seq, dim_t batch_heads, bool is_thin_q,
+        bool is_quantized, bool is_integrated, bool is_fma, bool is_f32,
+        bool is_causal);
 dim_t round_up_seq_interval(dim_t seq, compute::gpu_arch_t arch);
 
 dim_t nearest_conf_seq_interval(compute::gpu_arch_t arch, dim_t head_size,
@@ -158,12 +159,14 @@ struct ukernel_serialized_hwinfo_t
     ukernel_serialized_hwinfo_t(micro::HWInformation &hwInfo)
         : gmdid(static_cast<uint32_t>(hwInfo.gmdid))
         , euCount(static_cast<uint32_t>(hwInfo.euCount))
-        , systolicAvailable(hwInfo.systolicAvailable) {}
+        , systolicAvailable(hwInfo.systolicAvailable)
+        , isEfficient64Bit(hwInfo.isEfficient64Bit) {}
 
     uint32_t gmdid;
     uint32_t euCount;
     bool systolicAvailable;
-    uint8_t padding[7] = {0};
+    bool isEfficient64Bit;
+    uint8_t padding[6] = {0};
 };
 DNNL_ASSERT_TRIVIALLY_SERIALIZABLE(ukernel_serialized_hwinfo_t);
 static_assert(sizeof(ukernel_serialized_hwinfo_t) == 16,

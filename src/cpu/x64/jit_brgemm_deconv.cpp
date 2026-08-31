@@ -151,7 +151,7 @@ status_t check_embedded_impl_init(primitive_desc_iterator_t &it) {
 }
 
 template <cpu_isa_t isa>
-status_t brgemm_deconvolution_fwd_t<isa>::pd_t::init(engine_t *engine) {
+status_t brgemm_deconvolution_fwd_t<isa>::pd_t::init(const engine_t *engine) {
     using namespace data_type;
     using namespace utils;
     using namespace format_tag;
@@ -311,6 +311,7 @@ template struct brgemm_deconvolution_fwd_t<avx10_2>;
 template struct brgemm_deconvolution_fwd_t<avx512_core_amx>;
 template struct brgemm_deconvolution_fwd_t<avx512_core_amx_fp16>;
 template struct brgemm_deconvolution_fwd_t<avx10_2_amx_2>;
+template struct brgemm_deconvolution_fwd_t<avx10_2_ace>;
 
 } // namespace x64
 } // namespace cpu

@@ -17,15 +17,10 @@
 #ifndef BENCHDNN_GRAPH_PARSER_HPP
 #define BENCHDNN_GRAPH_PARSER_HPP
 
+#include "graph/utils.hpp"
+
 #include <map>
 #include <string>
-
-#include "allocator.hpp"
-#include "dnnl_common.hpp"
-#include "oneapi/dnnl/dnnl_graph.hpp"
-#include "utils.hpp"
-
-extern dnnl_engine_kind_t engine_tgt_kind;
 
 namespace graph {
 
@@ -50,6 +45,10 @@ bool parse_dt(std::vector<dnnl_data_type_t> &dt,
 
 bool parse_op_kind(std::vector<std::map<size_t, std::string>> &op_kind_map,
         const char *str, const std::string &option_name = "op-kind");
+
+bool parse_tensor_property(
+        std::vector<std::map<size_t, std::string>> &tensor_property_vec,
+        const char *str, const std::string &option_name = "tensor-property");
 
 std::map<std::string, std::string> parse_attrs(const std::string &attrs_str);
 

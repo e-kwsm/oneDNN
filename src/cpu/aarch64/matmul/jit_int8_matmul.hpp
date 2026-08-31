@@ -1,6 +1,7 @@
 /*******************************************************************************
 * Copyright 2025 FUJITSU LIMITED
 * Copyright 2025-2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +19,7 @@
 #ifndef CPU_AARCH64_MATMUL_JIT_INT8_MATMUL_HPP
 #define CPU_AARCH64_MATMUL_JIT_INT8_MATMUL_HPP
 
+#include <array>
 #include "common/c_types_map.hpp"
 #include "common/primitive.hpp"
 
@@ -37,74 +39,43 @@ struct jit_int8_matmul_utils_kernel_t;
 template <cpu_isa_t isa>
 struct jit_int8_matmul_t : public primitive_t {
     struct pd_t : public cpu::matmul::cpu_matmul_pd_t {
+    public:
         using cpu::matmul::cpu_matmul_pd_t::cpu_matmul_pd_t;
 
         DECLARE_COMMON_PD_T("jit:int8", jit_int8_matmul_t);
 
-        status_t init(engine_t *engine);
+        status_t init(const engine_t *engine);
 
-        bool formats_ok() const {
+        int get_idx(bool is_zp_cal, bool is_m_tail, bool is_k_tail,
+                bool is_n_tail, const brg_int8_t &brg) const;
 
-            const memory_desc_wrapper src_d(src_md_);
-            const memory_desc_wrapper weights_d(weights_md_);
-            const memory_desc_wrapper dst_d(dst_md_);
-            const bool is_dst = dst_d.matches_one_of_tag(format_tag::ab,
-                                        format_tag::abc, format_tag::abcd)
-                            != format_tag::undef
-                    || dst_d.format_kind() == format_kind::any;
-            const bool is_wei
-                    = weights_d.matches_one_of_tag(format_tag::ab,
-                              format_tag::abc, format_tag::abcd,
-                              format_tag::BA24b8a, format_tag::aCB24c8b,
-                              format_tag::abDC24d8c, format_tag::BA16b8a,
-                              format_tag::aCB16c8b, format_tag::abDC16d8c,
-                              format_tag::BA12b8a, format_tag::aCB12c8b,
-                              format_tag::abDC12d8c, format_tag::BA4b8a,
-                              format_tag::aCB4c8b, format_tag::abDC4d8c,
-                              format_tag::BA8b8a, format_tag::aCB8c8b,
-                              format_tag::abDC8d8c)
-                            != format_tag::undef
-                    || weights_d.format_kind() == format_kind::any;
-            const bool is_src = src_d.matches_one_of_tag(format_tag::ab,
-                                        format_tag::abc, format_tag::abcd)
-                            != format_tag::undef
-                    || src_d.format_kind() == format_kind::any;
-            return is_dst && is_wei && is_src;
-        }
-        const brg_int8_t &get_b() const { return brg_; }
+        static constexpr int m_block_sz = 32;
+        int n_block_sz;
+        int mm_parallel_work;
 
-        const dyn_vals_t &get_d() const { return dyn_; }
-
-        int get_idx(int z, int m, int k, int n, const brg_int8_t b) const {
-
-            if (b.zp_type_a == jit_int8_broadcast_t::none
-                    && b.zp_type_b == jit_int8_broadcast_t::none && z == 1)
-                return -1;
-            int mt = b.M % b.m_blk;
-            int nt = b.N % (b.n_blk * b.ld_block);
-            int kt = b.K % (b.k_blk * 4);
-            if ((m == 1 && mt == 0) || (k == 1 && kt == 0)
-                    || (n == 1 && nt == 0) || (k == 0 && kt == 1))
-                return -1;
-            return k + n * 2 + m * 2 * 2 + z * 2 * 2 * 2;
-        }
-
-        int m_block_sz, n_block_sz, mm_parallel_work;
+        brg_int8_t brg_int8_conf;
+        dyn_vals_t dyn_vals;
 
     private:
-        brg_int8_t brg_;
-        dyn_vals_t dyn_;
+        bool formats_ok() const;
+        bool post_ops_ok() const;
     };
 
     jit_int8_matmul_t(const pd_t *apd);
-    ~jit_int8_matmul_t() override;
-    int get_idx(int z, int m, int k, int n, int M, int K, int N);
+
     status_t init(engine_t *engine) override;
     status_t execute(const exec_ctx_t &ctx) const override;
 
+    ~jit_int8_matmul_t() override;
+
 private:
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
-    std::unique_ptr<jit_int8_matmul_kernel_t<isa>> int8_kernels_[16];
+
+    // 16 possible kernels from each potential combination of true or false over
+    // 4 parameters: is_m_tail, is_n_tail, is_k_tail, is_zp_cal
+    static constexpr int num_jit_kernels = 16;
+    std::array<std::unique_ptr<jit_int8_matmul_kernel_t<isa>>, num_jit_kernels>
+            int8_kernels_;
     std::unique_ptr<jit_int8_matmul_utils_kernel_t> reo_ker_a_;
     std::unique_ptr<jit_int8_matmul_utils_kernel_t> reo_ker_b_;
 };

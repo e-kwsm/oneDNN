@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2022-2024, 2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,8 +18,9 @@
 #ifndef CPU_AARCH64_ACL_DECONVOLUTION_HPP
 #define CPU_AARCH64_ACL_DECONVOLUTION_HPP
 
-#include "cpu/aarch64/acl_post_ops.hpp"
+#include "cpu/aarch64/acl_utils.hpp"
 #include "cpu/aarch64/cpu_isa_traits.hpp"
+#include "cpu/aarch64/post_ops_fallback.hpp"
 #include "cpu/cpu_deconvolution_pd.hpp"
 
 namespace dnnl {
@@ -87,7 +89,7 @@ struct acl_deconvolution_fwd_t : public primitive_t {
         DECLARE_COMMON_PD_T(
                 "acl", acl_deconvolution_fwd_t, USE_GLOBAL_SCRATCHPAD);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             using namespace format_tag;
 
@@ -303,17 +305,18 @@ struct acl_deconvolution_fwd_t : public primitive_t {
             CHECK(post_ops.init(engine, attr_.post_ops_, dst_md_));
             acl_pd_conf.use_dst_acc_for_sum = post_ops.has_sum();
 
+            auto scratchpad = scratchpad_registry().registrar();
             if (acl_pd_conf.use_dst_acc_for_sum) {
-                auto scratchpad = scratchpad_registry().registrar();
                 scratchpad.book(memory_tracking::names::key_generic_acc,
                         dst_d.nelems(), dst_d.data_type_size());
             }
+            post_ops.init_scratchpad(scratchpad);
 
             return status::success;
         }
 
         acl_deconv_conf_t acl_pd_conf = utils::zero<decltype(acl_pd_conf)>();
-        acl_post_ops_t post_ops;
+        post_ops_fallback_t post_ops;
 
     private:
         bool post_ops_ok() const {
@@ -322,6 +325,11 @@ struct acl_deconvolution_fwd_t : public primitive_t {
     }; // pd_t
 
     acl_deconvolution_fwd_t(const pd_t *apd) : primitive_t(apd) {}
+
+    status_t init(engine_t *engine) override {
+        post_ops_ = pd()->post_ops;
+        return post_ops_.init_primitives(engine);
+    }
 
     status_t execute(const exec_ctx_t &ctx) const override {
         return execute_forward(ctx);
@@ -346,6 +354,7 @@ private:
     mutable std::mutex mtx;
     status_t execute_forward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
+    post_ops_fallback_t post_ops_;
 }; // acl_deconvolution_fwd_t
 
 } // namespace aarch64

@@ -19,6 +19,8 @@
 
 #include "oneapi/dnnl/dnnl_graph.hpp"
 
+#include <cstring>
+
 // 0.75f is taken randomly and is subject to change in future.
 static constexpr float capacity_factor = 0.75f;
 
@@ -44,7 +46,7 @@ size_t get_benchdnn_device_limit() {
 
 // Constructs memories for all inputs and outputs needed for comparison.
 dnn_graph_mem_t::dnn_graph_mem_t(const dnn_mem_t &mem,
-        const deserialized_lt_t &lt, const bool is_op_input,
+        const deserialized_lt_t &lt, const bool is_op_input, res_t *res,
         const bool use_graph_layout)
     : graph_dims_(lt.shape_), graph_strides_(lt.stride_) {
     const auto &g_eng = lt.is_host_scalar()
@@ -78,7 +80,7 @@ dnn_graph_mem_t::dnn_graph_mem_t(const dnn_mem_t &mem,
 
         if (!has_bench_mode_modifier(mode_modifier_t::no_ref_memory)) {
             // Fill data from reference memories.
-            fill_mem_with_data(mem, g_eng);
+            fill_mem_with_data(mem, g_eng, res);
         }
 
     } else {
@@ -132,7 +134,7 @@ dnn_graph_mem_t::dnn_graph_mem_t(const dnn_mem_t &mem,
 }
 
 int dnn_graph_mem_t::fill_mem_with_data(
-        const dnn_mem_t &mem, const dnnl::engine &eng) {
+        const dnn_mem_t &mem, const dnnl::engine &eng, res_t *res) {
     // If `mem` comes empty, don't update the underlying `mem_` then.
     if (!mem) return OK;
 
@@ -160,7 +162,7 @@ int dnn_graph_mem_t::fill_mem_with_data(
         // engine to perform a data copy.
         dnn_mem_t c_mem(ndims, mem.dims(), dst_dt, mem.strides(), dst_eng,
                 /* prefill = */ true);
-        SAFE_V(c_mem.reorder(mem));
+        SAFE_V(c_mem.reorder(mem, res));
         prim_to_graph_memcpy(mem_, c_mem);
     } else {
         prim_to_graph_memcpy(mem_, mem);
@@ -170,7 +172,7 @@ int dnn_graph_mem_t::fill_mem_with_data(
 }
 
 dnnl::graph::tensor dnn_graph_mem_t::make_graph_tensor(
-        const deserialized_lt_t &lt) const {
+        const deserialized_lt_t &lt, res_t *) const {
     void *data_handle;
     dnnl_memory_get_data_handle(mem_.m_, &data_handle);
     dnnl::graph::logical_tensor graph_lt = lt.create();

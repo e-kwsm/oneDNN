@@ -33,6 +33,7 @@
 #include "gpu/intel/gemm/jit/pd.hpp"
 #include "gpu/intel/jit/ir/hw.hpp"
 #include "gpu/intel/jit/utils/type_bridge.hpp"
+#include "gpu/intel/logging.hpp"
 #include "gpu/intel/utils.hpp"
 
 namespace dnnl {
@@ -48,10 +49,7 @@ using namespace intel::jit;
 namespace {
 void entryObserver(
         const kcatalog::Entry *entry, double score, EvaluateAuxOutput aux) {
-    if (get_verbose(verbose_t::debuginfo) >= 5) {
-        dnnl::impl::verbose_printf("info,gpu,gemm,consider:%s,score:%f\n",
-                entry->str().c_str(), score);
-    }
+    gpu_debug() << "consider:" << entry->str() << ",score:" << score;
 }
 } // anonymous namespace
 
@@ -80,7 +78,6 @@ compute::scalar_type_t gen_desc_t::scalar_type() const {
         case Type::s64: return compute::scalar_type_t::_long;
         case Type::u64: return compute::scalar_type_t::_ulong;
         case Type::f4_e2m1: return compute::scalar_type_t::_f4_e2m1;
-        case Type::f4_e3m0: return compute::scalar_type_t::_f4_e3m0;
         case Type::bf8: return compute::scalar_type_t::_bfloat8;
         case Type::hf8: return compute::scalar_type_t::_hfloat8;
         case Type::bf16: return compute::scalar_type_t::_bfloat16;
@@ -128,18 +125,26 @@ status_t gen_desc_t::finalize(const char *tags) {
     std::string ovr_strategy;
     ovr_strategy = gpu_utils::dev_getenv("GEMM_KERNEL", ovr_strategy);
     if (!ovr_strategy.empty()) {
-        // Warning: will override problem data types (including up/down
-        // conversions) - this will cause inaccuracies if precisions/layouts
-        // are chosen that are incompatible with the given problem
+        entry_ = nullptr;
         std::stringstream ss(ovr_strategy);
         std::string val;
         ss >> val;
         gpu_assert(val == "gemm");
         ss >> val;
         const char *pstr = val.c_str();
-        pstr = parsePrecisions(pstr, problem_.Ta_ext, problem_.Ta);
-        pstr = parsePrecisions(pstr, problem_.Tb_ext, problem_.Tb);
-        pstr = parsePrecisions(pstr, problem_.Tc, problem_.Tc_ext);
+        // Cannot modify external data types
+        Type ext_dt;
+        pstr = parsePrecisions(pstr, ext_dt, problem_.Ta);
+        gpu_assert(ext_dt == problem_.Ta_ext) << "Invalid external A data type";
+        pstr = parsePrecisions(pstr, ext_dt, problem_.Tb);
+        gpu_assert(ext_dt == problem_.Tb_ext) << "Invalid external B data type";
+        if (*pstr == '[') {
+            pstr = parsePrecisions(pstr, problem_.Tc, ext_dt);
+            gpu_assert(ext_dt == problem_.Tc_ext)
+                    << "Invalid external C data type";
+        } else {
+            pstr = parsePrecision(pstr, problem_.Tc);
+        }
         ss >> val;
         pstr = val.c_str();
         pstr = parseLayout(pstr, problem_.A);
@@ -188,10 +193,10 @@ status_t gen_desc_t::finalize(const char *tags) {
         strategy_.unroll[LoopM] = entry_->driverInfo.unroll[LoopM];
         strategy_.unroll[LoopN] = entry_->driverInfo.unroll[LoopN];
         parseStrategy(entry_->strategy, hw_, problem_, strategy_);
-        modifyStrategy(strategy_, aux_params_);
 #ifdef DNNL_DEV_MODE
     }
 #endif
+    modifyStrategy(strategy_, aux_params_);
     strategy_.panelCheck
             |= (isPacked(problem_.A.layout) || isPacked(problem_.B.layout));
 
@@ -208,7 +213,7 @@ status_t gen_desc_t::finalize(const char *tags) {
     if (hw_ == ngen::HW::Xe2 || hw_ == ngen::HW::Xe3) {
         // Use XeHPC register banking on Xe2/Xe3, in order
         // to successfully reuse XeHPC strategies.
-        strategy_.raHW = ngen::HW::XeHPC;
+        if (strategy_.raHW == hw_) strategy_.raHW = ngen::HW::XeHPC;
 
         // Bump up alignments to 16 bytes for block 2D if available.
         bool block_2d_a = false, block_2d_b = false;
@@ -224,7 +229,8 @@ status_t gen_desc_t::finalize(const char *tags) {
 
     if (hw_ == ngen::HW::Xe3p) {
         // Use XeHPC banking if reusing XeHPC strategies (legacy mode)
-        if (!efficient_64b_) strategy_.raHW = ngen::HW::XeHPC;
+        if (!efficient_64b_ && strategy_.raHW == hw_)
+            strategy_.raHW = ngen::HW::XeHPC;
 
         // Disable named barriers to avoid simulator errors, allow fallback to pvc strategies.
         strategy_.namedBarriers[0] = 0;
@@ -263,7 +269,7 @@ status_t gen_desc_t::finalize(const char *tags) {
                 thread_per_tg *= std::max(strategy_.wg[LoopK], 1);
             dim_t thread_gpu = eu_count_
                     * compute::device_info_t::threads_per_eu(
-                            arch_, strategy_.GRFs);
+                            product_, strategy_.GRFs);
             dim_t tiles_gpu = thread_gpu / thread_per_tg;
 
             bool use_linear = (m_tiles * n_tiles <= tiles_gpu);
@@ -329,22 +335,19 @@ status_t gen_desc_t::finalize(const char *tags) {
             return status::unimplemented;
     }
 
-    // TODO: Fix kChain handling with BDPAS.
-    if (problem_.preferBDPAS()) { strategy_.kChain = 1; }
-
     // If the M/N group size is equal to M or N, align up to a multiple of unroll size
     // XXX: Increase group size to a large value before aligning to increase reusability
     // TODO: Refactor M/N groups/thread setting to preserve MN group count.
     constexpr int perMNGroupSize = 1 << 24;
     if (problem_.aqGroupM == m_
-            && ((!problem_.forceGroupSumsA && !problem_.preferBDPAS())
+            && ((!problem_.hasGroupSumsA && !problem_.preferBDPAS())
                     || m_ > 1)) {
         problem_.aqGroupM = std::max(problem_.aqGroupM, perMNGroupSize);
         problem_.aqGroupM
                 = utils::rnd_up(problem_.aqGroupM, strategy_.unroll[LoopM]);
     }
     if (problem_.bqGroupN == n_
-            && ((!problem_.forceGroupSumsB && !problem_.preferBDPAS())
+            && ((!problem_.hasGroupSumsB && !problem_.preferBDPAS())
                     || n_ > 1)) {
         problem_.bqGroupN = std::max(problem_.bqGroupN, perMNGroupSize);
         problem_.bqGroupN
@@ -369,8 +372,6 @@ void gen_desc_t::update_driver_info() {
         break;
 
     switch (hw_) {
-        REG_XELP_ISA(ARCH_DISPATCH(XeLP))
-        REG_XEHP_ISA(ARCH_DISPATCH(XeHP))
         REG_XEHPG_ISA(ARCH_DISPATCH(XeHPG))
         REG_XEHPC_ISA(ARCH_DISPATCH(XeHPC))
         REG_XE2_ISA(ARCH_DISPATCH(Xe2))
@@ -392,9 +393,7 @@ gen_nocopy_desc_t::select_kernel(const compute::device_info_t &dev_info,
     using namespace ngen;
     using namespace kcatalog;
 
-    const compute::gpu_product_t &product = dev_info.gpu_product();
-
-    product_ = compute::device_info_t::ngen_product(product);
+    product_ = dev_info.product();
     hw_ = getCore(product_.family);
     arch_ = convert_ngen_arch_to_dnnl(hw_);
     stepping_ = dev_info.stepping_id();
@@ -464,7 +463,7 @@ gen_nocopy_desc_t::select_kernel(const compute::device_info_t &dev_info,
                      || problem.boPtrDims > -1)
                     && problem.aoPtrDims > -1 && problem.Ta_ext.isInt8()
                     && problem.Tb_ext.isInt8() && problem.Tc.isFP()
-                    && !problem.forceGroupSumsA && !problem.forceGroupSumsB),
+                    && !problem.hasGroupSumsA && !problem.hasGroupSumsB),
             [](Type dt) -> const char * {
         if (dt.isInt8()) return "[OH]";
         return nullptr;
@@ -555,6 +554,7 @@ gen_nocopy_desc_t::select_kernel(const compute::device_info_t &dev_info,
     eval_params_.sizes = base.sizes;
     eval_params_.alpha = alpha;
     eval_params_.beta = beta;
+    eval_params_.product = product_;
     eval_params_.postOps = !problem.postOps.empty();
     eval_params_.cConvert = (problem.Tc != problem.Tc_ext);
     eval_params_.euCount = dev_info.eu_count();
@@ -623,9 +623,7 @@ status_t gen_xe_systolic_kernel_desc_t::select_kernel(
     using namespace ngen;
     using namespace kcatalog;
 
-    const compute::gpu_product_t &product = dev_info.gpu_product();
-
-    product_ = compute::device_info_t::ngen_product(product);
+    product_ = dev_info.product();
     hw_ = getCore(product_.family);
     arch_ = convert_ngen_arch_to_dnnl(hw_);
     stepping_ = dev_info.stepping_id();
@@ -730,6 +728,7 @@ status_t gen_xe_systolic_kernel_desc_t::select_kernel(
     eval_params.sizes = match_params.sizes;
     eval_params.alpha = alpha;
     eval_params.beta = beta;
+    eval_params.product = product_;
     eval_params.euCount = dev_info.eu_count();
     eval_params.postOps = !problem_.postOps.empty();
     eval_params.cConvert = (acc_type != c_type);
@@ -1025,8 +1024,6 @@ status_t gen_kernel_t::get_kernel(
 
     try {
         switch (desc()->hw_) {
-            REG_XELP_ISA(ARCH_DISPATCH(XeLP))
-            REG_XEHP_ISA(ARCH_DISPATCH(XeHP))
             REG_XEHPG_ISA(ARCH_DISPATCH(XeHPG))
             REG_XEHPC_ISA(ARCH_DISPATCH(XeHPC))
             REG_XE2_ISA(ARCH_DISPATCH(Xe2))
@@ -1046,16 +1043,9 @@ status_t gen_kernel_t::get_kernel(
 }
 
 void gen_kernel_t::maybe_print_verbose() {
-    int level = get_verbose(verbose_t::debuginfo);
-    if (level < 2) return;
-
-    if (level >= 10)
-        verbose_printf("info,gpu,gemm,catalog entry:%s\n",
-                desc()->entry().str().c_str());
-
-    verbose_printf("info,gpu,gemm,kernel:%s\n",
-            dump_kernel(desc()->hw_, desc()->problem_, desc()->strategy_)
-                    .c_str());
+    gpu_debug() << "kernel:"
+                << dump_kernel(
+                           desc()->hw_, desc()->problem_, desc()->strategy_);
 }
 
 } // namespace jit

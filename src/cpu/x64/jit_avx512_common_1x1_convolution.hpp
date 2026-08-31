@@ -52,7 +52,7 @@ struct jit_avx512_common_1x1_convolution_fwd_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit_1x1:", avx512_core, ""),
                 jit_avx512_common_1x1_convolution_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace utils;
             VDISPATCH_CONV(is_fwd(), VERBOSE_BAD_PROPKIND);
             VDISPATCH_CONV(expect_data_types(src_type, wei_type, dst_type,
@@ -174,7 +174,7 @@ struct jit_avx512_common_1x1_convolution_fwd_t : public primitive_t {
             return status::success;
         }
 
-        status_t depthwise_po_init(engine_t *engine) {
+        status_t depthwise_po_init(const engine_t *engine) {
 
             using namespace memory_tracking;
             auto &jcp_1x1 = jcp_;
@@ -293,11 +293,11 @@ struct jit_avx512_common_1x1_convolution_fwd_t : public primitive_t {
             registrar_t scratchpad(scratchpad_registry_);
             registrar_t dw_scratchpad(scratchpad, names::prefix_fusion);
 
-            size_t dw_conv_buffer_size_ = (size_t)nthr * jcp_dw.kh * jcp_dw.iw
-                    * jcp_dw.dw_conv_buffer_oc;
-            assert(dw_conv_buffer_size_);
+            const dim_t dw_conv_buffer_size = static_cast<dim_t>(nthr)
+                    * jcp_dw.kh * jcp_dw.iw * jcp_dw.dw_conv_buffer_oc;
+            assert(dw_conv_buffer_size);
             dw_scratchpad.book(memory_tracking::names::key_fusion_inout_buffer,
-                    dw_conv_buffer_size_,
+                    static_cast<size_t>(dw_conv_buffer_size),
                     types::data_type_size(dw_conv_pd_->src_md()->data_type));
 
             jit_uni_dw_conv_fwd_kernel_t<avx512_core,
@@ -369,7 +369,7 @@ struct jit_avx512_common_1x1_convolution_bwd_data_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit_1x1:", avx512_core, ""),
                 jit_avx512_common_1x1_convolution_bwd_data_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             VDISPATCH_CONV(desc()->prop_kind == prop_kind::backward_data,
                     VERBOSE_BAD_PROPKIND);
             VDISPATCH_CONV(
@@ -479,7 +479,7 @@ struct jit_avx512_common_1x1_convolution_bwd_weights_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit_1x1:", avx512_core, ""),
                 jit_avx512_common_1x1_convolution_bwd_weights_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             VDISPATCH_CONV(desc()->prop_kind == prop_kind::backward_weights,
                     VERBOSE_BAD_PROPKIND);
@@ -554,11 +554,14 @@ struct jit_avx512_common_1x1_convolution_bwd_weights_t : public primitive_t {
 
     private:
         void init_balancers() {
-            const size_t max_buffer_size = jcp_.nthr * 3 * 5 * 5 * 16 * 16;
+            const dim_t max_buffer_size
+                    = static_cast<dim_t>(jcp_.nthr) * 3 * 5 * 5 * 16 * 16;
             if (with_bias()) {
                 reducer_bia_conf_.init(reduce_balancer_t(jcp_.nthr,
-                        jcp_.oc_block, jcp_.ngroups * jcp_.nb_load, jcp_.mb,
-                        max_buffer_size, true));
+                        static_cast<int>(jcp_.oc_block),
+                        static_cast<int>(jcp_.ngroups * jcp_.nb_load),
+                        static_cast<int>(jcp_.mb),
+                        static_cast<size_t>(max_buffer_size), true));
             }
         }
     };

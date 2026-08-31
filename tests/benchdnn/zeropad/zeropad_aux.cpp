@@ -14,17 +14,15 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <sstream>
-
 #include "dnnl_common.hpp"
+#include "utils/stringstream.hpp"
 
 #include "zeropad/zeropad.hpp"
 
 namespace zeropad {
 
 std::string prb_t::set_repro_line() {
-    dnnl::impl::stringstream_t s;
-    dump_global_params(s);
+    stringstream_t s;
     settings_t def;
 
     if (canonical || dt != def.dt[0]) s << "--dt=" << dt << " ";

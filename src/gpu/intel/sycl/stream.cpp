@@ -40,6 +40,14 @@ status_t stream_t::init() {
     if (is_profiling_enabled())
         profiler_ = utils::make_unique<xpu::sycl::stream_profiler_t>(this);
 
+    // Enables profiling capabilities to allow the verbose mode to print
+    // profiling info using device measured times.
+    // The verbose profiler state is fixed at stream initialization and does
+    // not respond to runtime changes made via set_dnnl_verbose().
+    // TODO: allow runtime control of the asynchronous verbose mode via
+    // set_dnnl_verbose()
+    CHECK(impl()->init_verbose_profiler(engine()->kind()));
+
     const auto &sycl_engine_impl
             = *utils::downcast<const xpu::sycl::engine_impl_t *>(
                     engine()->impl());
@@ -49,7 +57,8 @@ status_t stream_t::init() {
     // If queue_ is not set then construct it
     if (!impl()->queue()) {
         ::sycl::property_list props;
-        if (is_profiling_enabled() && sycl_dev.is_gpu()) {
+        if ((is_profiling_enabled() || is_verbose_profiler_enabled())
+                && sycl_dev.is_gpu()) {
             props = (flags() & stream_flags::in_order)
                     ? ::sycl::property_list {::sycl::property::queue::
                                                      in_order {},
@@ -63,6 +72,11 @@ status_t stream_t::init() {
                     : ::sycl::property_list {};
         }
         impl()->set_queue(::sycl::queue(sycl_ctx, sycl_dev, props));
+
+        // Re-initializes verbose profiler after setting the queue to check for
+        // supported backends
+        CHECK(impl()->init_verbose_profiler(engine()->kind()));
+
     } else {
         // TODO: Compare device and context of the engine with those of the
         // queue after SYCL adds support for device/context comparison.
@@ -76,7 +90,22 @@ status_t stream_t::init() {
                         (sycl_dev.is_cpu() || xpu::sycl::is_host(sycl_dev)));
         if (!args_ok) return status::invalid_arguments;
     }
-
+    if (is_verbose_profiler_enabled()) {
+        verbose_profiler_.set(
+                utils::make_unique<xpu::sycl::verbose_profiler_t>(this));
+        // Check if the queue has profiling enabled and pause the verbose
+        // profiler if it does not. Verbose lines are still emitted during
+        // logging, but without execution timing information.
+        const bool queue_has_profiling = queue().has_property<
+                ::sycl::property::queue::enable_profiling>();
+        if (!queue_has_profiling) {
+            VWARN(primitive, exec,
+                    "SYCL queue does not have profiling enabled. "
+                    "Verbose profiling is paused and execution times "
+                    "will not be reported.");
+            verbose_profiler()->pause_profiling();
+        }
+    }
     if (is_profiling_enabled() && sycl_dev.is_gpu() && !queue().is_in_order()) {
         VERROR(common, dpcpp,
                 "DPC++ kernel profiling is not supported with out-of-order "
@@ -89,89 +118,67 @@ status_t stream_t::init() {
 
 void stream_t::before_exec_hook() {
     if (is_profiling_enabled()) profiler_->start_profiling();
+    if (is_verbose_profiler_enabled()) {
+        auto *profiler = static_cast<xpu::sycl::verbose_profiler_t *>(
+                verbose_profiler_
+                        .get_or_set(utils::make_unique<
+                                xpu::sycl::verbose_profiler_t>(this))
+                        .get());
+        const bool queue_has_profiling = queue().has_property<
+                ::sycl::property::queue::enable_profiling>();
+        if (!queue_has_profiling) { profiler->pause_profiling(); }
+
+        // Device event profiling and SYCL graph recording are incompatible
+        // because the graph execution creates a different execution context
+        // with new events that do not inherit the original queue's profiling
+        // properties. This causes profiling info queries on graph events to
+        // throw exceptions.
+        // Switching back to host-side verbose logging is also not viable
+        // as the SYCL graph recording breaks on stream.wait() synchronization
+        // calls.
+        // The current approach is to skip profiling for the primitive whenever
+        // graph is recording and resume thereafter to avoid runtime exceptions.
+        // In this scenario, the profiler will report zero execution time for
+        // the logged primitives.
+        if (!recording() && queue_has_profiling) {
+            profiler->start_profiling();
+        } else {
+            if (profiler->is_active() && queue_has_profiling) {
+                VWARN(primitive, exec,
+                        "SYCL graph recording active - verbose profiling will "
+                        "show zero "
+                        "execution times until recording completes");
+            }
+            profiler->pause_profiling();
+        }
+        profiler->update_event_list();
+    }
 }
 
 void stream_t::after_exec_hook() {
     sycl_ctx().set_deps(xpu::sycl::event_t());
     if (is_profiling_enabled()) profiler_->stop_profiling();
+    if (auto *vp = verbose_profiler()) { vp->check_for_completed_primitives(); }
 }
 
-// The following code needs sycl::queue::ext_oneapi_get_graph(), but it may
-//  not be defined. Some SFINAE is needed to avoid compile errors in this case.
+status_t stream_t::run_verbose_profiler(
+        const std::string &pd_info, double start_ms, uint64_t component) {
+    if (!is_verbose_profiler_enabled()) {
+        VERROR(primitive, exec,
+                "running verbose profiler while it is not enabled");
+        return status::success;
+    }
+
+    auto *vp = verbose_profiler();
+    vp->add_to_pending_primitive_list(start_ms, pd_info, component);
+    return status::success;
+}
+
 namespace syclex = ::sycl::ext::oneapi::experimental;
-template <typename Q>
-static auto get_graph_internal(
-        const Q &q, bool &success, int) -> decltype(q.ext_oneapi_get_graph()) {
-    success = true;
-    return q.ext_oneapi_get_graph();
-}
-
-template <typename Q>
-static syclex::command_graph<syclex::graph_state::modifiable>
-get_graph_internal(const Q &q, bool &success, long) {
-    success = false;
-    return syclex::command_graph<syclex::graph_state::modifiable>(
-            q.get_context(), q.get_device());
-}
-
-static syclex::command_graph<syclex::graph_state::modifiable> get_graph(
-        const ::sycl::queue *q, bool &success) {
-    return get_graph_internal(*q, success, 0);
-}
 
 bool stream_t::recording() const {
     return impl()->queue()->ext_oneapi_get_state()
             == syclex::queue_state::recording;
-}
-
-stream_t::weak_graph_t stream_t::get_current_graph_weak() const {
-    bool success;
-    stream_t::weak_graph_t result = get_graph(impl()->queue(), success);
-    if (!success) result.reset();
-    return result;
-}
-
-status_t stream_t::enter_immediate_mode() {
-    std::lock_guard<std::mutex> lock(immediate_mode_mutex_);
-    if (!immediate_mode_level_++) pause_recording();
-    return status::success;
-}
-
-status_t stream_t::exit_immediate_mode() {
-    std::lock_guard<std::mutex> lock(immediate_mode_mutex_);
-    if (immediate_mode_level_ > 0) {
-        if (!--immediate_mode_level_) resume_recording();
-    } else {
-        assert(!"exit_immediate_mode called without enter");
-        return status::runtime_error;
-    }
-    return status::success;
-}
-
-status_t stream_t::pause_recording() {
-    using graph_t = syclex::command_graph<syclex::graph_state::modifiable>;
-    if (recording()) {
-        bool success;
-        assert(!paused_graph_);
-        paused_graph_.reset(new graph_t(get_graph(impl()->queue(), success)));
-        if (!success) return status::runtime_error;
-        paused_graph_->end_recording();
-        auto &cur_dep = xpu::sycl::event_t::from(ctx().get_deps());
-        paused_dep_ = xpu::sycl::event_t {};
-        std::swap(paused_dep_, cur_dep);
-    }
-    return status::success;
-}
-
-status_t stream_t::resume_recording() {
-    if (paused_graph_) {
-        paused_graph_->begin_recording(*impl()->queue());
-        paused_graph_.reset();
-        auto &cur_dep = xpu::sycl::event_t::from(ctx().get_deps());
-        std::swap(paused_dep_, cur_dep);
-        paused_dep_ = xpu::sycl::event_t {};
-    }
-    return status::success;
 }
 
 } // namespace sycl

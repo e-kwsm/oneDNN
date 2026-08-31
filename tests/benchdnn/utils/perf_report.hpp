@@ -32,6 +32,8 @@
 #include "common.hpp"
 #include "utils/timer.hpp"
 
+#include "tests/thread_context.hpp"
+
 struct base_perf_report_t {
     base_perf_report_t(const char *perf_template) : pt_(perf_template) {}
     virtual ~base_perf_report_t() = default;
@@ -47,6 +49,7 @@ struct base_perf_report_t {
     virtual const dir_t *dir() const { return nullptr; }
     virtual const dnnl_data_type_t *dt() const { return nullptr; }
     virtual const std::vector<dnnl_data_type_t> *sdt() const { return nullptr; }
+    virtual const dnnl_data_type_t *bia_dt() const { return nullptr; }
     virtual const dnnl_data_type_t *ddt() const { return nullptr; }
     virtual const std::string *tag() const { return nullptr; }
     virtual const std::string *stat_tag() const { return nullptr; }

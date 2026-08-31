@@ -14,10 +14,9 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <sstream>
-
 #include "dnn_types.hpp"
 #include "dnnl_common.hpp"
+#include "utils/stringstream.hpp"
 
 #include "deconv/deconv.hpp"
 
@@ -400,8 +399,7 @@ void prb_t::count_ops() {
 }
 
 std::string prb_t::set_repro_line() {
-    dnnl::impl::stringstream_t s;
-    dump_global_params(s);
+    stringstream_t s;
     settings_t def;
 
     bool has_default_dts = true;

@@ -48,36 +48,50 @@ public:
         return status::success;
     }
 
-    ::sycl::queue &queue() const { return *impl()->queue(); }
-
     status_t wait() override {
         queue().wait_and_throw();
         return status::success;
     }
 
+    void before_exec_hook() override;
+    void after_exec_hook() override;
+
+    status_t reset_profiling() override {
+        if (!is_profiling_enabled()) return status::invalid_arguments;
+        profiler().reset();
+        return status::success;
+    }
+
+    status_t get_profiling_data(profiling_data_kind_t data_kind,
+            int *num_entries, uint64_t *data) const override {
+        if (!is_profiling_enabled()) return status::invalid_arguments;
+        return profiler().get_info(data_kind, num_entries, data);
+    }
+
+    status_t notify_profiling_complete() const override {
+        if (!is_profiling_enabled()) return status::invalid_arguments;
+        return profiler().notify_profiling_complete();
+    }
+
+    ::sycl::queue &queue() const { return *impl()->queue(); }
+
     status_t copy(const memory_storage_t &src, const memory_storage_t &dst,
             size_t size, const xpu::event_t &deps,
             xpu::event_t &out_dep) override {
-        return impl()->copy(this, src, dst, size, deps, out_dep);
+        return impl()->copy(
+                this, src, dst, size, deps, out_dep, profiler_.get());
     }
 
     status_t fill(const memory_storage_t &dst, uint8_t pattern, size_t size,
             const xpu::event_t &deps, xpu::event_t &out_dep) override {
-        return impl()->fill(dst, pattern, size, deps, out_dep);
+        return impl()->fill(dst, pattern, size, deps, out_dep, profiler_.get());
     }
 
-    const xpu::sycl::context_t &sycl_ctx() const { return impl()->sycl_ctx(); }
     xpu::sycl::context_t &sycl_ctx() { return impl()->sycl_ctx(); }
-
     xpu::context_t &ctx() override { return impl()->sycl_ctx(); }
-    const xpu::context_t &ctx() const override { return impl()->sycl_ctx(); }
 
     ::sycl::event get_output_event() const {
         return impl()->get_output_event();
-    }
-
-    void register_deps(::sycl::handler &cgh) const {
-        return impl()->register_deps(cgh);
     }
 
 private:

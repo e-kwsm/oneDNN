@@ -32,12 +32,6 @@ template <ngen::HW hw>
 using gen_t = ir_to_ngen_generator_t<
         dnnl::impl::gpu::intel::jit::ngen_code_generator_t<hw>>;
 
-REG_XELP_ISA(extern template void convert_ir_to_ngen<gen_t<ngen::HW::XeLP>>(
-        const stmt_t &body, gen_t<ngen::HW::XeLP> &host,
-        const walk_order_t *kernel_grid_walk_order));
-REG_XEHP_ISA(extern template void convert_ir_to_ngen<gen_t<ngen::HW::XeHP>>(
-        const stmt_t &body, gen_t<ngen::HW::XeHP> &host,
-        const walk_order_t *kernel_grid_walk_order));
 REG_XEHPG_ISA(extern template void convert_ir_to_ngen<gen_t<ngen::HW::XeHPG>>(
         const stmt_t &body, gen_t<ngen::HW::XeHPG> &host,
         const walk_order_t *kernel_grid_walk_order));
@@ -106,8 +100,7 @@ void ir_kernel_t::generate_from_ir(
 
     if (local_range_) {
         size_t max_slm_size = compute::device_info_t::max_slm_size_per_tg(
-                thread_group_size(), options_.regs(),
-                to_gpu_product(options_.hw().product()));
+                thread_group_size(), options_.regs(), options_.hw().product());
         if (interface.getSLMSize() > max_slm_size) {
             gpu_trace() << "SLM size limit exceeded: " << interface.getSLMSize()
                         << " > " << max_slm_size;

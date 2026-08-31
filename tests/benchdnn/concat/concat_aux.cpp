@@ -14,18 +14,16 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <sstream>
-
 #include "concat/concat.hpp"
 #include "dnnl_debug.hpp"
+#include "utils/stringstream.hpp"
 
 namespace concat {
 
 std::string prb_t::set_repro_line() {
     using ::operator<<;
 
-    dnnl::impl::stringstream_t s;
-    dump_global_params(s);
+    stringstream_t s;
     settings_t def;
 
     bool has_default_tags = true;

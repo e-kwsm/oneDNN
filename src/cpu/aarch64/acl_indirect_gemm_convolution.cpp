@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2021-2022, 2024 Arm Ltd. and affiliates
+* Copyright 2021-2022, 2024, 2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +19,7 @@
 #include "acl_convolution_utils.hpp"
 #include "common/memory_tracking.hpp"
 #include "common/utils.hpp"
+#include "cpu/aarch64/cpu_isa_traits.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -43,15 +45,18 @@ status_t acl_indirect_gemm_convolution_fwd_t::init(engine_t *engine) {
             acp_.with_bias ? &acp_.bia_tensor_info : nullptr,
             &acp_.dst_tensor_info,
             arm_compute::Conv2dInfo(acp_.padstride_info, acp_.dilation_info,
-                    acp_.act_info, acp_.fast_math, 1, acp_.weights_info));
+                    acp_.act_info, acp_.fast_math, 1, acp_.weights_info,
+                    acp_.use_fp32_acc));
     acl_obj_->aux_mem_req = acl_obj_->conv.workspace();
+    post_ops_ = pd()->post_ops;
+    CHECK(post_ops_.init_primitives(engine));
     return status::success;
 }
 
 status_t acl_indirect_gemm_convolution_fwd_t::execute_forward(
         const exec_ctx_t &ctx) const {
     return execute_forward_conv_acl<acl_obj_t<Op>, pd_t, data_t>(
-            ctx, acl_obj_.get(), pd(), indirect_conv_keys);
+            ctx, acl_obj_.get(), pd(), indirect_conv_keys, post_ops_);
 }
 
 status_t acl_indirect_gemm_convolution_fwd_t::pd_t::init_conf() {
@@ -73,24 +78,19 @@ status_t acl_indirect_gemm_convolution_fwd_t::pd_t::init_conf() {
     int ic = src_md_.dims[1];
     if (acp_.fast_math && ic % block_by == 0) return status::unimplemented;
 
-    // clang-format off
     // NOTE: indirect convolution method supports only nhwc layout.
-    ACL_CHECK_VALID(Op::validate(
-        &acp_.src_tensor_info,
-        &acp_.wei_tensor_info,
-        acp_.with_bias ? &acp_.bia_tensor_info : nullptr,
-        &acp_.dst_tensor_info,
-        arm_compute::Conv2dInfo(acp_.padstride_info,
-                                acp_.dilation_info,
-                                acp_.act_info,
-                                acp_.fast_math,
-                                1, acp_.weights_info)));
-    // clang-format on
+    ACL_CHECK_VALID(Op::validate(&acp_.src_tensor_info, &acp_.wei_tensor_info,
+            acp_.with_bias ? &acp_.bia_tensor_info : nullptr,
+            &acp_.dst_tensor_info,
+            arm_compute::Conv2dInfo(acp_.padstride_info, acp_.dilation_info,
+                    acp_.act_info, acp_.fast_math, 1, acp_.weights_info,
+                    acp_.use_fp32_acc)));
 
     return status::success;
 }
 
-status_t acl_indirect_gemm_convolution_fwd_t::pd_t::init(engine_t *engine) {
+status_t acl_indirect_gemm_convolution_fwd_t::pd_t::init(
+        const engine_t *engine) {
     using namespace data_type;
     using smask_t = primitive_attr_t::skip_mask_t;
 
@@ -107,6 +107,11 @@ status_t acl_indirect_gemm_convolution_fwd_t::pd_t::init(engine_t *engine) {
             && impl::is_dense_format_kind({src_md(), weights_md(), dst_md()});
     if (!ok) return status::unimplemented;
 
+    // Indirect is slower than brgconv sve for small OC * IC, which makes sense because
+    // this is the amount of work per pointer indirection.
+    VDISPATCH_CONV(!(mayiuse(sve) && OC() * IC() <= 2048),
+            "brgconv:sve is faster for small OC * IC");
+
     CHECK(init_conf());
 
     // Book memory.
@@ -115,7 +120,8 @@ status_t acl_indirect_gemm_convolution_fwd_t::pd_t::init(engine_t *engine) {
             acp_.with_bias ? &acp_.bia_tensor_info : nullptr,
             &acp_.dst_tensor_info,
             arm_compute::Conv2dInfo(acp_.padstride_info, acp_.dilation_info,
-                    acp_.act_info, acp_.fast_math, 1, acp_.weights_info));
+                    acp_.act_info, acp_.fast_math, 1, acp_.weights_info,
+                    acp_.use_fp32_acc));
 
     auto scratchpad = scratchpad_registry().registrar();
     return init_scratchpad(conv, scratchpad, indirect_conv_keys, engine,

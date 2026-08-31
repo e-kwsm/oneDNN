@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2024 Intel Corporation
+* Copyright 2026 Advanced Micro Devices, Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -166,6 +167,27 @@ struct cublaslt_blocked_desc_t {
     size_t size;
 };
 
+// Description of pre-packed weights for the Zen GEMM backend.
+// The layout is opaque: bytes are produced by the Zen backend packer (via
+// zen_reorder_t) rather than by an oneDNN blocked reorder, and the matmul
+// backend consumes the buffer directly with mem_format_b='r'.
+struct zen_packed_desc_t {
+    // Total size of the packed buffer in bytes (== per_slice_size * batch).
+    size_t size;
+    // Size of one packed K x N slice in bytes (for computing batch offsets;
+    // equals `size` in the non-batched 2D case).
+    size_t per_slice_size;
+    // Source/compute data type of the matmul. Kept so that packed descriptors
+    // for different GEMM source types stay distinct in the primitive cache and
+    // so the reorder can pick the matching packer variant.
+    dnnl_data_type_t gemm_src_dt;
+    // Source weights orientation: false => [K, N] (matmul); true => [N, K] =
+    // [OC, IC] (inner product). Packed bytes are orientation-normalized, so this
+    // only tells zen_reorder how to read the source; stored explicitly since the
+    // opaque format has no strides.
+    bool weights_transposed;
+};
+
 struct sparse_desc_t {
     static constexpr int max_metadata_types = 2;
     // Each encoding defines the number of handles it requires and their
@@ -235,6 +257,17 @@ struct sparse_desc_t {
         dnnl_dim_t group_count;
         // Index of the dimension with variable size per group
         int variable_dim_idx;
+        // Layout of the values buffer (handle 0):
+        // - strides are to describe element-to-element navigation within
+        // concatenated values buffer
+        // - across groups we use the offsets (handle 1)
+        //
+        // Note, that variable dim is always the outer one:
+        //   variable_dim_idx == 0 -> row-major (ab): strides[0]=dims[1],
+        //                            strides[1]=1
+        //   variable_dim_idx == 1 -> col-major (ba): strides[0]=1,
+        //                            strides[1]=dims[0]
+        dims_t strides;
     } grouped_desc;
 #endif
 };
@@ -277,6 +310,9 @@ status_t memory_desc_sanity_check(int ndims, const dims_t dims,
 
 status_t memory_desc_sanity_check(const memory_desc_t &md);
 
+status_t memory_desc_strides_check(
+        const memory_desc_t &md, const dims_t strides);
+
 status_t memory_desc_init_host_scalar(
         memory_desc_t &memory_desc, data_type_t data_type);
 
@@ -303,7 +339,7 @@ status_t memory_desc_permute_axes(memory_desc_t &out_memory_desc,
 // dimensions themselves, plus information about elements type and memory
 // format. Additionally, contains format-specific descriptions of the data
 // layout.
-struct dnnl_memory_desc : public dnnl::impl::c_compatible {
+struct dnnl_memory_desc {
     dnnl_memory_desc()
         : ndims(0)
         , dims {}
@@ -359,6 +395,8 @@ struct dnnl_memory_desc : public dnnl::impl::c_compatible {
         dnnl::impl::cublaslt_blocked_desc_t cublaslt_blocked_desc;
         // Description of the sparse encodings.
         dnnl::impl::sparse_desc_t sparse_desc;
+        // Pre-packed weights for the Zen GEMM backend.
+        dnnl::impl::zen_packed_desc_t zen_packed_desc;
         // ... other descriptions possible
     } format_desc;
 

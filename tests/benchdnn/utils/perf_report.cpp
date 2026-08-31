@@ -17,13 +17,20 @@
 
 #include "dnn_types.hpp"
 #include "dnnl_common.hpp"
+#include "utils/stringstream.hpp"
 
 #include "utils/perf_report.hpp"
 
 void base_perf_report_t::report(res_t *res, const char *prb_str) const {
     dump_perf_header();
 
-    dnnl::impl::stringstream_t ss;
+    // `prb_str` carries only driver-specific settings. Prepend the global
+    // (driver-agnostic) parameters so that `%prb%` stays a complete reproducer.
+    stringstream_t global_params_ss;
+    dump_global_params(global_params_ss);
+    const std::string full_prb_str = global_params_ss.str() + prb_str;
+
+    stringstream_t ss;
 
     const char *pt = pt_;
     char c;
@@ -32,7 +39,7 @@ void base_perf_report_t::report(res_t *res, const char *prb_str) const {
             ss << c;
             continue;
         }
-        handle_option(ss, pt, res, prb_str);
+        handle_option(ss, pt, res, full_prb_str.c_str());
     }
 
     std::string str = ss.str();
@@ -117,6 +124,7 @@ void base_perf_report_t::handle_option(std::ostream &s, const char *&option,
     HANDLE("dt", if (dt()) s << *dt());
     HANDLE("group", if (group()) s << *group());
     HANDLE("sdt", if (sdt()) s << *sdt());
+    HANDLE("bia_dt", if (bia_dt()) s << *bia_dt());
     HANDLE("stag", if (stag()) s << *stag());
     HANDLE("mb", if (user_mb()) s << *user_mb());
     HANDLE("name", if (name()) s << *name());
@@ -168,7 +176,7 @@ void base_perf_report_t::dump_perf_header() const {
     // dataframe (i.e. no symbols other than _ and not starting with a number)
     const char *pt = pt_;
     char c;
-    dnnl::impl::stringstream_t ss;
+    stringstream_t ss;
     while ((c = *pt++) != '\0') {
         // Print anything that isn't %
         if (c != '%') {

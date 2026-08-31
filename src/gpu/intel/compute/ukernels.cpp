@@ -16,6 +16,14 @@
 
 #include "gpu/intel/compute/ukernels.hpp"
 
+#include <exception>
+#include <string>
+
+#include "common/verbose.hpp"
+#include "gemmstone/microkernel/fuser.hpp"
+#include "gemmstone/microkernel/shim.hpp"
+#include "gpu/intel/utils.hpp"
+
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
 #include "gpu/intel/ocl/engine.hpp"
 #include "gpu/intel/ocl/utils.hpp"
@@ -88,6 +96,62 @@ bool mayiuse_microkernels(const engine_t *engine) {
     auto it = engine_microkernel_map.find(engine->engine_id());
     if (it != std::end(engine_microkernel_map)) return it->second;
     return engine_microkernel_map[engine->engine_id()] = mayiuse_mk(engine);
+}
+
+status_t validate_microkernel(const gemmstone::microkernel::Package &package,
+        const char *kernel_name) {
+    using Status = gemmstone::microkernel::Package::Status;
+    const char *reason = nullptr;
+    switch (package.status) {
+        case Status::Success: return status::success;
+        case Status::Pending:
+            reason = "was not finalized before validation";
+            break;
+        case Status::UncertainClobbers:
+            reason = "has uncertain register clobbers and is not supported";
+            break;
+        case Status::UnsupportedHW:
+            reason = "is incompatible with the current hardware";
+            break;
+    }
+    VCONDCHECK(primitive, create, check, gpu, reason == nullptr,
+            status::unimplemented, "%s microkernel %s", kernel_name, reason);
+    return status::runtime_error;
+}
+
+void microkernel_shims_t::add(const char *header_name, const char *decorator,
+        const gemmstone::microkernel::Package &package) {
+    gemmstone::microkernel::ShimOptions options;
+    options.subgroupSize = subgroup_size_;
+    options.useTileOps = true;
+    options.decorator = decorator;
+    options.microkernelID = next_id_++;
+
+    kernel_ctx_.add_custom_header(header_name,
+            generateShim(package,
+                    gemmstone::microkernel::HostLanguage::OpenCL_C, options));
+    require_grfs(package.grfMin);
+}
+
+void microkernel_shims_t::finalize() {
+    if (arch_ >= gpu_arch_t::xe3p && grf_min_ > 256)
+        kernel_ctx_.add_option("-cl-intel-512-GRF-per-thread");
+    else if (grf_min_ > 128)
+        kernel_ctx_.add_option("-cl-intel-256-GRF-per-thread");
+}
+
+status_t fuse_microkernels(
+        xpu::binary_t &binary, const char *code, int grf_size) {
+    try {
+        if (!gemmstone::microkernel::fuse(binary, code, grf_size))
+            VWARN(common, runtime,
+                    "could not check microkernel registers against the host "
+                    "kernel thread payload");
+    } catch (const std::exception &e) {
+        VERROR(common, runtime, "microkernel fusion failed: %s", e.what());
+        return status::runtime_error;
+    } catch (...) { return status::runtime_error; }
+    return status::success;
 }
 
 } // namespace compute

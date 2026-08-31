@@ -87,7 +87,7 @@ function(register_benchdnn_test engine driver test_file)
         set(benchdnn_target ${target_name}_${engine})
 
         if(DNNL_TEST_SET_HAS_GRAPH_EXE EQUAL 1)
-            string(PREPEND cmd "--execution-mode=graph ")
+            string(PREPEND cmd "--execution-mode=native_graph ")
         endif()
 
         if(NOT WIN32 OR DNNL_BUILD_FOR_CI)
@@ -160,7 +160,6 @@ foreach(driver ${all_drivers})
             inputs/${driver}/test_*_gpu_ci)
     file(GLOB test_files_gpu RELATIVE ${driver_dir} inputs/${driver}/test_*_gpu)
     file(GLOB test_files_ci RELATIVE ${driver_dir} inputs/${driver}/test_*_ci)
-    file(GLOB test_files_gpu_smoke RELATIVE ${driver_dir} inputs/${driver}/test_*_gpu_smoke)
     file(GLOB test_files_smoke RELATIVE ${driver_dir} inputs/${driver}/test_*_smoke)
     file(GLOB test_files_cpu RELATIVE ${driver_dir} inputs/${driver}/test_*)
     file(GLOB test_files_with_all RELATIVE ${driver_dir}
@@ -168,18 +167,8 @@ foreach(driver ${all_drivers})
         inputs/graph/test_graph_all inputs/rnn/test_lstm_all)
 
     if(DNNL_TEST_SET_COVERAGE EQUAL DNNL_TEST_SET_SMOKE)
-        # gpu_smoke files may happen if standard coverage is not applicable on gpu.
-        # Filter out gpu_smoke inputs from smoke
-        foreach(test_file ${test_files_gpu_smoke})
-            string(REPLACE "${test_file}" "" test_files_smoke "${test_files_smoke}")
-        endforeach()
-
         if(has_gpu)
-            if(test_files_gpu_smoke)
-                register_all_tests(gpu "${driver}" "${test_files_gpu_smoke}")
-            else()
-                register_all_tests(gpu "${driver}" "${test_files_smoke}")
-            endif()
+            register_all_tests(gpu "${driver}" "${test_files_smoke}")
         endif()
         if(has_cpu)
             register_all_tests(cpu "${driver}" "${test_files_smoke}")
@@ -210,14 +199,14 @@ foreach(driver ${all_drivers})
         if(NOT DNNL_EXPERIMENTAL_GROUPED_MEMORY)
             list(REMOVE_ITEM test_files_gpu "test_matmul_grouped_gpu")
             list(REMOVE_ITEM test_files_cpu "test_matmul_grouped_gpu")
+            list(REMOVE_ITEM test_files_cpu "test_matmul_grouped")
         endif()
 
         ## Filter out gpu, large cpu and invalid inputs from cpu
         ##
         ## Note: put longer/specialized names first to keep filtering working.
         foreach(test_file ${test_files_large_cpu} ${test_files_gpu_ci}
-            ${test_files_gpu_smoke} ${test_files_gpu} ${test_files_ci}
-            ${test_files_smoke})
+            ${test_files_gpu} ${test_files_ci} ${test_files_smoke})
             string(REPLACE "${test_file}" "" test_files_cpu "${test_files_cpu}")
         endforeach()
         ## Then filter files with "all" suffix by exact name since there may

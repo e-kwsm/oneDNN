@@ -16,7 +16,6 @@
 
 #include <cstring>
 #include <random>
-#include <sstream>
 #include <unordered_map>
 
 #include "dnnl_debug.hpp"
@@ -24,6 +23,7 @@
 #include "utils/fill.hpp"
 #include "utils/numeric.hpp"
 #include "utils/parallel.hpp"
+#include "utils/stringstream.hpp"
 
 fill_cfg_t::fill_cfg_t(dnnl_data_type_t dt, float range_min_val,
         float range_max_val, bool only_integer, attr_t::post_ops_t::kind_t alg,
@@ -70,7 +70,7 @@ fill_cfg_t::fill_cfg_t(const std::vector<float> &user_set, float density,
 }
 
 std::string fill_cfg_t::print_verbose() const {
-    std::stringstream ss;
+    stringstream_t ss;
 
     ss << "[FILL_CFG]";
     if (!name_.empty()) ss << " name:\'" << name_ << "\';";
@@ -133,16 +133,19 @@ const fill_cfg_t &get_perf_fill_cfg(dnnl_data_type_t dt) {
 #undef CASE
 }
 
-int fill_scales(
-        const attr_t &attr, int arg, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp) {
+int fill_scales(const attr_t &attr, int arg, dnn_mem_t &mem_dt,
+        dnn_mem_t &mem_fp, res_t *res) {
     const auto &e = attr.scales.get(arg);
-    return fill_scales(e, mem_dt, mem_fp);
+    return fill_scales(e, mem_dt, mem_fp, res);
 }
 
 int fill_scales(const attr_t::arg_scales_t::entry_t &e, dnn_mem_t &mem_dt,
-        dnn_mem_t &mem_fp) {
+        dnn_mem_t &mem_fp, res_t *res) {
     const auto nelems = mem_fp.nelems();
     if (nelems == 0) return OK;
+
+    // Dynamic scales must not be filled.
+    if (e.is_dynamic()) return OK;
 
     if (mem_dt) { assert(mem_dt.nelems() == mem_fp.nelems()); }
 
@@ -151,40 +154,20 @@ int fill_scales(const attr_t::arg_scales_t::entry_t &e, dnn_mem_t &mem_dt,
         mem_fp.set_f32_elem(0, e.scale);
         // TODO: replace reorder with `fill` that takes any pattern unlike
         // memset.
+        if (mem_dt) SAFE(mem_dt.reorder(mem_fp, res), WARN);
     } else {
-        /* Do fixed partitioning to have same filling for any number of threads */
-        static constexpr int64_t chunk_size = 64;
-        const int64_t n_chunks = div_up(nelems, chunk_size);
-        benchdnn_parallel_nd(n_chunks, [&](int64_t idx_chunk) {
-            int64_t idx_start = idx_chunk * chunk_size;
-            int64_t idx_end = MIN2(idx_start + chunk_size, nelems);
-            // Note: we use a different seed for each chunk to avoid
-            // repeating patterns. We could use discard(idx_start) too but
-            // it has a complexity in O(idx_start). We also add 1 to avoid
-            // seeding with 0.
-            std::minstd_rand int_seed(idx_start + 1);
-            int_seed.discard(1);
-
-            std::uniform_int_distribution<> gen(-2, 2);
-
-            for (int64_t idx = idx_start; idx < idx_end; ++idx) {
-                int pow2 = gen(int_seed);
-                int pow2_shift = 1 << std::abs(pow2);
-                const float gen_val
-                        = pow2 < 0 ? (1.f / pow2_shift) : pow2_shift;
-                const float val = gen_val;
-                mem_fp.set_f32_elem(idx, val);
-            }
-        });
+        // 1/16, 1/8 and 1/4 to properly work with grouped scaling.
+        // Full density as zero scales are prohibited.
+        static const std::vector<float> scales_set {0.0625f, 0.125f, 0.25f};
+        fill_cfg_t fill_cfg(scales_set, /* density = */ 1.f, "scales");
+        SAFE(fill_random_real(mem_dt, mem_fp, res, fill_cfg), WARN);
     }
-
-    if (mem_dt) SAFE(mem_dt.reorder(mem_fp), WARN);
 
     return OK;
 }
 
-int fill_zero_points(
-        const attr_t &attr, int arg, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp) {
+int fill_zero_points(const attr_t &attr, int arg, dnn_mem_t &mem_dt,
+        dnn_mem_t &mem_fp, res_t *res) {
     const auto nelems = mem_fp.nelems();
     if (nelems == 0) return OK;
 
@@ -220,7 +203,7 @@ int fill_zero_points(
         });
     }
 
-    if (mem_dt) SAFE(mem_dt.reorder(mem_fp), WARN);
+    if (mem_dt) SAFE(mem_dt.reorder(mem_fp, res), WARN);
 
     return OK;
 }
@@ -232,8 +215,6 @@ int fill_random_real_dense(dnn_mem_t &mem, dnn_mem_t &mem_ref, res_t *res,
 
     BENCHDNN_PRINT(6, "%s\n", fill_cfg.print_verbose().c_str());
 
-    // This function doesn't handle the predefined set yet.
-    assert(fill_cfg.predefined_set_.empty());
     // This function doesn't handle density yet.
     assert(fill_cfg.density_ == 1.f);
 
@@ -264,12 +245,26 @@ int fill_random_real_dense(dnn_mem_t &mem, dnn_mem_t &mem_ref, res_t *res,
         std::minstd_rand int_seed(nelems + idx_start + 1);
         int_seed.discard(1);
 
-        std::uniform_real_distribution<> gen_real(
-                fill_cfg.range_min_val_, fill_cfg.range_max_val_);
-        std::uniform_int_distribution<> gen_int(
-                fill_cfg.range_min_val_, fill_cfg.range_max_val_);
+        std::uniform_real_distribution<float> gen_real;
+        if (fill_cfg.predefined_set_.empty()) {
+            // Keep `gen_real` empty for predefined set as unneeded.
+            // Note: Windows also throws an assert as it can't operate on
+            // default range_min and range_max values.
+            gen_real = std::uniform_real_distribution<float>(
+                    fill_cfg.range_min_val_, fill_cfg.range_max_val_);
+        }
+        // For `predefined_set_` use indices for uniform distribution.
+        std::uniform_int_distribution<> gen_int
+                = !fill_cfg.predefined_set_.empty()
+                ? std::uniform_int_distribution<>(0,
+                          static_cast<int>(fill_cfg.predefined_set_.size()) - 1)
+                : std::uniform_int_distribution<>(
+                          fill_cfg.range_min_val_, fill_cfg.range_max_val_);
 
         const auto get_val = [&]() {
+            if (!fill_cfg.predefined_set_.empty()) {
+                return fill_cfg.predefined_set_[gen_int(int_seed)];
+            }
             return fill_cfg.only_integer_
                     ? static_cast<float>(gen_int(int_seed))
                     : gen_real(int_seed);
@@ -329,14 +324,7 @@ int fill_random_real_dense(dnn_mem_t &mem, dnn_mem_t &mem_ref, res_t *res,
                 0, round_to_nearest_representable(round_dt, elem_first_val));
     }
 
-    if (mem) {
-        // TODO: move `res` inside reorder.
-        auto status = mem.reorder(mem_ref);
-        if (status != OK) {
-            if (res) res->state = FAILED;
-            return status;
-        }
-    }
+    if (mem) SAFE(mem.reorder(mem_ref, res), WARN);
 
     return OK;
 }
@@ -471,7 +459,7 @@ std::string execarg2str(int exec_arg) {
         auto it = map.find(i);
         if (it != map.end()) return SPACE + it->second;
         if (!i) return std::string();
-        std::ostringstream oss;
+        ostringstream_t oss;
         oss << std::hex << i;
         return SPACE "0x" + oss.str();
     };
@@ -500,8 +488,9 @@ std::string execarg2str(int exec_arg) {
 
 std::string buffer_prefix;
 
-bool fill_from_file(int exec_arg, dnn_mem_t &mem, dnn_mem_t &ref_mem) {
-    static const char format[] = "File %s %s; buffer not imported.\n";
+bool fill_from_file(
+        int exec_arg, dnn_mem_t &mem, dnn_mem_t &ref_mem, res_t *res) {
+    static const char format[] = "[FILL]: File %s %s; buffer not imported.\n";
     auto prefix = buffer_prefix;
     if (prefix.empty()) return false;
 
@@ -543,7 +532,7 @@ bool fill_from_file(int exec_arg, dnn_mem_t &mem, dnn_mem_t &ref_mem) {
         SAFE_V(FAIL);
         return false;
     }
-    if (ref_mem && (ref_mem.reorder(mem) != OK)) {
+    if (ref_mem && (ref_mem.reorder(mem, res) != OK)) {
         BENCHDNN_PRINT(0, format, prefix.c_str(), "cannot be reordered");
         SAFE_V(FAIL);
         return false;

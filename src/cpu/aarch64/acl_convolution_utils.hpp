@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2020-2025 Arm Ltd. and affiliates
+* Copyright 2020-2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,10 +19,10 @@
 #define CPU_AARCH64_ACL_CONVOLUTION_UTILS_HPP
 
 #include <map>
-#include "acl_post_ops.hpp"
 #include "acl_utils.hpp"
 #include "arm_compute/runtime/experimental/operators/CpuDepthwiseConv2d.h"
 #include "cpu/cpu_convolution_pd.hpp"
+#include "post_ops_fallback.hpp"
 #include <type_traits>
 namespace dnnl {
 namespace impl {
@@ -59,6 +60,9 @@ struct acl_conv_conf_t {
     arm_compute::WeightsInfo weights_info;
     // Note: this will default to not enabled, and will do nothing
     arm_compute::ActivationLayerInfo act_info;
+    // We may sometimes accumulate in a lower precision if the
+    // accumulation_mode, data_type, and kernel availability allow it
+    bool use_fp32_acc = true;
 };
 
 namespace acl_convolution_utils {
@@ -80,7 +84,7 @@ using conv_key_t = decltype(memory_tracking::names::key_gemm_tmp_buffer);
 
 template <typename op_t, typename post_ops_t>
 status_t init_scratchpad(op_t &conv, memory_tracking::registrar_t &scratchpad,
-        const std::map<int, conv_key_t> &conv_keys, engine_t *engine,
+        const std::map<int, conv_key_t> &conv_keys, const engine_t *engine,
         post_ops_t &post_ops, dnnl::impl::post_ops_t &attr_post_ops,
         arm_compute::ActivationLayerInfo &act_info, bool &use_dst_acc_for_sum,
         const dnnl::impl::memory_desc_t &dst_md) {
@@ -95,7 +99,10 @@ status_t init_scratchpad(op_t &conv, memory_tracking::registrar_t &scratchpad,
         }
     }
 
-    CHECK(post_ops.init(engine, attr_post_ops, dst_md, act_info));
+    int post_op_start_index = 0;
+    CHECK(acl_utils::try_fuse_first_acl_post_op(attr_post_ops, dst_md.data_type,
+            post_op_start_index, act_info, post_op_start_index));
+    CHECK(post_ops.init(engine, attr_post_ops, dst_md, post_op_start_index));
     use_dst_acc_for_sum = post_ops.has_sum();
 
     if (use_dst_acc_for_sum) {
@@ -103,6 +110,7 @@ status_t init_scratchpad(op_t &conv, memory_tracking::registrar_t &scratchpad,
         scratchpad.book(memory_tracking::names::key_generic_acc, dst_d.nelems(),
                 dst_d.data_type_size());
     }
+    post_ops.init_scratchpad(scratchpad);
 
     return status::success;
 }
@@ -112,7 +120,8 @@ template <typename conv_obj_t, typename conv_pd_t, typename src_data_t,
         typename bia_data_t = src_data_t>
 status_t execute_forward_conv_acl(const exec_ctx_t &ctx,
         conv_obj_t *acl_conv_obj, const conv_pd_t *pd,
-        const std::map<int, conv_key_t> &conv_keys) {
+        const std::map<int, conv_key_t> &conv_keys,
+        const post_ops_fallback_t &post_ops) {
 
     auto src_base = CTX_IN_MEM(const src_data_t *, DNNL_ARG_SRC);
     auto wei_base = CTX_IN_MEM(const wei_data_t *, DNNL_ARG_WEIGHTS);
@@ -135,7 +144,7 @@ status_t execute_forward_conv_acl(const exec_ctx_t &ctx,
     const auto &scratchpad = ctx.get_scratchpad_grantor();
 
     // If we have an unfused sum post op, put the result in a scratchpad tensor.
-    // Result will be summed to the dst during acl_post_ops.execute
+    // Result will be summed to the dst during post_ops.execute
     auto dst_base = acp.use_dst_acc_for_sum
             ? scratchpad.get<void>(memory_tracking::names::key_generic_acc)
             : CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
@@ -179,7 +188,7 @@ status_t execute_forward_conv_acl(const exec_ctx_t &ctx,
     acl_conv_obj->conv.run(pack);
 
     void *dst = dst_tensor.buffer();
-    pd->post_ops.execute(ctx, dst);
+    CHECK(post_ops.execute(ctx, dst));
 
     return status::success;
 }
@@ -187,8 +196,9 @@ status_t execute_forward_conv_acl(const exec_ctx_t &ctx,
 template <typename conv_obj_t, typename conv_pd_t, typename src_data_t,
         typename wei_data_t = src_data_t, typename dst_data_t = src_data_t,
         typename bia_data_t = src_data_t>
-status_t execute_forward_conv_acl(
-        const exec_ctx_t &ctx, conv_obj_t &acl_conv_obj, const conv_pd_t *pd) {
+status_t execute_forward_conv_acl(const exec_ctx_t &ctx,
+        conv_obj_t &acl_conv_obj, const conv_pd_t *pd,
+        const post_ops_fallback_t &post_ops) {
     bool with_bias = pd->acp_.with_bias;
     bool use_dst_acc_for_sum = pd->acp_.use_dst_acc_for_sum;
 
@@ -205,7 +215,7 @@ status_t execute_forward_conv_acl(
     const auto &scratchpad = ctx.get_scratchpad_grantor();
 
     // If we have an unfused sum post op, put the result in a scratchpad tensor.
-    // Result will be summed to the dst during acl_post_ops.execute
+    // Result will be summed to the dst during post_ops.execute
     auto dst_base = use_dst_acc_for_sum
             ? scratchpad.get<void>(memory_tracking::names::key_generic_acc)
             : CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
@@ -224,11 +234,11 @@ status_t execute_forward_conv_acl(
     if (with_bias) { acl_conv_obj.bia_tensor.allocator()->free(); }
 
     void *dst = acl_conv_obj.dst_tensor.buffer();
-    pd->post_ops.execute(ctx, dst);
+    status_t status = post_ops.execute(ctx, dst);
 
     acl_conv_obj.dst_tensor.allocator()->free();
 
-    return status::success;
+    return status;
 }
 
 } // namespace aarch64

@@ -27,6 +27,8 @@ namespace dnnl_impl {
 
 struct gated_mlp_executable_t : public op_executable_t {
     DECLARE_ARG_INDICES_GETTER;
+    // As we don't have public gated mlp primitive desc, let's use the base.
+    DECLARE_DESC_CLASS_AND_CREATOR(dnnl::primitive_desc_base);
 
     gated_mlp_executable_t(std::shared_ptr<op_t> &op,
             const dnnl::engine &p_engine, pd_cache_t &pd_cache,
@@ -42,15 +44,14 @@ struct gated_mlp_executable_t : public op_executable_t {
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    cl_event execute_ocl(const stream &stream,
+    ocl_event_t execute_ocl(const stream &stream,
             const std::unordered_map<int, memory> &args,
-            const std::vector<cl_event> &deps) const override;
+            const std::vector<ocl_event_t> &deps) const override;
 #endif
 
-    bool is_initialized() const override { return pd_ && prim_; }
+    bool is_initialized() const override { return bool(prim_); }
 
 private:
-    std::unique_ptr<dnnl_primitive_desc, pd_deleter_t> pd_;
     std::unique_ptr<dnnl_primitive, prim_deleter_t> prim_;
 };
 

@@ -41,23 +41,22 @@ private:
     std::shared_ptr<kernel_base_t> kernel;
 
 public:
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *g_engine,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *eng,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override {
-        const engine_kind_t ekind = g_engine->kind();
+        const engine_kind_t ekind = eng->kind();
         const bool enable_decomp
                 = ekind == engine_kind::cpu && enable_decomp_kernel();
         status_t mqa_decomp_status = status::success;
         if (enable_decomp) {
             kernel = std::make_shared<mqa_decomp_kernel_t<quantized, dt>>();
             mqa_decomp_status
-                    = kernel->compile_impl(part, g_engine, inputs, outputs);
+                    = kernel->compile_impl(part, eng, inputs, outputs);
         }
 
         if (!enable_decomp || mqa_decomp_status != status::success) {
             kernel = std::make_shared<larger_partition_kernel_t>();
-            return kernel->compile_impl(part, g_engine, inputs, outputs);
+            return kernel->compile_impl(part, eng, inputs, outputs);
         }
         return mqa_decomp_status;
     }
@@ -77,33 +76,39 @@ public:
 #endif
     }
 
-    status_t execute_impl(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs) override {
-        return kernel->execute_impl(g_stream, inputs, outputs);
+    status_t execute_impl(stream_t *strm, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf) override {
+        return kernel->execute_impl(strm, inputs, outputs, scratchpad_buf);
     }
 
 #ifdef DNNL_WITH_SYCL
-    status_t sycl_execute_impl(const stream_t *g_stream,
+    status_t sycl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) override {
         return kernel->sycl_execute_impl(
-                g_stream, inputs, outputs, sycl_deps, sycl_event);
+                strm, inputs, outputs, scratchpad_buf, sycl_deps, sycl_event);
     }
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    status_t ocl_execute_impl(const stream_t *g_stream,
+    status_t ocl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &deps, cl_event *event) override {
-        return kernel->ocl_execute_impl(g_stream, inputs, outputs, deps, event);
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &deps, ocl_event_t &event) override {
+        return kernel->ocl_execute_impl(
+                strm, inputs, outputs, scratchpad_buf, deps, event);
     }
 #endif
 
     std::string str() const override { return kernel->str(); }
+    size_t get_scratchpad_size() const override {
+        return kernel->get_scratchpad_size();
+    }
 };
 } // namespace dnnl_impl
 } // namespace graph
