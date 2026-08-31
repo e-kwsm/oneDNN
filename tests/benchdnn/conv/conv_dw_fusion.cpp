@@ -33,9 +33,9 @@
 namespace conv_dw_fusion {
 
 int fill_scales(int exec_arg, const attr_t &attr, int arg, dnn_mem_t &mem_dt,
-        dnn_mem_t &mem_fp) {
-    if (fill_from_file(exec_arg, mem_dt, mem_fp)) return OK;
-    return fill_scales(attr, arg, mem_dt, mem_fp);
+        dnn_mem_t &mem_fp, res_t *res) {
+    if (fill_from_file(exec_arg, mem_dt, mem_fp, res)) return OK;
+    return fill_scales(attr, arg, mem_dt, mem_fp, res);
 }
 
 std::unique_ptr<prb_t> get_first_conv_prb(const prb_t *prb) {
@@ -147,6 +147,8 @@ std::unique_ptr<prb_t> get_fused_conv_prb(const prb_t *prb) {
 int init_ref_memory_args(dnn_mem_map_t &mem_map0, dnn_mem_map_t &mem_map1,
         dnn_mem_map_t &mem_map, dnnl_primitive_t prim0, const prb_t *prb0,
         const prb_t *prb1, const prb_t *prb, res_t *res, dir_t dir) {
+    if (has_bench_mode_modifier(mode_modifier_t::no_ref_memory)) return OK;
+
     const auto &ref_engine = get_cpu_engine();
 
     const int dw_idx = prb->attr.post_ops.convolution_index();
@@ -168,31 +170,33 @@ int init_ref_memory_args(dnn_mem_map_t &mem_map0, dnn_mem_map_t &mem_map1,
                 SAFE(fill_data(SRC, exec_arg, prb0, cfg, mem, ref_mem, res),
                         WARN);
                 if (has_bench_mode_bit(mode_bit_t::corr))
-                    SAFE(mem_map0.at(exec_arg).reorder(ref_mem), WARN);
+                    SAFE(mem_map0.at(exec_arg).reorder(ref_mem, res), WARN);
                 break;
             case DNNL_ARG_WEIGHTS:
                 SAFE(fill_data(WEI, exec_arg, prb0, cfg, mem, ref_mem, res),
                         WARN);
                 if (has_bench_mode_bit(mode_bit_t::corr))
-                    SAFE(mem_map0.at(exec_arg).reorder(ref_mem), WARN);
+                    SAFE(mem_map0.at(exec_arg).reorder(ref_mem, res), WARN);
                 break;
             case DNNL_ARG_BIAS:
                 SAFE(fill_data(BIA, exec_arg, prb0, cfg, mem, ref_mem, res),
                         WARN);
                 if (has_bench_mode_bit(mode_bit_t::corr))
-                    SAFE(mem_map0.at(exec_arg).reorder(ref_mem), WARN);
+                    SAFE(mem_map0.at(exec_arg).reorder(ref_mem, res), WARN);
                 break;
             case (DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS):
                 SAFE(fill_data(WEI, exec_arg, prb1, cfg, mem, ref_mem, res),
                         WARN);
                 if (has_bench_mode_bit(mode_bit_t::corr))
-                    SAFE(mem_map1.at(DNNL_ARG_WEIGHTS).reorder(ref_mem), WARN);
+                    SAFE(mem_map1.at(DNNL_ARG_WEIGHTS).reorder(ref_mem, res),
+                            WARN);
                 break;
             case (DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS):
                 SAFE(fill_data(BIA, exec_arg, prb1, cfg, mem, ref_mem, res),
                         WARN);
                 if (has_bench_mode_bit(mode_bit_t::corr))
-                    SAFE(mem_map1.at(DNNL_ARG_BIAS).reorder(ref_mem), WARN);
+                    SAFE(mem_map1.at(DNNL_ARG_BIAS).reorder(ref_mem, res),
+                            WARN);
                 break;
             default: { // Process all attributes here
                 int pre_dw_post_ops_range
@@ -214,18 +218,18 @@ int init_ref_memory_args(dnn_mem_map_t &mem_map0, dnn_mem_map_t &mem_map1,
                             /* int = */ true, attr_t::post_ops_t::kind_t::ADD,
                             "binary post-op");
                     if (exec_arg & DNNL_ARG_SRC_1) {
-                        if (!fill_from_file(exec_arg, mem, ref_mem))
+                        if (!fill_from_file(exec_arg, mem, ref_mem, res))
                             SAFE(fill_random_real(
                                          mem, ref_mem, res, binary_fill_cfg),
                                     WARN);
-                        SAFE(mem_map0.at(exec_arg).reorder(ref_mem), WARN);
+                        SAFE(mem_map0.at(exec_arg).reorder(ref_mem, res), WARN);
                     }
                 } else if (is_pre_dw_scales_arg && !is_post_dw_scales_arg) {
                     int local_exec_arg = exec_arg ^ DNNL_ARG_ATTR_SCALES;
                     SAFE(fill_scales(exec_arg, prb0->attr, local_exec_arg, mem,
-                                 ref_mem),
+                                 ref_mem, res),
                             WARN);
-                    SAFE(mem_map0.at(exec_arg).reorder(mem), WARN);
+                    SAFE(mem_map0.at(exec_arg).reorder(mem, res), WARN);
                 }
             } break;
         }
@@ -249,7 +253,7 @@ int init_ref_memory_args(dnn_mem_map_t &mem_map0, dnn_mem_map_t &mem_map1,
             // Binary post-op filling config.
             fill_cfg_t binary_fill_cfg(mem.dt(), -16.f, 16.f, /* int = */ true,
                     attr_t::post_ops_t::kind_t::ADD, "binary post-op");
-            if (!fill_from_file(orig_idx, mem, ref_mem))
+            if (!fill_from_file(orig_idx, mem, ref_mem, res))
                 SAFE(fill_random_real(mem, ref_mem, res, binary_fill_cfg),
                         WARN);
         }
@@ -273,7 +277,8 @@ int init_ref_memory_args(dnn_mem_map_t &mem_map0, dnn_mem_map_t &mem_map1,
         mem_map[dw_wei_scale_arg] = dnn_mem_t(
                 wei_scale_md, get_test_engine(), /* prefill = */ true);
         SAFE(fill_scales(dw_wei_scale_arg, prb1->attr, DNNL_ARG_WEIGHTS,
-                     mem_map.at(dw_wei_scale_arg), mem_map1.at(wei_scale_arg)),
+                     mem_map.at(dw_wei_scale_arg), mem_map1.at(wei_scale_arg),
+                     res),
                 WARN);
     }
     if (!prb1->attr.scales.get(DNNL_ARG_DST).is_def()) {
@@ -284,7 +289,8 @@ int init_ref_memory_args(dnn_mem_map_t &mem_map0, dnn_mem_map_t &mem_map1,
         mem_map[dw_dst_scale_arg] = dnn_mem_t(
                 dst_scale_md, get_test_engine(), /* prefill = */ true);
         SAFE(fill_scales(dw_dst_scale_arg, prb1->attr, DNNL_ARG_DST,
-                     mem_map.at(dw_dst_scale_arg), mem_map1.at(dst_scale_arg)),
+                     mem_map.at(dw_dst_scale_arg), mem_map1.at(dst_scale_arg),
+                     res),
                 WARN);
     }
 
@@ -298,7 +304,8 @@ int init_ref_memory_args(dnn_mem_map_t &mem_map0, dnn_mem_map_t &mem_map1,
 }
 
 int createit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
     v_prim.resize(3); // fused + 2 unfused
 
     SAFE(init_prim(prb->ctx_init, v_prim[0], conv::init_pd, prb, res), WARN);
@@ -325,41 +332,40 @@ int createit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
 }
 
 int checkit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
-    SAFE(check_caches(v_prim[0], prb, res), WARN);
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
+    SAFE(check_caches(v_prim[0], prb->ctx_init, res), WARN);
 
-    SAFE(check_caches(v_prim[1], prb, res), WARN);
+    SAFE(check_caches(v_prim[1], prb->ctx_init, res), WARN);
 
-    SAFE(check_caches(v_prim[2], prb, res), WARN);
+    SAFE(check_caches(v_prim[2], prb->ctx_init, res), WARN);
 
     return OK;
 }
 
 int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res) {
+        const base_prb_t *base_prb, res_t *res) {
+    const prb_t *prb = prb_t::from(base_prb);
     const auto &prim = v_prim[0];
     const auto &prim0 = v_prim[1];
     const auto &prim1 = v_prim[2];
 
     dnn_mem_map_t mem_map;
-    init_memory_args<prb_t>(
-            mem_map, prb, prim, conv::supported_exec_args(prb->dir));
+    init_memory_args(mem_map, prb, prim, res);
 
     // Fill first convolution
     std::unique_ptr<prb_t> prb0 = get_first_conv_prb(prb);
     if (!prb0) SAFE(FAIL, WARN);
 
     dnn_mem_map_t mem_map0;
-    init_memory_args<prb_t>(
-            mem_map0, prb0.get(), prim0, conv::supported_exec_args(prb->dir));
+    init_memory_args(mem_map0, prb0.get(), prim0, res);
 
     // Fill next convolution
     std::unique_ptr<prb_t> prb1 = get_fused_conv_prb(prb);
     if (!prb1) SAFE(FAIL, WARN);
 
     dnn_mem_map_t mem_map1;
-    init_memory_args<prb_t>(
-            mem_map1, prb1.get(), prim1, conv::supported_exec_args(prb->dir));
+    init_memory_args(mem_map1, prb1.get(), prim1, res);
 
     TIME_FILL(SAFE(init_ref_memory_args(mem_map0, mem_map1, mem_map, prim0,
                            prb0.get(), prb1.get(), prb, res, prb->dir),
@@ -372,7 +378,8 @@ int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
 
         if (has_bench_mode_bit(mode_bit_t::corr)) {
             SAFE(execute_and_wait(prim0, args0), WARN);
-            SAFE(mem_map1.at(DNNL_ARG_SRC).reorder(mem_map0.at(DNNL_ARG_DST)),
+            SAFE(mem_map1.at(DNNL_ARG_SRC)
+                            .reorder(mem_map0.at(DNNL_ARG_DST), res),
                     WARN);
             SAFE(execute_and_wait(prim1, args1), WARN);
 

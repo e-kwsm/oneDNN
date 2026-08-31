@@ -342,6 +342,12 @@ custom_kernel_t select_kernel(const conf_t &conf,
         return custom_kernel_t::none;
     }
 
+    // This kernel fails to compile with f8 data types
+    if (utils::one_of(src_mdw.data_type(), dnnl_f8_e4m3, dnnl_f8_e5m2)
+            || utils::one_of(dst_mdw.data_type(), dnnl_f8_e4m3, dnnl_f8_e5m2)) {
+        return custom_kernel_t::none;
+    }
+
     int mask = conf.src_quant.scale_mask() | conf.src_quant.zp_mask()
             | conf.dst_quant.scale_mask() | conf.dst_quant.zp_mask();
 
@@ -506,7 +512,7 @@ void custom_t::pd_t::alt_gen() {
     conf.dispatch.generate_override(gws, lws);
 }
 
-status_t custom_t::pd_t::init_conf(impl::engine_t *engine) {
+status_t custom_t::pd_t::init_conf(const impl::engine_t *engine) {
     using namespace format_tag;
 
     const memory_desc_wrapper src_mdw(src_md());
@@ -533,7 +539,7 @@ status_t custom_t::pd_t::init_conf(impl::engine_t *engine) {
     dim_idx_t last = conf.ndims - 1;
     size_t last_dim = padded_dims[last];
 
-    auto *intel_engine = utils::downcast<intel::engine_t *>(engine);
+    const auto *intel_engine = utils::downcast<const intel::engine_t *>(engine);
 
     conf.implementation = select_kernel(
             conf, src_mdw, dst_mdw, intel_engine->device_info());

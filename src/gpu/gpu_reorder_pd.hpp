@@ -30,8 +30,8 @@ struct gpu_reorder_pd_t : public reorder_pd_t {
 protected:
     bool attr_ok() const {
         using sm = dnnl_primitive_attr::skip_mask_t;
-        return attr()->has_default_values(
-                       sm::zero_points | sm::scales | sm::post_ops)
+        return attr()->has_default_values(sm::zero_points | sm::scales
+                       | sm::post_ops | sm::gpu_attr)
                 && post_ops_ok() && zero_points_ok();
     }
 
@@ -75,7 +75,8 @@ protected:
                 && check_md_extra_flags_compensation_gpu(dst_md()->extra.flags);
     }
 
-    status_t maybe_create_zp_precompute_conv_pd(impl::engine_t *dst_engine);
+    status_t maybe_create_zp_precompute_conv_pd(
+            const impl::engine_t *dst_engine);
 
 public:
     status_t maybe_create_zp_precompute_conv(
@@ -96,9 +97,11 @@ private:
 
 #define DECLARE_GPU_REORDER_CREATE() \
     static status_t create(reorder_pd_t **reorder_pd, \
-            dnnl::impl::engine_t *engine, const primitive_attr_t *attr, \
-            dnnl::impl::engine_t *src_engine, const memory_desc_t *src_md, \
-            dnnl::impl::engine_t *dst_engine, const memory_desc_t *dst_md) { \
+            const dnnl::impl::engine_t *engine, const primitive_attr_t *attr, \
+            const dnnl::impl::engine_t *src_engine, \
+            const memory_desc_t *src_md, \
+            const dnnl::impl::engine_t *dst_engine, \
+            const memory_desc_t *dst_md) { \
         auto _pd = make_unique_pd<pd_t>( \
                 attr, src_engine->kind(), src_md, dst_engine->kind(), dst_md); \
         if (_pd == nullptr) return status::out_of_memory; \

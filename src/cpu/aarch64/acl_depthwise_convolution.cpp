@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2023-2024 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -36,10 +37,10 @@ const std::map<int, conv_key_t> depthwise_conv_keys
 status_t acl_depthwise_convolution_fwd_t::execute_forward(
         const exec_ctx_t &ctx) const {
     return execute_forward_conv_acl<acl_obj_t<Op>, pd_t, data_t>(
-            ctx, acl_obj_.get(), pd(), depthwise_conv_keys);
+            ctx, acl_obj_.get(), pd(), depthwise_conv_keys, post_ops_);
 }
 
-status_t acl_depthwise_convolution_fwd_t::pd_t::init(engine_t *engine) {
+status_t acl_depthwise_convolution_fwd_t::pd_t::init(const engine_t *engine) {
     using namespace data_type;
 
     const bool is_fp16_ok = expect_data_types(f16, f16, f16, f16, undef)
@@ -86,6 +87,8 @@ status_t acl_depthwise_convolution_fwd_t::init(engine_t *engine) {
             1, // depth multiplier default value
             acp_.act_info, acp_.dilation_info);
     acl_obj_->aux_mem_req = acl_obj_->conv.workspace();
+    post_ops_ = pd()->post_ops;
+    CHECK(post_ops_.init_primitives(engine));
     return status::success;
 }
 } // namespace aarch64

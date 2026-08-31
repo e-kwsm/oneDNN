@@ -17,10 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <sstream>
-
 #include "dnnl_common.hpp"
 #include "utils/parser.hpp"
+#include "utils/stringstream.hpp"
 #include "utils/task_executor.hpp"
 
 #include "eltwise/eltwise.hpp"
@@ -42,9 +41,10 @@ void check_correctness(
     for_(const auto &i_ctx_init : s.ctx_init)
     for_(const auto &i_ctx_exe : s.ctx_exe)
     for (auto i_inplace : s.inplace) {
-        const prb_t prb(s.prb_dims, i_dir, i_dt, i_tag, i_alg, i_alpha, i_beta,
-                i_mb, i_inplace, i_attr, i_ctx_init, i_ctx_exe, s.impl_filter);
-        if (s.pattern && !match_regex(prb.str(), s.pattern)) return;
+        auto prb = std::make_shared<prb_t>(s.prb_dims, i_dir, i_dt, i_tag,
+                i_alg, i_alpha, i_beta, i_mb, i_inplace, i_attr, i_ctx_init,
+                i_ctx_exe, s.impl_filter);
+        if (s.pattern && !match_regex(prb->str(), s.pattern)) return;
 
         task_executor.submit(prb, s.perf_template, createit, checkit, doit);
     }
@@ -54,7 +54,7 @@ int verify_input(const settings_t &s) {
     for (const auto &i_alg : s.alg) {
         bool ok = i_alg > alg_t::ELTWISE_START && i_alg < alg_t::ELTWISE_END;
         if (!ok) {
-            dnnl::impl::stringstream_t ss;
+            stringstream_t ss;
             ss << i_alg;
             BENCHDNN_PRINT(0, "%s%s%s\n", "ERROR: unknown algorithm `",
                     ss.str().c_str(), "`.");

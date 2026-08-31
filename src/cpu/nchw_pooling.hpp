@@ -41,7 +41,7 @@ struct nchw_pooling_fwd_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("simple_nchw:any", nchw_pooling_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             const format_tag_t desired_fmt_tag = utils::pick(ndims() - 3,
                     format_tag::ncw, format_tag::nchw, format_tag::ncdhw);
 
@@ -134,7 +134,7 @@ struct nchw_pooling_bwd_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("simple_nchw:any", nchw_pooling_bwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             const format_tag_t desired_fmt_tag = utils::pick(ndims() - 3,
                     format_tag::ncw, format_tag::nchw, format_tag::ncdhw);
 
@@ -183,7 +183,7 @@ struct nchw_pooling_bwd_t : public primitive_t {
 
         dim_t channel_block_size_ {1};
         int nthr_; // To not exceed the limit in execute used for set up.
-        int nbuf_ {0};
+        dim_t nbuf_ {0};
 
     private:
         void init_scratchpad() {

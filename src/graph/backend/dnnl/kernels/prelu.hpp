@@ -42,8 +42,6 @@ namespace dnnl_impl {
 template <bool quantized>
 struct prelu_fwd_t : public kernel_base_t {
 private:
-    allocator_t *g_alloc_ = nullptr;
-
     std::shared_ptr<subgraph_t> subgraph_;
     memory_planner_t memory_planner_;
 
@@ -61,8 +59,7 @@ public:
         res_cache.release();
     }
 
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *g_engine,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *eng,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override;
 
@@ -71,26 +68,30 @@ public:
             const std::vector<tensor_t> &outputs,
             const scratchpad_t &scratchpad);
 
-    status_t execute_impl(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs) override;
+    status_t execute_impl(stream_t *strm, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf) override;
 
 #ifdef DNNL_WITH_SYCL
-    status_t sycl_execute_impl(const stream_t *g_stream,
+    status_t sycl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) override;
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    status_t ocl_execute_impl(const stream_t *g_stream,
+    status_t ocl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &cl_deps, cl_event *ret_event) override;
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &cl_deps,
+            ocl_event_t &ret_event) override;
 #endif
 
     DEF_KERNEL_METHOD_STR(prelu_fwd_t)
+    DEF_KERNEL_METHOD_SCRATCHPAD_SIZE()
     DNNL_DISALLOW_COPY_AND_ASSIGN(prelu_fwd_t)
 };
 
@@ -99,8 +100,6 @@ using float_prelu_fwd = prelu_fwd_t</* quantized */ false>;
 #if BUILD_TRAINING
 struct prelu_bwd_t : public kernel_base_t {
 private:
-    allocator_t *g_alloc_ = nullptr;
-
     std::shared_ptr<subgraph_t> subgraph_;
     memory_planner_t memory_planner_;
 
@@ -118,8 +117,7 @@ public:
         res_cache.release();
     }
 
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *g_engine,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *eng,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override;
 
@@ -128,26 +126,30 @@ public:
             const std::vector<tensor_t> &outputs,
             const scratchpad_t &scratchpad);
 
-    status_t execute_impl(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs) override;
+    status_t execute_impl(stream_t *strm, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf) override;
 
 #ifdef DNNL_WITH_SYCL
-    status_t sycl_execute_impl(const stream_t *g_stream,
+    status_t sycl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) override;
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    status_t ocl_execute_impl(const stream_t *g_stream,
+    status_t ocl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &cl_deps, cl_event *ret_event) override;
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &cl_deps,
+            ocl_event_t &ret_event) override;
 #endif
 
     DEF_KERNEL_METHOD_STR(prelu_bwd_t)
+    DEF_KERNEL_METHOD_SCRATCHPAD_SIZE()
     DNNL_DISALLOW_COPY_AND_ASSIGN(prelu_bwd_t)
 };
 #endif

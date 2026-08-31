@@ -83,7 +83,7 @@ public:
             post_add_strides;
 
     // Thread nums during the workflow
-    int nthr;
+    int nthr = 0;
 
     // Used to record the exact input offset in subgraph
     // [mm1_src,mm1_wei,mm2_wei,mm1_scale,mm1_soft_capping,mm1_add,select_condition,select_other_input]
@@ -142,8 +142,7 @@ public:
     // select's 1st input connected to previous matmul.
     bool select_fusiable = false;
 
-private:
-    // Used to record the ops contained in SDP
+private: // Used to record the ops contained in SDP
     // sdp_op = [reorder1, mm1, softmax, reorder2, mm2, binary_select]
     // reorder1 is using mm1 weight u8->s8
     // reorder2 is using mm2 weight u8->s8

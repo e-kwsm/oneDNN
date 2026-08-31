@@ -20,6 +20,8 @@
 #include <type_traits>
 
 #include "common/c_types_map.hpp"
+#include "gpu/intel/compute/device_info.hpp"
+#include "gpu/intel/utils.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -232,7 +234,7 @@ static std::vector<fwd_config_record_t> sorted_configs = []() {
 
         {{compute::gpu_arch_t::xe_hpg, 64},               {32, 16, 16, 16, 4, 8, 4, 8}},
         {{compute::gpu_arch_t::xe_hpg, 64, 128},          {16, 16, 16, 16, 4, 8, 4, 8}},
-        {{compute::gpu_arch_t::xe_hpg, 64, 64},           {32, 16, 16, 8, 8, 4, 4, 8}},
+        {{compute::gpu_arch_t::xe_hpg, 64, 64},           {16, 16, 8, 8, 16, 4, 8, 8}},
         {{compute::gpu_arch_t::xe_hpg, 64, second_token}, {8, 16, 16, 8, 8, 1, 4, 2}},
 
         {{compute::gpu_arch_t::xe_hpg, 64, fma},                {16, 16, 16, 16, 8, 2, 8, 2}},
@@ -262,7 +264,7 @@ static std::vector<fwd_config_record_t> sorted_configs = []() {
         {{compute::gpu_arch_t::xe_hpg, 128, second_token},      {8, 16, 16, 8, 16, 1, 8, 2}},
 
         {{compute::gpu_arch_t::xe_hpg, 128,      quantized}, {8, 32, 16, 32, 8, 2, 8, 2}},
-        {{compute::gpu_arch_t::xe_hpg, 128, 32,  quantized}, {8, 32, 16, 32, 8, 2, 8, 2}},
+        {{compute::gpu_arch_t::xe_hpg, 128, 32,  quantized}, {16, 8, 16, 8, 8, 4, 8, 4}},
         {{compute::gpu_arch_t::xe_hpg, 128, 64,  quantized}, {8, 8, 16, 8, 8, 4, 8, 4}},
         {{compute::gpu_arch_t::xe_hpg, 128, 512, quantized}, {16, 16, 16, 16, 8, 4, 8, 4}},
         {{compute::gpu_arch_t::xe_hpg, 128, 96,  quantized | second_token}, {8, 8, 8, 8, 16, 2, 16, 2}},
@@ -286,7 +288,7 @@ static std::vector<fwd_config_record_t> sorted_configs = []() {
         {{compute::gpu_arch_t::xe_hpg, 256, 512, quantized}, {16, 16, 32, 16, 8, 4, 8, 4}},
         {{compute::gpu_arch_t::xe_hpg, 256, 64,  quantized}, {8, 8, 32, 8, 8, 4, 8, 4}},
 
-        {{compute::gpu_arch_t::xe_hpg, 256,     second_token}, {8, 8, 16, 8, 16, 1, 16, 1}},
+        {{compute::gpu_arch_t::xe_hpg, 256,     second_token}, {16, 8, 16, 8, 16, 1, 16, 1}},
         {{compute::gpu_arch_t::xe_hpg, 256, 64, second_token}, {16, 8, 16, 8, 16, 1, 16, 1}},
         {{compute::gpu_arch_t::xe_hpg, 256, 32, second_token}, {16, 16, 32, 8, 16, 1, 8, 2}},
 
@@ -438,7 +440,7 @@ static std::vector<fwd_config_record_t> sorted_configs = []() {
         {{compute::gpu_arch_t::xe2, 64},                   {16, 64, 32, 16, 8, 2, 2, 8}},
         {{compute::gpu_arch_t::xe2, 64, 64},               {32, 32, 32, 16, 4, 2, 2, 4}},
         {{compute::gpu_arch_t::xe2, 64, 32},               {16, 16, 16, 16, 4, 2, 4, 2}},
-        {{compute::gpu_arch_t::xe2, 64,     second_token}, {32, 32, 32, 16, 4, 2, 2, 2}},
+        {{compute::gpu_arch_t::xe2, 64,     second_token}, {64, 16, 16, 16, 8, 1, 4, 1}},
         {{compute::gpu_arch_t::xe2, 64, 64, second_token}, {16, 16, 16, 16, 4, 2, 4, 2}},
 
         {{compute::gpu_arch_t::xe2, 64,       quantized}, {16, 64, 16, 32, 16, 1, 8, 2}},
@@ -604,6 +606,25 @@ static std::vector<fwd_config_record_t> sorted_configs = []() {
         {{compute::gpu_arch_t::xe2, 128, fma | second_token | integrated }, { 16, 16, 32, 16, 16, 1, 16, 1 }},
         {{compute::gpu_arch_t::xe2, 128, f32 | fma | second_token | integrated }, { 16, 16, 32, 16, 4, 2, 4, 2 }},
         {{compute::gpu_arch_t::xe2, 256, fma | second_token | integrated }, { 16, 16, 32, 16, 8, 2, 8, 2 }},
+
+        {{compute::gpu_arch_t::xe3p,  32, fma },                            { 16, 16, 16, 16,  2, 2,  2, 2}},
+        {{compute::gpu_arch_t::xe3p,  64, fma | second_token },             { 16, 16, 16, 16,  8, 4,  8, 4}},
+        {{compute::gpu_arch_t::xe3p,  32, fma | second_token | quantized }, { 16, 16, 16, 16,  2, 2,  2, 2}},
+        {{compute::gpu_arch_t::xe3p,  64, fma | second_token | quantized }, { 16, 16, 16, 16,  8, 4,  8, 4}},
+        {{compute::gpu_arch_t::xe3p, 128 },                         {32, 32, 32, 32, 4, 4, 4, 4}},
+        {{compute::gpu_arch_t::xe3p, 128, second_token },           {32, 32, 32, 32, 4, 1, 4, 1}},
+        {{compute::gpu_arch_t::xe3p, 128, quantized},               {32, 32, 32, 32, 4, 4, 4, 4}},
+        {{compute::gpu_arch_t::xe3p, 128, second_token | quantized },           {32, 32, 32, 32, 4, 1, 4, 1}},
+
+        {{compute::gpu_arch_t::xe3p, 256, second_token },           {32, 32, 32, 32, 8, 1, 8, 1}},
+        {{compute::gpu_arch_t::xe3p, 256, quantized},               {32, 32, 32, 32, 8, 2, 8, 2}},
+        {{compute::gpu_arch_t::xe3p, 256, second_token | quantized },           {32, 32, 32, 32, 8, 1, 8, 1}},
+
+        {{compute::gpu_arch_t::xe3p, 512},                                        {32, 16, 32, 16, 16, 2, 16, 2}},
+        {{compute::gpu_arch_t::xe3p, 512, second_token },                         {32, 16, 32, 16, 16, 1, 16, 1}},
+        {{compute::gpu_arch_t::xe3p, 512, second_token | quantized },             {32, 16, 32, 16, 16, 1, 16, 1}},
+        {{compute::gpu_arch_t::xe3p, 512, fma | quantized },                      {16, 16, 32, 16, 16, 1, 16, 1}},
+        {{compute::gpu_arch_t::xe3p, 512, fma | f32 | second_token | quantized }, {16, 16, 32, 16, 16, 1, 16, 1}},
     };
     // clang-format on
 
@@ -640,25 +661,59 @@ fwd_config_t *choose_config(compute::gpu_arch_t arch, dim_t head_size,
             && head_size > 256)
         return nullptr;
 
-    compute::gpu_arch_t arch_query = (arch >= compute::gpu_arch_t::xe3)
+    compute::gpu_arch_t arch_query = (arch == compute::gpu_arch_t::xe3)
             ? compute::gpu_arch_t::xe2
             : arch;
 
     // TODO: remove this when Xe3 configs are added. Currently the Xe2
     // non-integrated configs perform better than integrated Xe2 configs.
     if (arch == compute::gpu_arch_t::xe3) { is_integrated = false; }
+    auto arch_str = std::string(to_string(arch));
+    std::string s = gpu_utils::dev_getenv("SDPA_SELECT_CONFIG_HW", arch_str);
+    if (!s.empty()) {
+        compute::gpu_arch_t forced_arch = compute::str2gpu_arch(s.c_str());
+        if (forced_arch == compute::gpu_arch_t::unknown) {
+            VDEBUGINFO(0, primitive, sdpa,
+                    "Invalid SDPA_SELECT_CONFIG_HW value '%s', expected one of "
+                    "'xe2', 'xe3', 'xe3p', 'xe_hpc' or 'xe_hpg'.",
+                    s.c_str());
+        }
+        if (forced_arch != arch_query) {
+            VDEBUGINFO(4, primitive, sdpa,
+                    "Overriding architecture for config selection: %s -> %s.",
+                    to_string(arch_query), to_string(forced_arch));
+            arch_query = forced_arch;
+        }
+    }
 
-    property query_properties = set_properties(is_thin_q, is_quantized,
-            is_integrated, is_fma, is_f32, is_f16_accumulate);
-    config_query_t query(arch_query, static_cast<int>(head_size),
-            static_cast<int>(seq), query_properties);
-    auto it = find(begin(sorted_configs), end(sorted_configs), query);
-    if (it != end(sorted_configs)) {
-        VDEBUGINFO(4, primitive, sdpa,
-                "config search: {query %s} -> {%s config:%s},",
-                to_string(query).c_str(), to_string(it->criteria).c_str(),
-                to_string(it->config).c_str());
-        return &it->config;
+    bool fallback = true;
+    while (fallback) {
+        property query_properties = set_properties(is_thin_q, is_quantized,
+                is_integrated, is_fma, is_f32, is_f16_accumulate);
+        config_query_t query(arch_query, static_cast<int>(head_size),
+                static_cast<int>(seq), query_properties);
+        auto it = find(begin(sorted_configs), end(sorted_configs), query);
+        if (it != end(sorted_configs)) {
+            VDEBUGINFO(4, primitive, sdpa,
+                    "config search: {query %s} -> {%s config:%s},",
+                    to_string(query).c_str(), to_string(it->criteria).c_str(),
+                    to_string(it->config).c_str());
+            return &it->config;
+        } else {
+            VDEBUGINFO(4, primitive, sdpa, "config search failed: {query %s},",
+                    to_string(query).c_str());
+        }
+        switch (arch_query) {
+            case compute::gpu_arch_t::xe3p:
+                arch_query = compute::gpu_arch_t::xe3;
+                break;
+            case compute::gpu_arch_t::xe3:
+                arch_query = compute::gpu_arch_t::xe2;
+                break;
+            case compute::gpu_arch_t::xe2: fallback = false; break;
+            case compute::gpu_arch_t::xe_hpc: fallback = false; break;
+            default: fallback = false; break;
+        }
     }
     return nullptr;
 }
@@ -696,41 +751,46 @@ static std::vector<bwd_config_record_t> sorted_bwd_configs = []() {
     // clang-format off
     std::vector<bwd_config_record_t> configs = {
         // xe_hpc
-        {{compute::gpu_arch_t::xe_hpc, 32},  { 16, 16, 16, 16, 16, 16, 2, 16, 2, 2, 2, 16 }},
-        {{compute::gpu_arch_t::xe_hpc, 32, 128},  { 16, 16, 16, 16, 16, 16, 2, 4, 2, 2, 2, 4 }},
+        {{compute::gpu_arch_t::xe_hpc, 32},      { 16, 16, 16, 16, 16, 16, 2, 2, 2, 2, 2, 2 }},
+        {{compute::gpu_arch_t::xe_hpc, 32, 128}, { 16, 16, 16, 16, 16, 16, 2, 8, 2, 2, 2, 8 }},
+        {{compute::gpu_arch_t::xe_hpc, 32, 256}, { 16, 16, 16, 16, 16, 16, 2, 8, 2, 2, 2, 8 }},
 
-        {{compute::gpu_arch_t::xe_hpc, 64},  { 16, 32, 16, 16, 32, 32, 2, 16, 4, 2, 2, 16 }},
-        {{compute::gpu_arch_t::xe_hpc, 64, 64},   { 16, 16, 16, 16, 16, 32, 2, 4, 4, 2, 4, 2 }},
-        {{compute::gpu_arch_t::xe_hpc, 64, 77},   { 16, 16, 16, 16, 32, 32, 1, 8, 4, 1, 2, 4 }},
-        {{compute::gpu_arch_t::xe_hpc, 64, 128},  { 16, 16, 16, 16, 16, 16, 4, 4, 4, 4, 4, 4 }},
+        {{compute::gpu_arch_t::xe_hpc, 64},      { 16, 16, 16, 16, 16, 16, 4, 4, 4, 4, 4, 4 }},
+        {{compute::gpu_arch_t::xe_hpc, 64, 49},  { 16, 16, 16, 16, 16, 16, 4, 4, 4, 4, 4, 4 }},
+        {{compute::gpu_arch_t::xe_hpc, 64, 256}, { 16, 16, 16, 16, 16, 16, 4, 4, 4, 4, 4, 4 }},
 
-        {{compute::gpu_arch_t::xe_hpc, 128}, { 16, 16, 16, 16, 32, 32, 2, 8, 8, 2, 4, 4 }},
-        //{{compute::gpu_arch_t::xe_hpc, 256}, {  16, 32, 16, 16, 32, 32, 4, 8, 8, 4, 4, 8 }},
+        {{compute::gpu_arch_t::xe_hpc, 88},      { 16, 16, 16, 16, 16, 32, 4, 8, 8, 4, 8, 4 }},
+
+        {{compute::gpu_arch_t::xe_hpc, 128},      { 16, 16, 16, 16, 16, 32, 4, 8, 8, 4, 8, 4 }},
+        {{compute::gpu_arch_t::xe_hpc, 128, 256}, { 16, 16, 16, 32, 32, 32, 2, 4, 8, 1, 4, 2 }},
+        {{compute::gpu_arch_t::xe_hpc, 128, 320}, { 16, 16, 32, 16, 32, 16, 4, 4, 4, 4, 4, 4 }},
 
         {{compute::gpu_arch_t::xe_hpc, 32, second_token},  { 16, 16, 16, 16, 32, 16, 1, 2, 2, 1, 1, 2 }},
         {{compute::gpu_arch_t::xe_hpc, 64, second_token},  { 32, 16, 16, 32, 32, 32, 1, 4, 4, 1, 2, 2 }},
         {{compute::gpu_arch_t::xe_hpc, 128, second_token}, { 16, 16, 16, 16, 32, 32, 2, 8, 8, 2, 4, 4 }},
-        //{{compute::gpu_arch_t::xe_hpc, 256, second_token}, {  16, 16, 16, 16, 32, 32, 2, 8, 8, 2, 4, 4 }},
 
         {{compute::gpu_arch_t::xe_hpc,  32, f32 | fma},  { 32, 32, 16, 16, 32, 32, 1, 4, 2, 2, 1, 4 }},
         {{compute::gpu_arch_t::xe_hpc,  64, f32 | fma},  { 16, 32, 16, 16, 16, 32, 4, 4, 4, 4, 4, 4 }},
         {{compute::gpu_arch_t::xe_hpc, 128, f32 | fma},  { 16, 16, 16, 32, 32, 32, 2, 4, 8, 1, 4, 2 }},
 
+        // xe2
+        {{compute::gpu_arch_t::xe2, 32},       { 16, 16, 16, 16, 16, 16, 2, 4, 2, 2, 2, 4 }},
+        {{compute::gpu_arch_t::xe2, 32, 128},  { 16, 16, 16, 16, 16, 16, 2, 4, 2, 2, 2, 4 }},
+
+        {{compute::gpu_arch_t::xe2, 64},       { 16, 16, 16, 16, 16, 16, 4, 4, 4, 4, 4, 4 }},
+        {{compute::gpu_arch_t::xe2, 64, 64},   { 16, 16, 16, 16, 16, 16, 4, 4, 4, 4, 4, 4 }},
+        {{compute::gpu_arch_t::xe2, 64, 128},  { 16, 16, 16, 16, 16, 32, 2, 4, 4, 2, 4, 2 }},
+        {{compute::gpu_arch_t::xe2, 64, 320},  { 16, 16, 16, 16, 16, 16, 4, 4, 4, 4, 4, 4 }},
+
+        {{compute::gpu_arch_t::xe2, 88},       { 16, 16, 16, 32, 32, 32, 2, 4, 8, 1, 4, 2 }},
+
+        {{compute::gpu_arch_t::xe2, 128},      { 16, 16, 32, 16, 32, 32, 2, 4, 4, 2, 4, 2 }},
+        {{compute::gpu_arch_t::xe2, 128, 256}, { 16, 16, 16, 32, 32, 32, 2, 8, 8, 1, 4, 4 }},
+
         {{compute::gpu_arch_t::xe2, 32, integrated},  { 16, 64, 16, 16, 32, 32, 2, 2, 2, 2, 1, 4 }},
         {{compute::gpu_arch_t::xe2, 64, integrated},  { 16, 32, 16, 16, 32, 32, 2, 4, 4, 2, 2, 4 }},
         {{compute::gpu_arch_t::xe2, 128, integrated}, { 16, 32, 16, 16, 32, 32, 4, 8, 8, 4, 4, 8 }},
 
-        {{compute::gpu_arch_t::xe2, 32},       { 16, 64, 16, 16, 32, 32, 2, 2, 2, 2, 1, 4 }},
-        {{compute::gpu_arch_t::xe2, 32, 128},  { 16, 16, 16, 16, 16, 16, 4, 4, 2, 4, 2, 4 }},
-        {{compute::gpu_arch_t::xe2, 32, 196},  { 16, 16, 16, 16, 16, 32, 1, 2, 2, 1, 2, 1 }},
-        {{compute::gpu_arch_t::xe2, 64},  { 16, 32, 16, 16, 32, 32, 2, 4, 4, 2, 2, 4 }},
-        {{compute::gpu_arch_t::xe2, 64, 50},   { 16, 16, 16, 16, 32, 32, 1, 4, 4, 1, 2, 2 }},
-        {{compute::gpu_arch_t::xe2, 64, 64},   { 16, 16, 16, 32, 32, 32, 2, 4, 4, 1, 2, 2}},
-        {{compute::gpu_arch_t::xe2, 64, 65},   { 16, 16, 16, 16, 16, 32, 2, 4, 4, 2, 4, 2 }},
-        {{compute::gpu_arch_t::xe2, 64, 128},  { 16, 16, 32, 32, 16, 16, 4, 4, 2, 2, 4, 4 }},
-        {{compute::gpu_arch_t::xe2, 64, 512},  { 16, 16, 16, 32, 16, 16, 4, 4, 4, 2, 4, 4 }},
-        {{compute::gpu_arch_t::xe2, 88},  { 16, 16, 16, 32, 32, 32, 2, 8, 8, 1, 4, 4 }},
-        {{compute::gpu_arch_t::xe2, 128}, { 16, 16, 16, 16, 32, 32, 2, 8, 8, 2, 4, 4 }},
     };
     // clang-format on
 
@@ -740,16 +800,15 @@ static std::vector<bwd_config_record_t> sorted_bwd_configs = []() {
 }();
 
 bwd_config_t *choose_bwd_config(compute::gpu_arch_t arch, dim_t head_size,
-        dim_t qry, dim_t seq, bool is_thin_q, bool is_quantized,
-        bool is_integrated, bool is_fma, bool is_f32) {
+        dim_t qry, dim_t seq, dim_t batch_heads, bool is_thin_q,
+        bool is_quantized, bool is_integrated, bool is_fma, bool is_f32,
+        bool is_causal) {
     // limit configs to tuned architectures and problem sizes
     if (arch >= compute::gpu_arch_t::xe3) return nullptr;
     if (compute::gpu_arch_t::xe2 == arch && is_integrated) return nullptr;
-    if (compute::gpu_arch_t::xe2 == arch
-            && (seq == qry && seq <= 128 && head_size >= 64)) {
-        return nullptr;
-    }
-    if (arch == compute::gpu_arch_t::xe_hpc && (qry < 256 && head_size > 32)) {
+
+    if (compute::gpu_arch_t::xe2 == arch && !is_causal
+            && (head_size >= 64 && std::min(qry, seq) <= head_size)) {
         return nullptr;
     }
 
@@ -761,6 +820,32 @@ bwd_config_t *choose_bwd_config(compute::gpu_arch_t arch, dim_t head_size,
             static_cast<int>(seq), query_properties);
     auto it = find(begin(sorted_bwd_configs), end(sorted_bwd_configs), query);
     if (it != end(sorted_bwd_configs)) {
+        // Primitive-based backward is generally faster for small problems.
+        // Direct dQ and fully occupied tiles lower that crossover for
+        // sufficiently parallel Xe HPC configurations.
+        static constexpr dim_t xe_hpc_bwd_min_fused_area = 128 * 192;
+        static constexpr dim_t xe_hpc_bwd_min_batch_heads = 256;
+        static constexpr dim_t xe_hpc_bwd_min_main_wgs = 2048;
+        if (arch == compute::gpu_arch_t::xe_hpc && head_size > 32) {
+            const auto &config = it->config;
+            const dim_t tile_k = config.unroll_m_BcBr * config.wg_m_BcBr;
+            const dim_t tile_q = config.unroll_n_BcBr * config.wg_n_BcBr;
+            const dim_t tile_d = config.unroll_m_DBc * config.wg_m_DBc;
+            const bool large_problem = qry * seq >= xe_hpc_bwd_min_fused_area;
+            const bool full_d64 = head_size <= 64 && head_size == tile_d;
+            const bool efficient_direct_dq = full_d64 && !is_thin_q
+                    && seq <= tile_k && tile_q <= 64
+                    && batch_heads >= xe_hpc_bwd_min_batch_heads;
+            const dim_t key_blocks = utils::div_up(seq, tile_k);
+            const bool efficient_full_tiles = full_d64 && !is_thin_q
+                    && seq % tile_k == 0 && qry % tile_q == 0
+                    && batch_heads * key_blocks >= xe_hpc_bwd_min_main_wgs;
+            const bool efficient_small_problem = is_causal
+                    ? !is_thin_q
+                    : efficient_direct_dq || efficient_full_tiles;
+            if (!large_problem && !efficient_small_problem) return nullptr;
+        }
+
         VDEBUGINFO(4, primitive, sdpa,
                 "bwd config search: {query %s} -> {%s config:%s},",
                 to_string(query).c_str(), to_string(it->criteria).c_str(),
@@ -780,6 +865,7 @@ void deserialize_config_to_gemmstone(micro::HWInformation &hwInfo,
     hwInfo.gmdid = ukernel_config.hwinfo.gmdid;
     hwInfo.euCount = ukernel_config.hwinfo.euCount;
     hwInfo.systolicAvailable = ukernel_config.hwinfo.systolicAvailable;
+    hwInfo.isEfficient64Bit = ukernel_config.hwinfo.isEfficient64Bit;
 
     // options kq, vs
     auto deserialize_options
@@ -879,6 +965,7 @@ void deserialize_config_to_gemmstone(micro::HWInformation &hwInfo,
     hwInfo.gmdid = ukernel_config.hwinfo.gmdid;
     hwInfo.euCount = ukernel_config.hwinfo.euCount;
     hwInfo.systolicAvailable = ukernel_config.hwinfo.systolicAvailable;
+    hwInfo.isEfficient64Bit = ukernel_config.hwinfo.isEfficient64Bit;
 
     // options kq, vs
     auto deserialize_options

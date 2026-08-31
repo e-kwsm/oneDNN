@@ -19,19 +19,6 @@ file(GLOB_RECURSE SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/*.[ch]pp
 )
 
-if(NOT DNNL_RISCV_USE_RVV_INTRINSICS)
-    # Do not compile RISC-V implementations optimized with RVV intrinsics
-    list(FILTER SOURCES EXCLUDE REGEX "rvv_*")
-
-    # Registering a library w/o any sources leads to a CMake error.
-    # If required, create an empty source file to prevent it.
-    list(LENGTH SOURCES NUM_OF_SOURCES)
-    if(NUM_OF_SOURCES EQUAL 0)
-        file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/empty.cpp "")
-        set(SOURCES ${CMAKE_CURRENT_BINARY_DIR}/empty.cpp)
-    endif()
-endif()
-
 # Build sources into an object library
 set(OBJ_LIB ${DNNL_LIBRARY_NAME}_cpu_riscv)
 add_library(${OBJ_LIB} OBJECT ${SOURCES})

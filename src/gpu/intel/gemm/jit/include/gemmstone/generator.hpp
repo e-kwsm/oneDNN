@@ -83,6 +83,7 @@ protected:
     std::exception_ptr lastException;
     GRFMultirange outputCRange;
     RegisterLayout outputCLayout;
+    microkernel::ClobberSet knownClobbers;
 
     using Injector = PostOpsProblem::Injector<hw>;
     std::unique_ptr<Injector> postOpInjector;
@@ -418,7 +419,7 @@ protected:
     bool tryAddRemainder(RegisterLayout &layout, bool remainderR, bool remainderC, RemainderOptions remOpts);
     void addRemainder(RegisterLayout &layout, bool remainderR, bool remainderC, RemainderOptions remOpts);
     void addRemainder(RegisterLayout &layout, std::vector<ngen::GRFRange> &addrs, const ngen::Subregister &ld, bool remainderR, bool remainderC, RemainderOptions remOpts, const CommonStrategy &strategy, CommonState &state, int dataRegs = -1);
-    void updateBlock2DSizes(ngen::GRF addr, const RegisterBlock &dst, const RegisterBlock &src, const MatrixAddressing &atype);
+    void updateBlock2DSizes(ngen::GRF addr, const RegisterBlock &dst, const RegisterBlock &src, const MatrixAddressing &atype, bool prefetch);
     void adjustSubblockAddrs(const RegisterLayout &sublayout, const std::vector<ngen::GRFRange> &subaddrs, const RegisterLayout &layout, const std::vector<ngen::GRFRange> &addrs, const CommonStrategy &strategy, const CommonState &state);
 
     // masks.cxx
@@ -510,6 +511,7 @@ protected:
     bool gemmApplyCOffsetDispatch(const GEMMProblem &problem, const GEMMStrategy &strategy, GEMMState &state);
 
     void gemmApplyPostOps(size_t poMin, size_t poMax, const GEMMProblem &problem, const GEMMStrategy &strategy, GEMMState &state);
+    void gemmApplyMXScale(const GEMMProblem &problem, const GEMMStrategy &strategy, GEMMState &state);
     void gemmLoadBinaryOpArgs(const GEMMProblem &problem, const GEMMStrategy &strategy, GEMMState &state);
 
     // quantization.cxx

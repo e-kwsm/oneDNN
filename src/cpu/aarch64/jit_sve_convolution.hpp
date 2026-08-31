@@ -1,7 +1,7 @@
 /*******************************************************************************
 * Copyright 2020 Intel Corporation
 * Copyright 2020-2024 FUJITSU LIMITED
-* Copyright 2025 Arm Ltd. and affiliates
+* Copyright 2025-2026 Arm Ltd. and affiliates
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -25,7 +25,6 @@
 #include "common/primitive.hpp"
 #include "common/utils.hpp"
 
-#include "cpu/aarch64/cpu_barrier.hpp"
 #include "cpu/aarch64/cpu_reducer.hpp"
 #include "cpu/cpu_convolution_pd.hpp"
 
@@ -45,7 +44,7 @@ struct jit_sve_convolution_fwd_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", isa, ""),
                 jit_sve_convolution_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
 #if defined(DNNL_AARCH64_USE_ACL)
             if (attr()->fpmath_.mode_ == fpmath_mode::bf16) {
                 // prefer ACL to jit for fpmath_mode::bf16 if available
@@ -126,7 +125,7 @@ struct jit_sve_convolution_bwd_data_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", isa, ""),
                 jit_sve_convolution_bwd_data_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             bool ok = true && desc()->prop_kind == prop_kind::backward_data
                     && set_default_alg_kind(alg_kind::convolution_direct)
                     && expect_data_types(diff_src_type, wei_type,
@@ -195,7 +194,7 @@ struct jit_sve_convolution_bwd_weights_t : public primitive_t {
         DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit:", isa, ""),
                 jit_sve_convolution_bwd_weights_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             bool ok = true && desc()->prop_kind == prop_kind::backward_weights
                     && set_default_alg_kind(alg_kind::convolution_direct)
                     && expect_data_types(src_type, diff_weights_type,
@@ -267,9 +266,9 @@ private:
 
     int nthr_, nthr_mb_, nthr_g_, nthr_oc_b_, nthr_ic_b_;
 
-    jit_sve_conv_bwd_weights_kernel_f32_t<isa> *kernel_;
-    cpu_accumulator_1d_t<diff_weights_type, isa> *acc_ker_;
-    cpu_reducer_t<diff_weights_type, isa> *reducer_bias_;
+    std::unique_ptr<jit_sve_conv_bwd_weights_kernel_f32_t<isa>> kernel_;
+    std::unique_ptr<cpu_accumulator_1d_t<diff_weights_type, isa>> acc_ker_;
+    std::unique_ptr<cpu_reducer_t<diff_weights_type, isa>> reducer_bias_;
 };
 
 } // namespace aarch64

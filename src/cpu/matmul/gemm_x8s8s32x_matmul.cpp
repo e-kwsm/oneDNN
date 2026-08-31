@@ -55,19 +55,20 @@ bool need_post_processing(const pd_t *pd, float runtime_dst_zero_point = 0.f) {
 }
 } // namespace
 
-status_t gemm_x8s8s32x_matmul_t::pd_t::init(engine_t *engine) {
+status_t gemm_x8s8s32x_matmul_t::pd_t::init(const engine_t *engine) {
     using namespace utils;
     using namespace data_type;
 
-    auto check_attr_scales = [&]() -> bool {
-        bool ok = attr_scales_ok();
+    auto check_attr_scales = [&]() -> status_t {
+        CHECK(attr_scales_ok(engine));
         if (!attr()->scales_.has_default_values(DNNL_ARG_SRC)
                 && !attr()->scales_.has_default_values(DNNL_ARG_WEIGHTS)
                 && attr()->scales_.get_mask(DNNL_ARG_WEIGHTS) > 0) {
             // This case requires scratchpad with unknown size
-            if (is_runtime_value(N())) ok = false;
+            VDISPATCH_MATMUL(
+                    !is_runtime_value(N()), VERBOSE_UNSUPPORTED_SCALES_CFG);
         }
-        return ok;
+        return status::success;
     };
 
     auto check_attr_zero_points = [&]() -> bool {
@@ -100,6 +101,8 @@ status_t gemm_x8s8s32x_matmul_t::pd_t::init(engine_t *engine) {
                                 post_ops.entry_, dst_md()),
                         broadcasting_strategy_t::per_oc);
         const bool has_prelu = post_ops.find(prelu) != -1;
+        for (const auto &entry : post_ops.entry_)
+            if (entry.is_binary_with_ternary_op()) return false;
         return cpu::inner_product_utils::post_ops_ok(
                        post_ops, dst_md(), enabled_bcast_strategy)
                 && IMPLICATION(is_binary_po_per_oc,
@@ -126,7 +129,7 @@ status_t gemm_x8s8s32x_matmul_t::pd_t::init(engine_t *engine) {
                     /* is_int8 */ true),
             VERBOSE_UNSUPPORTED_POSTOP);
     VDISPATCH_MATMUL(set_default_formats(), VERBOSE_UNSUPPORTED_TAG);
-    VDISPATCH_MATMUL(check_attr_scales(), VERBOSE_UNSUPPORTED_SCALES_CFG);
+    CHECK(check_attr_scales());
     VDISPATCH_MATMUL(check_attr_zero_points(), VERBOSE_UNSUPPORTED_ATTR);
     VDISPATCH_MATMUL(
             attr()->has_default_values(primitive_attr_t::skip_mask_t::scales
@@ -168,7 +171,7 @@ template <typename src_dt>
 void pp_src_and_weights_zero_points(std::vector<int32_t> &src_comp,
         std::vector<int32_t> &wei_comp, dim_t M, dim_t N, dim_t K,
         const src_dt *src, dim_t src_s0, dim_t src_s1, const int8_t *wei,
-        dim_t wei_s0, dim_t wei_s1, int32_t *acc, int ldc,
+        dim_t wei_s0, dim_t wei_s1, int32_t *acc, dim_t ldc,
         int32_t src_zero_point, int32_t wei_zero_point) {
     if (wei_zero_point) {
         for_(dim_t m = 0; m < M; ++m)
@@ -294,7 +297,10 @@ status_t gemm_x8s8s32x_matmul_t::execute_ref(const exec_ctx_t &ctx) const {
 
     const float alpha = params.get_gemm_alpha(scales);
     const float beta = params.gemm_beta_;
-    const dim_t acc_ldc = dst_is_acc ? ldc : N;
+    // `ldc` is the destination row stride. When `M == 1`, a degenerate stride
+    // (e.g. `acb` gives `ldc == 1`) can violate the `ldc >= N` requirement.
+    // Clamp `ldc` to `N`. This is safe for `M == 1` and has no effect for `M > 1`.
+    const dim_t acc_ldc = dst_is_acc ? nstl::max(ldc, N) : N;
     const int scale_idx_mult
             = this->pd()->attr()->scales_.get_mask(DNNL_ARG_WEIGHTS)
             == (1 << (ndims - 1));

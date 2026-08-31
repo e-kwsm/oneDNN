@@ -19,15 +19,11 @@
 
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 #include <unordered_map>
 
 #include "oneapi/dnnl/dnnl.hpp"
-#include "oneapi/dnnl/dnnl_graph_types.h"
 
-#include "graph/interface/allocator.hpp"
-#include "graph/interface/constant_tensor_cache.hpp"
 #include "graph/interface/logical_tensor.hpp"
 #include "graph/interface/value.hpp"
 
@@ -53,23 +49,6 @@ using algorithm = dnnl::algorithm;
 using exec_args = std::unordered_map<int, memory>;
 
 using pd_cache_t = std::unordered_map<op_t *, graph::utils::any_t>;
-struct dnnl_allocator_t {
-    static void *malloc(size_t size, const dnnl::engine &p_engine,
-            const allocator_t *alc, allocator_t::mem_type_t type);
-
-    static void free(
-            void *p, const dnnl::engine &p_engine, const allocator_t *alc);
-
-#ifdef DNNL_WITH_SYCL
-    static void free(void *p, const dnnl::engine &p_engine,
-            const allocator_t *alc, const ::sycl::event &deps);
-#endif
-
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    static void free(void *p, const dnnl::engine &p_engine,
-            const allocator_t *alc, const cl_event &deps);
-#endif
-};
 
 format_tag get_ncx_format(size_t ndim);
 
@@ -79,11 +58,9 @@ dims get_compatible_dilates(const dims &dilates, size_t input_size = 4);
 
 dims group_dims(const dims &adims, dim groups);
 
-engine make_dnnl_engine(const engine_t &g_engine);
+engine make_dnnl_engine(engine_t &eng);
 
-engine make_host_engine();
-
-stream make_dnnl_stream(const engine &p_engine, const stream_t &g_stream);
+stream make_dnnl_stream(stream_t &strm);
 
 memory::desc make_dnnl_memory_desc(const logical_tensor_t &lt);
 
@@ -117,8 +94,6 @@ bool is_format(const memory::desc &adesc, memory::format_tag tag);
 
 bool is_format(const memory::desc &adesc, const std::string &tag);
 
-bool is_4c_blocked(const memory::desc &adesc);
-
 bool is_plain(const memory::desc &adesc);
 
 memory::desc to_ncx_format(const memory::desc &adesc);
@@ -141,15 +116,6 @@ dnnl::accumulation_mode str2accumulation_mode(
 
 size_t generate_constant_md_hash(
         size_t part_id, const std::vector<dnnl::memory::desc> &const_mds);
-
-// This function artificially extends the `temporary_scratchpad_t` object's
-// lifetime to keep alive the handle this scratchpad object manages.
-// An alternative approach is to manage its handles through a system of caches
-// the same way it's done for memory objects before they are passed into a
-// primitive execute call.
-class temporary_scratchpad_t;
-void prolong_temporary_scratchpad_lifetime(const stream_t *g_stream,
-        const std::shared_ptr<temporary_scratchpad_t> &scratchpad);
 
 // This function is mostly a copy-paste of public `dnnl_primitive_execute` but
 // doesn't have calls for hooks since this API is intended to be used in nested

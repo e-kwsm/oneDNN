@@ -540,11 +540,9 @@ struct attr_t {
     // build time, otherwise scratchpad pointers are invalidated (as were
     // created inside threads that no longer exist when execution time comes).
     // Relevant for both engines since GPU uses CPU for faster validation.
-    static dnnl_scratchpad_mode_t get_default_scratchpad_mode() {
-        return has_bench_mode_modifier(mode_modifier_t::par_create)
-                ? dnnl_scratchpad_mode_user
-                : dnnl_scratchpad_mode_library;
-    }
+    //
+    // Same situation with native_graph execution mode.
+    static dnnl_scratchpad_mode_t get_default_scratchpad_mode();
 
     arg_scales_t scales;
     zero_points_t zero_points;
@@ -703,6 +701,12 @@ struct sparse_options_t {
 #else
         return false;
 #endif
+    }
+
+    // Check for grouped SRC by grouped WEI into dense DST
+    bool is_2dby2d() const {
+        return is_grouped(DNNL_ARG_SRC) && is_grouped(DNNL_ARG_WEIGHTS)
+                && get_variable_dim_idx(DNNL_ARG_SRC) == 1;
     }
 
     bool is_sparsity_def(int arg) const {

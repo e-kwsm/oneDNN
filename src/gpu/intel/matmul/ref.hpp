@@ -28,6 +28,7 @@
 #include "gpu/intel/matmul/config.hpp"
 #include "gpu/intel/primitive.hpp"
 #include "gpu/intel/primitive_conf.hpp"
+#include "gpu/intel/subbyte_pack.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -42,7 +43,7 @@ struct ref_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("ocl:ref:any", ref_t);
 
-        status_t init(impl::engine_t *engine) {
+        status_t init(const impl::engine_t *engine) {
             using namespace data_type;
             using smask_t = primitive_attr_t::skip_mask_t;
 
@@ -50,28 +51,33 @@ struct ref_t : public primitive_t {
             dst_dt_ = dst_md()->data_type;
             wei_dt_ = weights_md(0)->data_type;
             bia_dt_ = with_bias() ? weights_md(1)->data_type : data_type::f32;
-            auto *intel_engine = utils::downcast<intel::engine_t *>(engine);
+            const auto *intel_engine
+                    = utils::downcast<const intel::engine_t *>(engine);
 
             auto dev_info_ = intel_engine->device_info();
 
             VDISPATCH_MATMUL(
                     is_dense_format_kind(), VERBOSE_UNSUPPORTED_SPARSE_CFG);
             VDISPATCH_MATMUL(
+                    !with_reduce(), VERBOSE_UNSUPPORTED_FEATURE, "reduce");
+            VDISPATCH_MATMUL(
                     attr()->has_default_values(smask_t::scales_data_type
                             | smask_t::scales_groups | smask_t::dropout
                             | smask_t::zero_points_data_type
                             | smask_t::zero_points_groups | smask_t::post_ops
-                            | smask_t::accumulation_mode | smask_t::fpmath_mode
-                            | smask_t::rounding_mode
+                            | smask_t::sum_dt | smask_t::accumulation_mode
+                            | smask_t::fpmath_mode | smask_t::rounding_mode
                             | smask_t::precomputed_reductions),
                     VERBOSE_UNSUPPORTED_ATTR);
-            VDISPATCH_MATMUL(attr_scales_ok({DNNL_ARG_SRC, DNNL_ARG_WEIGHTS,
-                                                    DNNL_ARG_DST},
-                                     {quantization_mode::static_sazp,
-                                             quantization_mode::dynamic_mx,
-                                             quantization_mode::dynamic_fp}),
-                    VERBOSE_UNSUPPORTED_SCALES_CFG);
-            VDISPATCH_MATMUL(zero_points_ok(), VERBOSE_UNSUPPORTED_ZP_CFG);
+            CHECK(attr_scales_ok(engine,
+                    {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST},
+                    {quantization_mode::static_sazp,
+                            quantization_mode::dynamic_mx,
+                            quantization_mode::dynamic_fp},
+                    {{DNNL_ARG_SRC, {src_qmask_M()}}}));
+            CHECK(attr_zero_points_ok(engine,
+                    {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST},
+                    {quantization_mode::static_sazp}));
             VDISPATCH_MATMUL(
                     precomputed_reductions_ok(), VERBOSE_UNSUPPORTED_PR_CFG);
             VDISPATCH_MATMUL(set_default_formats(), VERBOSE_UNSUPPORTED_TAG);
@@ -93,19 +99,18 @@ struct ref_t : public primitive_t {
 
             const bool is_f8 = utils::one_of(src_dt_, f8_e5m2, f8_e4m3)
                     || utils::one_of(wei_dt_, f8_e5m2, f8_e4m3);
-            const bool is_f4
-                    = utils::one_of(src_dt_, f4_e2m1, f4_e3m0, f32, bf16, f16)
-                    || utils::one_of(wei_dt_, f4_e2m1, f4_e3m0);
+            const bool is_f4 = utils::one_of(src_dt_, f4_e2m1, f32, bf16, f16)
+                    || utils::one_of(wei_dt_, f4_e2m1);
             const bool is_int8 = utils::one_of(src_dt_, u8, s8)
                     && utils::one_of(wei_dt_, u8, s8, u4, s4);
+            // Note: fp4 bias will require sub-byte reads in the kernel.
             VDISPATCH_MATMUL(
                     (is_int8
                             || ((is_f32 || is_f64 || is_f16 || is_f8 || is_f4
                                         || is_bf16)
                                     && IMPLICATION(with_bias(),
                                             utils::one_of(bia_dt_, f32, f16,
-                                                    bf16, f8_e5m2, f8_e4m3,
-                                                    f4_e2m1, dst_dt_)))),
+                                                    bf16, f8_e5m2, f8_e4m3)))),
                     VERBOSE_UNSUPPORTED_DT_CFG);
             VDISPATCH_MATMUL_SC(attr_.set_default_formats(dst_md(0)),
                     VERBOSE_UNSUPPORTED_POSTOP);
@@ -116,29 +121,26 @@ struct ref_t : public primitive_t {
                             dev_info_->has_native(f64)),
                     VERBOSE_UNSUPPORTED_DT);
             CHECK(dropout_ok());
-            subbyte_pack_ = utils::one_of(
-                    dst_dt_, data_type::f4_e2m1, data_type::f4_e3m0);
+            CHECK(pack_desc_.init(*dst_md(0)));
             dynamic_scales_ = attr()->scales_.get(DNNL_ARG_DST).is_dynamic();
+            VDISPATCH_MATMUL(
+                    IMPLICATION(bool(pack_desc_) || dynamic_scales_,
+                            attr()->post_ops_.find(primitive_kind::sum) == -1),
+                    VERBOSE_UNSUPPORTED_POSTOP);
+            VDISPATCH_MATMUL(IMPLICATION(dynamic_scales_,
+                                     !memory_desc_wrapper(dst_md(0))
+                                              .has_runtime_dims_or_strides()),
+                    VERBOSE_RUNTIMEDIM_UNSUPPORTED);
+            const size_t dst_span = memory_desc_wrapper(dst_md(0)).span();
+            auto scratchpad = scratchpad_registry().registrar();
             if (dynamic_scales_) {
-                using namespace dnnl::impl::memory_tracking::names;
-                const memory_desc_wrapper dst_mdw(dst_md(0));
-                const auto &padded_dims = dst_mdw.padded_dims();
-                const dim_t ndims = dst_mdw.ndims();
-                const dim_t nelems = utils::array_product(padded_dims, ndims);
-                auto scratchpad = scratchpad_registry().registrar();
                 scratchpad.book(
                         memory_tracking::names::key_matmul_dyn_scale_space,
-                        nelems, sizeof(float), OCL_BUFFER_ALIGNMENT);
+                        dst_span, sizeof(float), OCL_BUFFER_ALIGNMENT);
             }
-            if (subbyte_pack_) {
-                using namespace dnnl::impl::memory_tracking::names;
-                const memory_desc_wrapper dst_mdw(dst_md(0));
-                const auto &padded_dims = dst_mdw.padded_dims();
-                const dim_t ndims = dst_mdw.ndims();
-                const dim_t nelems = utils::array_product(padded_dims, ndims);
-                auto scratchpad = scratchpad_registry().registrar();
+            if (pack_desc_) {
                 scratchpad.book(memory_tracking::names::key_matmul_pack_space,
-                        nelems, sizeof(char), OCL_BUFFER_ALIGNMENT);
+                        pack_desc_.span(), sizeof(char), OCL_BUFFER_ALIGNMENT);
             }
 
             non_default_attrs_ = !attr()->has_default_values();
@@ -148,7 +150,7 @@ struct ref_t : public primitive_t {
         }
 
         bool non_default_attrs_ = false;
-        bool subbyte_pack_ = false;
+        subbyte_pack_desc_t pack_desc_;
         bool dynamic_scales_ = false;
         data_type_t bia_dt_ = data_type::undef;
         data_type_t src_dt_ = data_type::undef;
@@ -158,47 +160,6 @@ struct ref_t : public primitive_t {
         attr_info_t attr_info_ = {};
 
     private:
-        bool zero_points_ok() const {
-            const auto &zp = attr()->zero_points_;
-            if (!zp.has_default_values(DNNL_ARG_SRC)) {
-                int mask_src = zp.get_mask(DNNL_ARG_SRC);
-                bool ok = utils::one_of(mask_src, 0, src_qmask_K(),
-                        src_qmask_M() + src_qmask_K());
-                if (!ok) return false;
-
-                if (!zp.get(DNNL_ARG_SRC).has_default_groups()) {
-                    const auto gM = zp.get_group(DNNL_ARG_SRC, 0);
-                    ok = gM == 1;
-                    if (!ok) return false;
-
-                    const auto gK = zp.get_group(DNNL_ARG_SRC, 1);
-                    ok = IMPLICATION(gK > 1, K() % gK == 0);
-                    if (!ok) return false;
-                }
-            }
-            /* weights decompression requires zero points support */
-            if (!zp.has_default_values(DNNL_ARG_WEIGHTS)) {
-                if (!zp.get(DNNL_ARG_WEIGHTS).has_default_groups()) {
-                    const auto gK = zp.get_group(DNNL_ARG_WEIGHTS, 0);
-                    bool ok = IMPLICATION(gK > 1, K() % gK == 0);
-                    if (!ok) return false;
-
-                    const auto gN = zp.get_group(DNNL_ARG_WEIGHTS, 1);
-                    ok = IMPLICATION(gN > 1, N() % gN == 0);
-                    if (!ok) return false;
-
-                    // Only one non-unit group is supported.
-                    ok = utils::one_of(1, gK, gN);
-                    if (!ok) return false;
-                }
-            }
-            if (!zp.has_default_values(DNNL_ARG_DST)) {
-                int mask_dst = zp.get_mask(DNNL_ARG_DST);
-                bool ok = utils::one_of(mask_dst, 0, dst_qmask_N());
-                if (!ok) return false;
-            }
-            return true;
-        }
         status_t dropout_ok() const {
             if (attr_.dropout_.has_default_values()) return status::success;
 
@@ -268,6 +229,8 @@ struct ref_t : public primitive_t {
         CHECK(def_attr_info(kernel_ctx, pd()->attr_info_,
                 pd()->attr()->post_ops_, *pd()->dst_md()));
         kernel_ctx.require_stateless_addressing(pd()->has_large_buffers());
+        kernel_ctx.register_buffer_size(
+                pd()->pack_desc_.span(), pd()->pack_desc_.span());
 
         if (!pd()->attr()->precomputed_reductions_.has_default_values(
                     DNNL_ARG_SRC))
@@ -276,11 +239,16 @@ struct ref_t : public primitive_t {
         bool dyn_scales = pd()->attr()->scales_.get(DNNL_ARG_DST).is_dynamic();
         kernel_ctx.define_int("DYN_SCALES", dyn_scales);
 
-        bool runtime_dims = pd()->has_runtime_dims_or_strides() || ndims > 5;
+        const memory_desc_wrapper src_d(pd()->src_md(0));
+        const memory_desc_wrapper wei_d(pd()->weights_md(0));
+        const memory_desc_wrapper dst_d(pd()->dst_md(0));
+        // Plain layouts use runtime strides to maximize kernel reuse; blocked
+        // layouts require compile-time offset macros.
+        const bool all_plain
+                = src_d.is_plain() && wei_d.is_plain() && dst_d.is_plain();
+        bool runtime_dims
+                = pd()->has_runtime_dims_or_strides() || ndims > 5 || all_plain;
         if (!runtime_dims) {
-            const memory_desc_wrapper src_d(pd()->src_md(0));
-            const memory_desc_wrapper wei_d(pd()->weights_md(0));
-            const memory_desc_wrapper dst_d(pd()->dst_md(0));
             offsets_t off;
             set_offsets(src_d, off.src_off);
             set_offsets(wei_d, off.wei_off);
@@ -328,16 +296,19 @@ struct ref_t : public primitive_t {
         def_data_type(kernel_ctx,
                 pd()->attr()->scales_.get_data_type(DNNL_ARG_DST),
                 "DST_SCALES");
+        def_data_type(kernel_ctx,
+                pd()->attr_info_.sum_data_type == dnnl_data_type_undef
+                        ? pd()->dst_dt_
+                        : pd()->attr_info_.sum_data_type,
+                "SUM");
         CHECK(create_kernel(engine, &kernels_[0], "ref_matmul", kernel_ctx));
         if (pd()->dynamic_scales_)
             CHECK(create_kernel(
                     engine, &kernels_[1], "dynamic_scale_dst", kernel_ctx));
-        if (pd()->subbyte_pack_)
-            CHECK(create_kernel(
-                    engine, &kernels_[2], "subbyte_pack", kernel_ctx));
+        if (pd()->pack_desc_)
+            CHECK(pack_.create(pd()->pack_desc_, *this, engine));
         if (!kernels_[0]) return status::runtime_error;
         if (pd()->dynamic_scales_ && !kernels_[1]) return status::runtime_error;
-        if (pd()->subbyte_pack_ && !kernels_[2]) return status::runtime_error;
         return status::success;
     }
 
@@ -348,7 +319,8 @@ struct ref_t : public primitive_t {
 private:
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
     status_t execute_ref(const exec_ctx_t &ctx) const;
-    std::array<compute::kernel_t, 3> kernels_ = {};
+    std::array<compute::kernel_t, 2> kernels_ = {};
+    subbyte_pack_t pack_;
 };
 
 } // namespace matmul

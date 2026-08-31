@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2025 Arm Ltd. and affiliates
+* Copyright 2025-2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,13 +20,14 @@
 
 #include <memory>
 
-#include "cpu/aarch64/acl_post_ops.hpp"
+#include "cpu/aarch64/post_ops_fallback.hpp"
 #include "cpu/cpu_primitive.hpp"
 #include "cpu/matmul/cpu_matmul_pd.hpp"
 #include "cpu/matmul/matmul_utils.hpp"
 
 #include "arm_compute/core/CPP/CPPTypes.h"
 #include "arm_compute/runtime/experimental/operators/CpuGEMMLowp.h"
+#include "cpu/aarch64/acl_utils.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -50,18 +52,19 @@ struct acl_lowp_matmul_sq_t : public primitive_t {
         DECLARE_COMMON_PD_T("lowp_gemm_sq:acl", acl_lowp_matmul_sq_t,
                 USE_GLOBAL_SCRATCHPAD);
 
-        status_t init(engine_t *engine);
+        status_t init(const engine_t *engine);
 
-        status_t init_scratchpad(engine_t *engine,
+        status_t init_scratchpad(const engine_t *engine,
                 memory_tracking::registrar_t &scratchpad,
-                acl_post_ops_t &post_ops, dnnl::impl::post_ops_t &attr_post_ops,
+                post_ops_fallback_t &post_ops,
+                dnnl::impl::post_ops_t &attr_post_ops,
                 arm_compute::ActivationLayerInfo &act_info,
                 const dnnl::impl::memory_desc_t &dst_md,
                 const arm_compute::experimental::MemoryRequirements
                         &aux_mem_req);
 
         acl_lowp_matmul_sq_conf_t almc_;
-        acl_post_ops_t acl_post_ops;
+        post_ops_fallback_t post_ops;
     };
 
     // constructor
@@ -81,6 +84,7 @@ private:
         return (const pd_t *)primitive_t::pd().get();
     }
     std::unique_ptr<arm_compute::experimental::op::CpuGEMMLowp> gemm_;
+    post_ops_fallback_t post_ops_;
 };
 
 } // namespace matmul

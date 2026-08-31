@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2025 Arm Ltd. and affiliates
+* Copyright 2025-2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -56,10 +57,13 @@ status_t acl_lowp_matmul_sq_t::init(engine_t *engine) {
             almc.with_bias ? &almc.bia_tensor_info : nullptr,
             &almc.dst_tensor_info, almc.gemm_info);
 
+    post_ops_ = pd()->post_ops;
+    CHECK(post_ops_.init_primitives(engine));
+
     return status::success;
 }
 
-status_t acl_lowp_matmul_sq_t::pd_t::init(engine_t *engine) {
+status_t acl_lowp_matmul_sq_t::pd_t::init(const engine_t *engine) {
 
     VDISPATCH_MATMUL(set_default_formats(), "failed to set default formats");
     using smask_t = primitive_attr_t::skip_mask_t;
@@ -196,7 +200,7 @@ status_t acl_lowp_matmul_sq_t::pd_t::init(engine_t *engine) {
     auto scratchpad = scratchpad_registry().registrar();
     const dnnl::impl::memory_desc_t dst_md_ {desc_.dst_desc};
     arm_compute::ActivationLayerInfo act_info;
-    CHECK(init_scratchpad(engine, scratchpad, acl_post_ops, attr_.post_ops_,
+    CHECK(init_scratchpad(engine, scratchpad, post_ops, attr_.post_ops_,
             act_info, dst_md_, aux_mem_req));
     almc_.gemm_info.set_activation_info(act_info);
 
@@ -211,14 +215,19 @@ status_t acl_lowp_matmul_sq_t::pd_t::init(engine_t *engine) {
 // Keys are anonymous with local linkage. So deduce the type automagically.
 using matmul_key_t = decltype(memory_tracking::names::key_gemm_tmp_buffer);
 
-status_t acl_lowp_matmul_sq_t::pd_t::init_scratchpad(engine_t *engine,
-        memory_tracking::registrar_t &scratchpad, acl_post_ops_t &post_ops,
+status_t acl_lowp_matmul_sq_t::pd_t::init_scratchpad(const engine_t *engine,
+        memory_tracking::registrar_t &scratchpad, post_ops_fallback_t &post_ops,
         dnnl::impl::post_ops_t &attr_post_ops,
         arm_compute::ActivationLayerInfo &act_info,
         const dnnl::impl::memory_desc_t &dst_md,
         const arm_compute::experimental::MemoryRequirements &aux_mem_req) {
 
-    CHECK(post_ops.init(engine, attr_post_ops, dst_md, act_info));
+    int post_op_start_index = 0;
+    CHECK(acl_utils::try_fuse_first_acl_post_op(attr_post_ops, dst_md.data_type,
+            post_op_start_index, act_info, post_op_start_index));
+    ACL_CHECK_SUPPORT(post_op_start_index != attr_post_ops.len(),
+            "lowp sq matmul only supports post ops fused by ACL");
+    CHECK(post_ops.init(engine, attr_post_ops, dst_md, post_op_start_index));
 
     // Book temp mem.
     if (!aux_mem_req.empty()) {

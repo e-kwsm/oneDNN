@@ -39,6 +39,15 @@ status_t stream_t::init() {
         profiler_ = utils::make_unique<xpu::ocl::stream_profiler_t>(this);
         mdapi_helper_ = utils::make_unique<mdapi_helper_t>();
     }
+
+    // Enables profiling capabilities to allow the verbose mode to print
+    // profiling info using device measured times.
+    // The verbose profiler state is fixed at stream initialization and does
+    // not respond to runtime changes made via set_dnnl_verbose().
+    // TODO: allow runtime control of the asynchronous verbose mode via
+    // set_dnnl_verbose()
+    CHECK(impl()->init_verbose_profiler(engine()->kind()));
+
     // Restore queue on successful exit, otherwise queue may be released
     // without retain
     cl_command_queue queue = impl()->queue();
@@ -73,8 +82,22 @@ status_t stream_t::init() {
         OCL_CHECK(xpu::ocl::clRetainCommandQueue(queue));
     }
     CHECK(impl()->set_queue(queue));
+    if (is_verbose_profiler_enabled()) {
+        verbose_profiler_.set(
+                utils::make_unique<xpu::ocl::verbose_profiler_t>(this));
+        // Check if the queue has profiling enabled and pause the verbose
+        // profiler if it does not. Verbose lines are still emitted during
+        // logging, but without execution timing information.
+        if (!impl()->queue_has_profiling()) {
+            VWARN(common, ocl,
+                    "OpenCL queue does not have profiling enabled. "
+                    "Verbose profiling is paused and execution times "
+                    "will not be reported.");
+            verbose_profiler()->pause_profiling();
+        }
+    }
 
-    if (is_profiling_enabled()) {
+    if (is_profiling_enabled() || is_verbose_profiler_enabled()) {
         cl_command_queue_properties props;
         OCL_CHECK(xpu::ocl::clGetCommandQueueInfo(impl()->queue(),
                 CL_QUEUE_PROPERTIES, sizeof(props), &props, nullptr));
@@ -101,7 +124,8 @@ cl_command_queue stream_t::create_queue(
     const bool is_out_of_order = (flags() & stream_flags::out_of_order);
 
     cl_command_queue_properties queue_props {};
-    if (is_profiling_enabled()) queue_props |= CL_QUEUE_PROFILING_ENABLE;
+    if (is_profiling_enabled() || is_verbose_profiler_enabled())
+        queue_props |= CL_QUEUE_PROFILING_ENABLE;
     if (is_out_of_order) queue_props |= CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
 #ifdef CL_VERSION_2_0
     cl_queue_properties props[] = {CL_QUEUE_PROPERTIES, queue_props, 0};
@@ -113,23 +137,44 @@ cl_command_queue stream_t::create_queue(
 
 void stream_t::before_exec_hook() {
     if (is_profiling_enabled()) profiler_->start_profiling();
+    if (is_verbose_profiler_enabled()) {
+        auto &verbose_profiler = verbose_profiler_.get_or_set(
+                utils::make_unique<xpu::ocl::verbose_profiler_t>(this));
+        if (!impl()->queue_has_profiling()) verbose_profiler->pause_profiling();
+        verbose_profiler->update_event_list();
+    }
 }
 
 void stream_t::after_exec_hook() {
     ocl_ctx().set_deps(xpu::ocl::event_t());
     if (is_profiling_enabled()) profiler_->stop_profiling();
+    if (auto *vp = verbose_profiler()) { vp->check_for_completed_primitives(); }
+}
+
+status_t stream_t::run_verbose_profiler(
+        const std::string &pd_info, double start_ms, uint64_t component) {
+    if (!is_verbose_profiler_enabled()) {
+        VERROR(primitive, exec,
+                "running verbose profiler while it is not enabled");
+        return status::success;
+    }
+
+    auto *vp = verbose_profiler();
+    vp->add_to_pending_primitive_list(start_ms, pd_info, component);
+    return status::success;
 }
 
 status_t stream_t::copy(const memory_storage_t &src,
         const memory_storage_t &dst, size_t size, const xpu::event_t &deps,
         xpu::event_t &out_dep) {
-    return impl()->copy(this, src, dst, size, deps, out_dep, profiler_.get());
+    return impl()->copy(this, src, dst, size, deps, out_dep, profiler_.get(),
+            verbose_profiler());
 }
 
 status_t stream_t::fill(const memory_storage_t &dst, uint8_t pattern,
         size_t size, const xpu::event_t &deps, xpu::event_t &out_dep) {
-    return impl()->fill(
-            this, dst, pattern, size, deps, out_dep, profiler_.get());
+    return impl()->fill(this, dst, pattern, size, deps, out_dep,
+            profiler_.get(), verbose_profiler());
 }
 
 status_t stream_t::barrier() {

@@ -29,13 +29,15 @@
 extern "C" {
 #endif
 
-/// @addtogroup dnnl_api
+/// @defgroup dnnl_api_c C API
+
+/// @addtogroup dnnl_api_c
 /// @{
 
-/// @addtogroup dnnl_api_primitives
+/// @addtogroup dnnl_api_primitives Primitives
 /// @{
 
-/// @addtogroup dnnl_api_primitives_common
+/// @addtogroup dnnl_api_primitives_common Common
 /// @{
 
 /// Changes the primitive descriptor to point to the next available
@@ -242,7 +244,7 @@ dnnl_status_t DNNL_API dnnl_primitive_destroy(dnnl_primitive_t primitive);
 
 /// @} dnnl_api_primitives_common
 
-/// @addtogroup dnnl_api_attributes
+/// @addtogroup dnnl_api_attributes Attributes
 /// @{
 
 /// Creates an empty (default) primitive attributes with all the parameters
@@ -1005,7 +1007,7 @@ dnnl_status_t DNNL_API dnnl_post_ops_get_params_prelu(
 
 /// @} dnnl_api_primitives
 
-/// @addtogroup dnnl_api_memory
+/// @addtogroup dnnl_api_memory Memory
 /// @{
 
 /// Destroys a memory descriptor.
@@ -1168,6 +1170,10 @@ dnnl_status_t DNNL_API dnnl_memory_desc_create_with_packed_encoding(
 /// - Group count: 3 (number of experts)
 /// - Values buffer: 9 x 256 elements
 /// - Offsets buffer: [1, 4, 9] (cumulative token counts)
+///
+/// `variable_dim_idx` may be either 0 or 1:
+/// - `variable_dim_idx == 0` implies row-major storage (`ab`)
+/// - `variable_dim_idx == 1` implies col-major storage (`ba`)
 ///
 /// @note
 ///     Only s32 offsets are currently supported.
@@ -1703,7 +1709,7 @@ dnnl_status_t DNNL_API dnnl_memory_destroy(dnnl_memory_t memory);
 /// @addtogroup dnnl_api_primitives
 /// @{
 
-/// @addtogroup dnnl_api_reorder
+/// @addtogroup dnnl_api_reorder Reorder
 /// @{
 
 /// Creates a primitive descriptor for a reorder primitive.
@@ -1726,7 +1732,7 @@ dnnl_status_t DNNL_API dnnl_reorder_primitive_desc_create(
 
 /// @} dnnl_api_reorder
 
-/// @addtogroup dnnl_api_concat
+/// @addtogroup dnnl_api_concat Concat
 /// @{
 
 /// Creates a primitive descriptor for an out-of-place concatenation
@@ -1751,7 +1757,7 @@ dnnl_status_t DNNL_API dnnl_concat_primitive_desc_create(
 
 /// @} dnnl_api_concat
 
-/// @addtogroup dnnl_api_sum
+/// @addtogroup dnnl_api_sum Sum
 /// @{
 
 /// Creates a primitive descriptor for an (out-of-place) sum primitive.
@@ -1774,7 +1780,7 @@ dnnl_status_t DNNL_API dnnl_sum_primitive_desc_create(
 
 /// @} dnnl_api_sum
 
-/// @addtogroup dnnl_api_binary
+/// @addtogroup dnnl_api_binary Binary
 /// @{
 
 /// Creates a primitive descriptor for a binary primitive.
@@ -1840,7 +1846,7 @@ dnnl_status_t DNNL_API dnnl_binary_primitive_desc_create_v2(
 
 /// @} dnnl_api_binary
 
-/// @addtogroup dnnl_api_convolution
+/// @addtogroup dnnl_api_convolution Convolution
 /// @{
 
 /// Creates a primitive descriptor for a convolution forward propagation
@@ -1981,7 +1987,7 @@ dnnl_status_t DNNL_API dnnl_convolution_backward_weights_primitive_desc_create(
 
 /// @} dnnl_api_convolution
 
-/// @addtogroup dnnl_api_deconvolution
+/// @addtogroup dnnl_api_deconvolution Deconvolution
 /// @{
 
 /// Creates a primitive descriptor for a deconvolution forward propagation
@@ -2121,7 +2127,7 @@ dnnl_deconvolution_backward_weights_primitive_desc_create(
 
 /// @} dnnl_api_deconvolution
 
-/// @addtogroup dnnl_api_shuffle
+/// @addtogroup dnnl_api_shuffle Shuffle
 /// @{
 
 /// Creates a primitive descriptor for a shuffle forward propagation primitive
@@ -2165,7 +2171,7 @@ dnnl_status_t DNNL_API dnnl_shuffle_backward_primitive_desc_create(
 
 /// @} dnnl_api_shuffle
 
-/// @addtogroup dnnl_api_eltwise
+/// @addtogroup dnnl_api_eltwise Eltwise
 /// @{
 
 /// Creates a primitive descriptor for an eltwise forward propagation primitive.
@@ -2220,7 +2226,7 @@ dnnl_status_t DNNL_API dnnl_eltwise_backward_primitive_desc_create(
 
 /// @} dnnl_api_eltwise
 
-/// @addtogroup dnnl_api_softmax
+/// @addtogroup dnnl_api_softmax Softmax
 /// @{
 
 /// Creates a primitive descriptor for a softmax forward propagation primitive.
@@ -2268,7 +2274,7 @@ dnnl_status_t DNNL_API dnnl_softmax_backward_primitive_desc_create(
 
 /// @} dnnl_api_softmax
 
-/// @addtogroup dnnl_api_pooling
+/// @addtogroup dnnl_api_pooling Pooling
 /// @{
 
 /// Creates a primitive descriptor for a pooling forward propagation
@@ -2346,7 +2352,7 @@ dnnl_status_t DNNL_API dnnl_pooling_backward_primitive_desc_create(
 
 /// @} dnnl_api_pooling
 
-/// @addtogroup dnnl_api_prelu
+/// @addtogroup dnnl_api_prelu PReLU
 /// @{
 
 /// Creates a primitive descriptor for a PReLU (leaky ReLU with trainable
@@ -2404,7 +2410,7 @@ dnnl_status_t DNNL_API dnnl_prelu_backward_primitive_desc_create(
 
 /// @} dnnl_api_prelu
 
-/// @addtogroup dnnl_api_lrn
+/// @addtogroup dnnl_api_lrn LRN
 /// @{
 
 /// Creates a primitive descriptor for an LRN forward propagation primitive.
@@ -2459,7 +2465,7 @@ dnnl_status_t DNNL_API dnnl_lrn_backward_primitive_desc_create(
 
 /// @} dnnl_api_lrn
 
-/// @addtogroup dnnl_api_batch_normalization
+/// @addtogroup dnnl_api_batch_normalization Batch Normalization
 /// @{
 
 /// Creates a primitive descriptor for a batch normalization forward propagation
@@ -2518,7 +2524,7 @@ dnnl_status_t DNNL_API dnnl_batch_normalization_backward_primitive_desc_create(
 
 /// @} dnnl_api_batch_normalization
 
-/// @addtogroup dnnl_api_group_normalization
+/// @addtogroup dnnl_api_group_normalization Group Normalization
 /// @{
 
 /// Creates a primitive descriptor for a group normalization forward propagation
@@ -2579,7 +2585,7 @@ dnnl_status_t DNNL_API dnnl_group_normalization_backward_primitive_desc_create(
 
 /// @} dnnl_api_group_normalization
 
-/// @addtogroup dnnl_api_layer_normalization
+/// @addtogroup dnnl_api_layer_normalization Layer Normalization
 /// @{
 
 /// Creates a primitive descriptor for a layer normalization forward propagation
@@ -2725,7 +2731,7 @@ dnnl_layer_normalization_backward_primitive_desc_create_v2(
 
 /// @} dnnl_api_layer_normalization
 
-/// @addtogroup dnnl_api_inner_product
+/// @addtogroup dnnl_api_inner_product Inner Product
 /// @{
 
 /// Creates a primitive descriptor for an inner product forward propagation
@@ -2974,7 +2980,7 @@ dnnl_status_t DNNL_API dnnl_primitive_attr_get_rnn_weights_projection_qparams(
 
 /// @} dnnl_api_attributes
 
-/// @addtogroup dnnl_api_rnn
+/// @addtogroup dnnl_api_rnn RNN
 /// @{
 
 /// Creates a primitive descriptor for vanilla RNN forward propagation
@@ -3749,7 +3755,7 @@ dnnl_status_t DNNL_API dnnl_lbr_augru_backward_primitive_desc_create(
 
 /// @} dnnl_api_rnn
 
-/// @addtogroup dnnl_api_matmul
+/// @addtogroup dnnl_api_matmul Matrix Multiplication
 /// @{
 
 /// Creates a primitive descriptor for a matrix multiplication primitive.
@@ -3862,7 +3868,7 @@ dnnl_status_t DNNL_API dnnl_reduction_primitive_desc_create(
 
 /// @} dnnl_api_primitives
 
-/// @addtogroup dnnl_api_primitive_cache
+/// @addtogroup dnnl_api_primitive_cache Primitive Cache
 /// @{
 
 /// Returns the number of primitives that can be held in the primitive cache
@@ -3890,7 +3896,7 @@ dnnl_status_t DNNL_API dnnl_set_primitive_cache_capacity(int capacity);
 
 /// @} dnnl_api_primitive_cache
 
-/// @addtogroup dnnl_api_service
+/// @addtogroup dnnl_api_service Service
 /// @{
 
 /// Configures dumping of JIT-generated code.
@@ -3976,7 +3982,8 @@ dnnl_status_t DNNL_API dnnl_set_jit_profiling_jitdumpdir(const char *dir);
 ///         - AVX10_1_512 < AVX10_1_512_AMX < AVX10_1_512_AMX_FP16
 ///           < AVX10_2_AMX_2,
 ///         - AVX2_VNNI < AVX10_1_512,
-///         - AVX10_2 < AVX10_2_AMX_2
+///         - AVX10_2 < AVX10_2_AMX_2,
+///         - AVX10_2 < AVX10_2_ACE
 ///
 ///     Aliases:
 ///         - AVX512_CORE_FP16 = AVX10_1_512
@@ -4081,7 +4088,7 @@ dnnl_status_t DNNL_API dnnl_query_profiling_data(dnnl_stream_t stream,
 /// @} dnnl_api_profiling
 #endif
 
-/// @addtogroup dnnl_api_blas
+/// @addtogroup dnnl_api_blas BLAS functions
 /// @{
 
 /// Performs single-precision matrix-matrix multiply.
@@ -4266,7 +4273,7 @@ dnnl_status_t DNNL_API dnnl_gemm_s8s8s32(char transa, char transb, char offsetc,
 
 /// @} dnnl_api_blas
 
-/// @} dnnl_api
+/// @} dnnl_api_c
 
 #ifdef __cplusplus
 }

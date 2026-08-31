@@ -48,7 +48,7 @@ public:
         void *dst = nullptr;
     };
 
-    void operator()(jit_gates_reduction_t::call_params_t *params) const {
+    void operator()(const jit_gates_reduction_t::call_params_t *params) const {
         jit_generator_t::operator()(params);
     }
 
@@ -62,14 +62,14 @@ private:
     void compute(dim_t unrolling);
     void compute_step(
             const Xbyak::Zmm &acc, const Xbyak::Address &addr, bool tail);
-    size_t reserve_vmm();
+    int reserve_vmm();
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_gates_reduction_t)
     DNNL_DISALLOW_COPY_AND_ASSIGN(jit_gates_reduction_t);
 
     static constexpr dim_t simd_w_ = 16;
 
-    size_t number_reserved_vmms_ = 0;
+    int number_reserved_vmms_ = 0;
     const rnn_utils::rnn_conf_t &rnn_;
     const bool is_n_tail_;
     const dim_t n_block_;

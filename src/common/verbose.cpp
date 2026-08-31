@@ -16,6 +16,7 @@
 *******************************************************************************/
 
 #include <atomic>
+#include <map>
 #include <regex>
 #include <sstream>
 #include <type_traits>
@@ -557,8 +558,17 @@ std::string md2fmt_str(
         case format_kind::cublaslt_blocked: ss << cublasltfmt2str(md); break;
         case format_kind::wino:
         case format_kind::rnn_packed:
+        case format_kind::zen_packed:
         case format_kind::opaque: ss << "::"; break;
-        case format_kind::sparse: ss << ":" << mdw.encoding() << ":"; break;
+        case format_kind::sparse: ss << ":" << mdw.encoding();
+#if DNNL_EXPERIMENTAL_GROUPED_MEMORY
+            if (mdw.is_grouped_desc()) {
+                ss << ":" << mdw.sparse_desc().grouped_desc.variable_dim_idx;
+                ss << ":" << mdw.sparse_desc().grouped_desc.group_count;
+            }
+#endif
+            ss << ":";
+            break;
         case format_kind::any: ss << ":any:"; break;
         default:
             assert(!"unsupported format_kind");
@@ -1673,13 +1683,13 @@ std::string init_info_sdpa(const engine_t *e, const pd_t *pd) {
     ss << ",alg:" << desc->softmax_alg;
     if (pd->with_attn_mask()) {
         auto *md = desc->attn_mask_md();
-        ss << delimiter << "msk:" << (md->dims[2] == 1 ? 1 : 2) << 'd';
+        ss << delimiter << "msk:buffer_" << (md->dims[2] == 1 ? 1 : 2) << 'd';
     } else if (pd->with_causal_mask()) {
         ss << delimiter;
         if (desc->mask_type == attn_mask_type::top_left)
-            ss << "msk:causal:top_left";
+            ss << "msk:causal_top_left";
         else
-            ss << "msk:causal:bottom_right";
+            ss << "msk:causal_bottom_right";
     }
     if (pd->with_attn_scale()) {
         ss << delimiter << "scl:";
@@ -1766,8 +1776,26 @@ void verbose_printf_impl(const char *raw_fmt_str, verbose_t::flag_kind kind) {
 #ifdef DNNL_EXPERIMENTAL_LOGGING
     const log_manager_t &log_manager = log_manager_t::get_log_manager();
 
-    if (log_manager.is_logger_enabled())
-        log_manager.log(fmt_str.c_str(), align_verbose_mode_to_log_level(kind));
+    if (log_manager.is_logger_enabled()) {
+        static const std::map<verbose_t::flag_kind, log_manager_t::log_level_t>
+                verbose_to_log_map {
+                        {verbose_t::all, log_manager_t::trace},
+                        {verbose_t::debuginfo, log_manager_t::debug},
+                        {verbose_t::level1, log_manager_t::info},
+                        {verbose_t::level2, log_manager_t::info},
+                        {verbose_t::create_dispatch, log_manager_t::info},
+                        {verbose_t::create_check, log_manager_t::info},
+                        {verbose_t::create_profile, log_manager_t::info},
+                        {verbose_t::profile_externals, log_manager_t::info},
+                        {verbose_t::exec_profile, log_manager_t::info},
+                        {verbose_t::exec_check, log_manager_t::error},
+                        {verbose_t::error, log_manager_t::critical},
+                        {verbose_t::warn, log_manager_t::warn},
+                        {verbose_t::none, log_manager_t::off},
+                };
+
+        log_manager.log(fmt_str.c_str(), verbose_to_log_map.at(kind));
+    }
     if (log_manager.is_console_enabled()) {
         printf("%s", fmt_str.c_str());
         fflush(stdout);
@@ -1814,7 +1842,7 @@ std::string rt_dims2fmt_str(primitive_kind_t prim_kind,
     return s;
 }
 
-void pd_info_t::init(engine_t *engine, const primitive_desc_t *pd) {
+void pd_info_t::init(const engine_t *engine, const primitive_desc_t *pd) {
     // Handles VERBOSE_DISABLE since `is_initialized_` is set to `true`.
     if (is_initialized_) return;
 

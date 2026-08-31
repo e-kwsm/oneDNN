@@ -15,6 +15,7 @@
 *******************************************************************************/
 
 #include "gpu/intel/ze/utils.hpp"
+#include <memory>
 
 #include "gpu/intel/jit/binary_format.hpp"
 #include "gpu/intel/jit/utils/type_bridge.hpp"
@@ -42,7 +43,7 @@ status_t get_ze_device_enabled_systolic_intel(
     deviceModProps.stype = ZE_STRUCTURE_TYPE_DEVICE_MODULE_PROPERTIES;
     deviceModProps.pNext = &deviceModPropsExt;
 
-    CHECK(xpu::ze::zeDeviceGetModuleProperties(device, &deviceModProps));
+    ZE_CHECK(xpu::ze::zeDeviceGetModuleProperties(device, &deviceModProps));
     mayiuse_systolic
             = deviceModPropsExt.flags & ZE_INTEL_DEVICE_MODULE_EXP_FLAG_DPAS;
     return status::success;
@@ -59,7 +60,7 @@ status_t get_ze_device_enabled_native_float_atomics(
     deviceProps.stype = ZE_STRUCTURE_TYPE_DEVICE_MODULE_PROPERTIES;
     deviceProps.pNext = &fltAtom;
 
-    CHECK(xpu::ze::zeDeviceGetModuleProperties(device, &deviceProps));
+    ZE_CHECK(xpu::ze::zeDeviceGetModuleProperties(device, &deviceProps));
 
     ze_device_fp_atomic_ext_flags_t atomic_load_store
             = ZE_DEVICE_FP_ATOMIC_EXT_FLAG_GLOBAL_LOAD_STORE
@@ -106,7 +107,7 @@ status_t get_device_ip(ze_device_handle_t device, uint32_t &ip_version) {
     deviceProps.stype = ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
     deviceProps.pNext = &devicePropsIP;
 
-    CHECK(xpu::ze::zeDeviceGetProperties(device, &deviceProps));
+    ZE_CHECK(xpu::ze::zeDeviceGetProperties(device, &deviceProps));
     ip_version = devicePropsIP.ipVersion;
     return status::success;
 }
@@ -128,9 +129,8 @@ status_t compile_ocl_module(ze_module_handle_t *module_ptr,
     ze_module_handle_t module_handle;
     // TODO: enable debug capabilities.
     // ze_module_build_log_handle_t module_build_log_handle;
-    auto st = xpu::ze::zeModuleCreate(context, device, &module_desc,
-            &module_handle, /* &module_build_log_handle */ nullptr);
-    if (st != status::success) return st;
+    ZE_CHECK(xpu::ze::zeModuleCreate(context, device, &module_desc,
+            &module_handle, /* &module_build_log_handle */ nullptr));
 
     *module_ptr = module_handle;
 
@@ -150,9 +150,8 @@ status_t compile_native_module(ze_module_handle_t *module_ptr,
     ze_module_handle_t module_handle;
     // TODO: enable under debug capabilities.
     // ze_module_build_log_handle_t module_build_log_handle;
-    auto st = xpu::ze::zeModuleCreate(context, device, &module_desc,
-            &module_handle, /* &module_build_log_handle */ nullptr);
-    if (st != status::success) return st;
+    ZE_CHECK(xpu::ze::zeModuleCreate(context, device, &module_desc,
+            &module_handle, /* &module_build_log_handle */ nullptr));
 
     *module_ptr = module_handle;
     return status::success;
@@ -162,15 +161,14 @@ status_t compile_native_module(ze_module_handle_t *module_ptr,
 
 status_t init_gpu_hw_info(impl::engine_t *engine, ze_device_handle_t device,
         ze_context_handle_t context, uint32_t &ip_version,
-        compute::gpu_arch_t &gpu_arch, compute::gpu_product_t &product_,
+        compute::gpu_arch_t &gpu_arch, std::unique_ptr<ngen::Product> &product_,
         uint64_t &native_extensions, bool &mayiuse_systolic,
         bool &mayiuse_ngen_kernels, bool &is_efficient_64bit) {
     using namespace ngen;
-    ngen::Product product = LevelZeroCodeGenerator<HW::Unknown>::detectHWInfo(
-            context, device);
+    product_ = utils::make_unique<ngen::Product>(
+            LevelZeroCodeGenerator<HW::Unknown>::detectHWInfo(context, device));
 
-    gpu_arch = jit::convert_ngen_arch_to_dnnl(ngen::getCore(product.family));
-    std::memcpy(&product_, &product, sizeof(ngen::Product));
+    gpu_arch = jit::convert_ngen_arch_to_dnnl(ngen::getCore(product_->family));
 
     mayiuse_systolic = false;
     if (get_ze_device_enabled_systolic_intel(device, mayiuse_systolic)
@@ -179,21 +177,21 @@ status_t init_gpu_hw_info(impl::engine_t *engine, ze_device_handle_t device,
 
     /* Some old drivers do not report systolic availability. Manually override
        systolic availability based on product family. */
-    switch (product.family) {
+    switch (product_->family) {
         case ProductFamily::DG2:
         case ProductFamily::ARL:
         case ProductFamily::PVC: mayiuse_systolic = true;
         default: break;
     }
 
-    bool is_xelpg = (product.family == ProductFamily::ARL
-            || product.family == ProductFamily::MTL);
+    bool is_xelpg = (product_->family == ProductFamily::ARL
+            || product_->family == ProductFamily::MTL);
     CHECK(get_ze_device_enabled_native_float_atomics(
             device, native_extensions, is_xelpg));
 
     is_efficient_64bit
             = LevelZeroCodeGenerator<HW::Unknown>::detectEfficient64Bit(
-                    context, device, getCore(product.family));
+                    context, device, getCore(product_->family));
     CHECK(jit::init_mayiuse_ngen_kernels(
             engine, gpu_arch, mayiuse_ngen_kernels));
 
@@ -205,7 +203,7 @@ status_t init_gpu_hw_info(impl::engine_t *engine, ze_device_handle_t device,
 
 status_t get_binary_size(
         ze_module_handle_t module_handle, size_t *binary_size) {
-    CHECK(xpu::ze::zeModuleGetNativeBinary(
+    ZE_CHECK(xpu::ze::zeModuleGetNativeBinary(
             module_handle, binary_size, nullptr));
     return status::success;
 }
@@ -216,7 +214,7 @@ status_t get_module_binary(
     CHECK(get_binary_size(module_handle, &module_binary_size));
 
     binary.resize(module_binary_size);
-    CHECK(xpu::ze::zeModuleGetNativeBinary(
+    ZE_CHECK(xpu::ze::zeModuleGetNativeBinary(
             module_handle, &module_binary_size, binary.data()));
 
     return status::success;
@@ -224,10 +222,11 @@ status_t get_module_binary(
 
 status_t get_kernel_binary(ze_kernel_handle_t kernel, xpu::binary_t &binary) {
     size_t binary_size = 0;
-    CHECK(xpu::ze::zeKernelGetBinaryExp(kernel, &binary_size, nullptr));
+    ZE_CHECK(xpu::ze::zeKernelGetBinaryExp(kernel, &binary_size, nullptr));
 
     binary.resize(binary_size);
-    CHECK(xpu::ze::zeKernelGetBinaryExp(kernel, &binary_size, binary.data()));
+    ZE_CHECK(
+            xpu::ze::zeKernelGetBinaryExp(kernel, &binary_size, binary.data()));
 
     return status::success;
 }
@@ -264,30 +263,19 @@ status_t create_kernels(ze_device_handle_t device, ze_context_handle_t context,
     for (size_t i = 0; i < kernel_names.size(); i++) {
         if (kernel_names[i] == nullptr) continue;
 
+        // If the kernel_name is empty, it likely means it's coming from ngen.
+        // In this case it's expected that an ngen-based program contains only
+        // 1 kernel.
+        //
+        // `xpu::ze::create_kernel` would query a name from a module.
         std::string kernel_name(kernel_names[i]);
         if (kernel_name.empty()) {
-            // (copied from OCL backend).
-            // Handle the ngen cases when kernel name is not available.
-            // Query the kernel name from the program. It's expected that
-            // an ngen based program contains only 1 kernel.
             if (kernel_names.size() != 1 || kernels.size() != 1)
                 return status::invalid_arguments;
-
-            uint32_t count = 1;
-            const char *name = nullptr;
-            CHECK(xpu::ze::zeModuleGetKernelNames(*module_ptr, &count, &name));
-
-            kernel_name = std::string(name);
-            assert(!kernel_name.empty());
-            if (kernel_name.empty()) return status::runtime_error;
         }
-        ze_kernel_desc_t kernel_desc {};
-        kernel_desc.stype = ZE_STRUCTURE_TYPE_KERNEL_DESC;
-        kernel_desc.pKernelName = kernel_name.c_str();
 
         ze_kernel_handle_t kernel;
-        CHECK(xpu::ze::zeKernelCreate(*module_ptr, &kernel_desc, &kernel));
-
+        CHECK(xpu::ze::create_kernel(kernel, *module_ptr, kernel_name));
         kernels[i] = kernel;
     }
 

@@ -149,11 +149,8 @@ status_t engine_t::create_kernels(std::vector<compute::kernel_t> *kernels,
             device(), context(), code, options, binary));
 
     if (kernel_ctx.has_custom_headers()
-            && gemmstone::microkernel::hasMicrokernels(code_c)) {
-        try {
-            gemmstone::microkernel::fuse(binary, code_c);
-        } catch (...) { return status::runtime_error; }
-    }
+            && gemmstone::microkernel::hasMicrokernels(code_c))
+        CHECK(compute::fuse_microkernels(binary, code_c, dev_info->grf_size()));
 
     CHECK(convert_to_ze(*kernels, kernel_names, binary));
 
@@ -180,6 +177,7 @@ status_t engine_t::create_kernel_from_binary(compute::kernel_t &kernel,
 status_t engine_t::create_kernels_from_cache_blob(
         const cache_blob_t &cache_blob, std::vector<compute::kernel_t> &kernels,
         const std::vector<const char *> &kernel_names) const {
+    static const char *empty_kernel_name = "";
     if (kind() != engine_kind::gpu) {
         assert(!"not expected");
         return status::invalid_arguments;
@@ -188,15 +186,16 @@ status_t engine_t::create_kernels_from_cache_blob(
     kernels = std::vector<compute::kernel_t>(kernel_names.size());
     for (size_t i = 0; i < kernel_names.size(); i++) {
         if (!kernel_names[i] && kernel_names.size() > 1) continue;
-        std::string kernel_name(kernel_names[i] ? kernel_names[i] : "");
+        const char *kernel_name
+                = kernel_names[i] ? kernel_names[i] : empty_kernel_name;
 
         const uint8_t *binary_data = nullptr;
         size_t binary_size = 0;
         CHECK(cache_blob.get_binary(&binary_data, &binary_size));
 
         xpu::binary_t binary(binary_data, binary_data + binary_size);
-        CHECK(create_kernel_from_binary(kernels[i], binary, kernel_name.c_str(),
-                compute::program_src_t()));
+        CHECK(create_kernel_from_binary(
+                kernels[i], binary, kernel_name, compute::program_src_t()));
     }
 
     return status::success;

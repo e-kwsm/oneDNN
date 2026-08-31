@@ -1,0 +1,77 @@
+/*******************************************************************************
+* Copyright 2020 Intel Corporation
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*******************************************************************************/
+
+#ifndef CPU_X64_JIT_BRGEMM_CONV_RELO_COPY_KERNEL_HPP
+#define CPU_X64_JIT_BRGEMM_CONV_RELO_COPY_KERNEL_HPP
+
+#include "common/c_types_map.hpp"
+#include "cpu/x64/jit_generator.hpp"
+
+namespace dnnl {
+namespace impl {
+namespace cpu {
+namespace x64 {
+
+struct jit_brgemm_relo_copy_to_wbuffer_t : public jit_generator_t {
+    struct cfg_t {
+        cpu_isa_t isa {isa_undef};
+        data_type_t wei_dt {data_type_t::dnnl_data_type_undef};
+        int out_oc_block {0};
+        int inp_oc_block {0};
+        dim_t rd {0};
+        bool is_rd_padded_to_block {false};
+        dim_t inp_ocb_offs {0};
+        dim_t last_occ_to_copy {0};
+    };
+
+    struct ctx_t {
+        const char *src {nullptr};
+        char *dst {nullptr};
+        size_t last_ocb {0};
+    };
+
+    DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_brgemm_relo_copy_to_wbuffer_t)
+
+    using reg64_t = Xbyak::Reg64;
+
+    jit_brgemm_relo_copy_to_wbuffer_t(const cfg_t &ajcp)
+        : jit_generator_t(jit_name(), ajcp.isa), wjcp(ajcp) {}
+
+private:
+    cfg_t wjcp;
+
+    const reg64_t reg_src = rax;
+    const reg64_t reg_dst = rbx;
+    const reg64_t aux_reg_src = r10;
+    const reg64_t aux_reg_dst = r11;
+    const reg64_t reg_tmp = rdx;
+
+    const Xbyak::Opmask kmask_load = k2;
+
+    const Xbyak::Zmm zmm_src = zmm0;
+    const Xbyak::Zmm zmm_dst = zmm1;
+    const Xbyak::Zmm zmm_zero = zmm2;
+    const Xbyak::Zmm zmm_idx = zmm3;
+
+    void generate() override;
+};
+
+} // namespace x64
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
+
+#endif

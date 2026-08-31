@@ -25,8 +25,10 @@
 #include "dnnl_common.hpp"
 #include "graph.hpp"
 #include "ref_partition.hpp"
+#include "utils/execution_mode.hpp"
 #include "utils/parser.hpp"
 #include "utils/stream_kind.hpp"
+#include "utils/stringstream.hpp"
 
 namespace {
 
@@ -244,7 +246,7 @@ int map_unmap_partition_mem(graph::partition_mem_map_t &partition_mem_map,
 int make_input_tensors(std::vector<dnnl::graph::tensor> &input_ts,
         const graph::partition_mem_map_t &partition_mem_map,
         const graph::op_ref_list_t &ops,
-        const std::vector<dnnl::graph::logical_tensor> &ins) {
+        const std::vector<dnnl::graph::logical_tensor> &ins, res_t *res) {
     for (size_t idx = 0; idx < ins.size(); ++idx) {
         // find the op id of the input logical tensor
         const auto &in = ins[idx];
@@ -261,7 +263,7 @@ int make_input_tensors(std::vector<dnnl::graph::tensor> &input_ts,
         const auto iter = partition_mem_map.find(lt_id);
         if (iter != partition_mem_map.end()) {
             const auto &graph_mem = iter->second;
-            input_ts[idx] = graph_mem.make_graph_tensor(lt);
+            input_ts[idx] = graph_mem.make_graph_tensor(lt, res);
         } else {
             BENCHDNN_PRINT(0,
                     "FAIL: Cannot find graph memory with lt id %zu! \n", lt_id);
@@ -282,7 +284,8 @@ int make_output_tensors(std::vector<dnnl::graph::tensor> &output_ts,
         const graph::partition_mem_map_t &partition_mem_map,
         const graph::op_ref_list_t &ops,
         const std::vector<dnnl::graph::logical_tensor> &outs,
-        const std::vector<std::pair<size_t, size_t>> &inplace_ports) {
+        const std::vector<std::pair<size_t, size_t>> &inplace_ports,
+        res_t *res) {
 
     for (size_t idx = 0; idx < outs.size(); ++idx) {
         // find the op id of the output logical tensor
@@ -305,7 +308,7 @@ int make_output_tensors(std::vector<dnnl::graph::tensor> &output_ts,
         }
         const auto &graph_mem = iter->second;
         if (has_bench_mode_bit(mode_bit_t::corr)) {
-            output_ts[idx] = graph_mem.make_graph_tensor(lt);
+            output_ts[idx] = graph_mem.make_graph_tensor(lt, res);
         } else {
             // For performance mode, we need special handling for graph
             // with in-place ports by using the graph memory of input
@@ -321,7 +324,8 @@ int make_output_tensors(std::vector<dnnl::graph::tensor> &output_ts,
                 const auto inplace_iter = partition_mem_map.find(inplace_lt_id);
                 if (inplace_iter != partition_mem_map.end()) {
                     const auto &inplace_graph_mem = inplace_iter->second;
-                    output_ts[idx] = inplace_graph_mem.make_graph_tensor(lt);
+                    output_ts[idx]
+                            = inplace_graph_mem.make_graph_tensor(lt, res);
                 } else {
                     BENCHDNN_PRINT(0,
                             "FAIL: Cannot find logical tensor with id %zu! "
@@ -331,7 +335,7 @@ int make_output_tensors(std::vector<dnnl::graph::tensor> &output_ts,
                 }
 
             } else {
-                output_ts[idx] = graph_mem.make_graph_tensor(lt);
+                output_ts[idx] = graph_mem.make_graph_tensor(lt, res);
             }
         }
     }
@@ -361,9 +365,9 @@ std::string case_to_str(const std::string &json_file,
         const size_t expected_n_partitions, const int64_t mb,
         const dnnl_data_type_t dt,
         const std::map<size_t, dnnl_data_type_t> &dt_map,
-        const std::map<size_t, std::string> &op_kind_map) {
-    dnnl::impl::stringstream_t s;
-    dump_global_params(s);
+        const std::map<size_t, std::string> &op_kind_map,
+        const std::map<size_t, std::string> &tensor_property) {
+    stringstream_t s;
 
     if (mb != 0) { s << "--mb=" << mb << " "; }
 
@@ -385,6 +389,17 @@ std::string case_to_str(const std::string &json_file,
         s << "--op-kind=";
         std::string tmp;
         for (const auto &v : op_kind_map) {
+            tmp += (std::to_string(v.first) + ":" + v.second + "+");
+        }
+        // Remove dangling '+'.
+        s << tmp.substr(0, tmp.size() - 1) << " ";
+    }
+
+    if (!(tensor_property.size() == 1 && tensor_property.count(SIZE_MAX) == 1
+                && tensor_property.at(SIZE_MAX) == "default")) {
+        s << "--tensor-property=";
+        std::string tmp;
+        for (const auto &v : tensor_property) {
             tmp += (std::to_string(v.first) + ":" + v.second + "+");
         }
         // Remove dangling '+'.
@@ -435,8 +450,7 @@ int skip_unimplemented_ops(const dnnl::graph::partition &partition,
     static const std::vector<std::string> unimplemented_ops {"Pow"};
     // A list of ops that don't have DNNL backend support so far on GPU.
     static const std::vector<std::string> unimplemented_ops_gpu {};
-    const auto &eng = get_graph_engine();
-    bool is_gpu = eng.get_kind() == dnnl::engine::kind::gpu;
+    const bool is_gpu = get_graph_engine().is_gpu();
     // For an unsupported partition, retrieve all operation IDs, find a
     // correspondent operation kind in a deserialized_graph_t and match it against
     // a list of known unsupported ops.
@@ -479,8 +493,7 @@ int skip_unimplemented_ops(const dnnl::graph::partition &partition,
 int skip_unimplemented_accumulation_mode(
         const dnnl::graph::partition &partition, const deserialized_graph_t &dg,
         res_t *res) {
-    const auto &eng = get_graph_engine();
-    bool is_cpu = eng.get_kind() == dnnl::engine::kind::cpu;
+    const bool is_cpu = get_graph_engine().is_cpu();
     if (!is_cpu) return OK;
     const std::vector<size_t> &partition_op_ids = partition.get_ops();
     for (const size_t op_id : partition_op_ids) {
@@ -600,6 +613,22 @@ int skip_unimplemented_memory_kind(res_t *res) {
     return OK;
 }
 
+int skip_unimplemented_execution_mode(
+        const deserialized_graph_t &dg, const engine_t &eng, res_t *res) {
+    if (use_sycl_graph_exec(eng)
+            && (dg.has_backward_op()
+                    || dg.get_recognized_pattern()
+                            == graph_recognized_pattern_t::sdpa_bwd)) {
+        BENCHDNN_PRINT(2, "%s\n",
+                "[INFO]: Skip backward ops and patterns for SYCL graph "
+                "execution mode.");
+        res->state = SKIPPED;
+        res->reason = reason_t::skip_execution_mode;
+        return OK;
+    }
+    return OK;
+}
+
 int doit(const prb_t *prb, res_t *res) {
     if (bench_mode == bench_mode_t::list) return res->state = LISTED, OK;
 
@@ -618,20 +647,17 @@ int doit(const prb_t *prb, res_t *res) {
     SAFE(skip_unimplemented_partitions(partitions, dg, prb, res), WARN);
     if (res->state == SKIPPED) return OK;
 
-    const auto &eng = get_graph_engine();
-    const dnnl::engine &dnnl_eng = static_cast<const dnnl::engine>(eng);
+    const dnnl::engine &eng = get_graph_engine();
+    stream_t strm(eng);
 
-    const bool use_profiling = has_bench_mode_bit(mode_bit_t::perf)
-            && is_gpu(dnnl_eng.get()) && !is_nvidia_gpu(dnnl_eng.get())
-            && !is_amd_gpu(dnnl_eng.get());
-    dnnl_stream_flags_t flags
-            = stream_kind2stream_flags(stream_kind, use_profiling);
-    cpp_stream_t strm {eng, static_cast<dnnl::stream::flags>(flags)};
+    skip_unimplemented_execution_mode(dg, eng, res);
+    if (res->state == SKIPPED) return OK;
 
     // mark the output logical tensors of partition as ANY layout enabled
     std::unordered_set<size_t> id_to_set_any_layout;
     std::vector<compiled_partition> c_partitions;
     std::vector<std::vector<tensor>> input_ts_all, output_ts_all;
+    std::vector<tensor> scratchpad_ts_all;
     // Extend the partition_mem_map_t's lifecycle as input_ts/output_ts hold the
     // same addresses as in partition_mem_map_t for perf mode
     // TODO: Once the API allocating memory when creating tensors is provided by
@@ -671,6 +697,18 @@ int doit(const prb_t *prb, res_t *res) {
         record_queried_logical_tensors(
                 outputs, c_partitions.back(), id_to_queried_logical_tensors);
     }
+
+    // Allocate scratchpad buffer for each compiled partition.
+    scratchpad_ts_all.reserve(c_partitions.size());
+    for (auto &cp : c_partitions) {
+        auto scratchpad_lt = cp.get_scratchpad_logical_tensor();
+        if (scratchpad_lt.get_mem_size() > 0) {
+            scratchpad_ts_all.emplace_back(scratchpad_lt, eng);
+        } else {
+            scratchpad_ts_all.emplace_back();
+        }
+    }
+
     if (bench_mode == bench_mode_t::init) return res->state = INITIALIZED, OK;
 
     // `idx_offset` points to the correspondent `compiled_partition`, if any
@@ -735,7 +773,7 @@ int doit(const prb_t *prb, res_t *res) {
         const auto &inplace_ports
                 = c_partitions[i - idx_offset].get_inplace_ports();
         if (make_input_tensors(
-                    input_ts, partition_mem_map_v[i], op_list, inputs)
+                    input_ts, partition_mem_map_v[i], op_list, inputs, res)
                 != OK) {
             BENCHDNN_PRINT(0,
                     "FAIL: Fail to construct input tesnors for partition "
@@ -744,7 +782,7 @@ int doit(const prb_t *prb, res_t *res) {
             return res->state = FAILED, FAIL;
         }
         if (make_output_tensors(output_ts, partition_mem_map_v[i], op_list,
-                    outputs, inplace_ports)
+                    outputs, inplace_ports, res)
                 != OK) {
             BENCHDNN_PRINT(0,
                     "FAIL: Fail to construct output tesnors for partition "
@@ -761,26 +799,19 @@ int doit(const prb_t *prb, res_t *res) {
         graph_mem_mgr.start_graph_mem_check();
         BENCHDNN_PRINT(3, "[INFO]: Start execution of partition #%zd.\n", i);
 
-        // TODO: consolidate with primitives.
-        if (use_sycl_graph_exec()) {
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_SYCL
-            ::sycl::queue queue = dnnl::sycl_interop::get_queue(strm);
-            SAFE(sycl_graph_ctx::validate_backend(queue, res), FAIL);
-
+        if (use_sycl_graph_exec(eng)) {
             std::function<void()> record_fn = std::bind(
                     compiled_partition_executor, c_partitions[i - idx_offset],
-                    std::ref(strm), input_ts, output_ts);
-            auto exec = sycl_graph_ctx::record_and_finalize(
-                    strm, queue, record_fn, res);
-            if (!exec) return FAIL;
-            SAFE(sycl_graph_ctx::replay(queue, *exec, res), FAIL);
-#endif
+                    std::ref(strm), input_ts, output_ts,
+                    scratchpad_ts_all[i - idx_offset]);
+            SAFE(execute_in_graph_mode(strm, record_fn, res), WARN);
         } else {
             stream_staller_t staller(strm);
             // Need following clean-up steps as the memories have been mappped
             // to device. Otherwise the deconstruction will fail.
-            DNN_GRAPH_SAFE(c_partitions[i - idx_offset].execute(
-                                   strm, input_ts, output_ts),
+            DNN_GRAPH_SAFE(
+                    c_partitions[i - idx_offset].execute(strm, input_ts,
+                            output_ts, scratchpad_ts_all[i - idx_offset]),
                     (WARN | NEED_CLEANUP), res);
             staller.release();
 
@@ -825,7 +856,7 @@ int doit(const prb_t *prb, res_t *res) {
 
     if (has_bench_mode_bit(mode_bit_t::perf)) {
         SAFE(measure_perf(res->timer_map.perf_timer(), c_partitions,
-                     input_ts_all, output_ts_all, res),
+                     input_ts_all, output_ts_all, scratchpad_ts_all, res),
                 WARN);
     }
 
