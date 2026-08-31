@@ -18,6 +18,8 @@
 
 #include <thread>
 
+#include "common/verbose.hpp"
+
 #include "cpu/platform.hpp"
 
 #if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
@@ -32,6 +34,7 @@
 
 #if DNNL_X64
 #include "cpu/x64/cpu_isa_traits.hpp"
+#include "cpu/x64/platform.hpp"
 #elif DNNL_AARCH64
 #include "cpu/aarch64/cpu_isa_traits.hpp"
 #if defined(DNNL_AARCH64_USE_ACL)
@@ -122,6 +125,8 @@ bool has_data_type_support(data_type_t data_type) {
 #endif
 #elif DNNL_AARCH64
             return aarch64::mayiuse_bf16();
+#elif DNNL_RV64
+            return rv64::mayiuse(rv64::zvfbfwma);
 #else
             return false;
 #endif
@@ -129,8 +134,8 @@ bool has_data_type_support(data_type_t data_type) {
 #if DNNL_X64
             return x64::mayiuse(x64::avx512_core_fp16)
                     || x64::mayiuse(x64::avx2_vnni_2);
-#elif defined(DNNL_AARCH64_USE_ACL)
-            return arm_compute::CPUInfo::get().has_fp16();
+#elif DNNL_AARCH64
+            return aarch64::mayiuse_f16();
 #elif DNNL_RV64
             return rv64::mayiuse(rv64::zvfh);
 #else
@@ -138,12 +143,12 @@ bool has_data_type_support(data_type_t data_type) {
 #endif
         case data_type::f8_e5m2:
         case data_type::f8_e4m3:
+        case data_type::e8m0:
 #if DNNL_X64
             return x64::mayiuse(x64::avx512_core_fp16);
 #else
             return false;
 #endif
-        case data_type::f4_e3m0:
         case data_type::f4_e2m1: return false;
         default: return true;
     }
@@ -267,16 +272,9 @@ unsigned get_per_core_cache_size(int level) {
             default: return 0U;
         }
     };
-
 #if DNNL_X64
-    using namespace x64;
-    if (cpu().getDataCacheLevels() == 0) return guess(level);
-
-    if (level > 0 && (unsigned)level <= cpu().getDataCacheLevels()) {
-        unsigned l = level - 1;
-        return cpu().getDataCacheSize(l) / cpu().getCoresSharingDataCache(l);
-    } else
-        return 0;
+    if (x64::cpu().getDataCacheLevels() == 0) return guess(level);
+    return x64::platform::get_per_core_cache_size(level);
 #elif DNNL_AARCH64
     const auto num_caches
             = static_cast<int>(aarch64::cpu().getLastDataCacheLevel());
@@ -287,10 +285,19 @@ unsigned get_per_core_cache_size(int level) {
         const auto &cache_level
                 = static_cast<Xbyak_aarch64::util::Arm64CacheLevel>(level);
 
-        return aarch64::cpu().getDataCacheSize(cache_level)
-                / aarch64::cpu().getCoresSharingDataCache(cache_level);
+        const auto sharing
+                = aarch64::cpu().getCoresSharingDataCache(cache_level);
+        const auto sz = sharing
+                ? aarch64::cpu().getDataCacheSize(cache_level) / sharing
+                : 0;
+        if (sz) return sz;
+        VWARN(common, common,
+                "unable to query L%d data cache size; falling back to a "
+                "guess, which may affect cache-based heuristics",
+                level);
+        return guess(level);
     } else {
-        return 0;
+        return guess(level);
     }
 #else
     return guess(level);

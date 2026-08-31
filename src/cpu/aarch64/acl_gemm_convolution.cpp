@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2020-2025 Arm Ltd. and affiliates
+* Copyright 2020-2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,6 +18,7 @@
 #include "acl_gemm_convolution.hpp"
 #include "acl_convolution_utils.hpp"
 #include "common/memory_tracking.hpp"
+#include "cpu/aarch64/cpu_isa_traits.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -50,7 +52,7 @@ const std::map<int, conv_key_t> gemm_conv_keys
 template <data_type_t src_t, data_type_t wei_t, data_type_t dst_t,
         data_type_t bia_t>
 status_t acl_gemm_convolution_fwd_t<src_t, wei_t, dst_t, bia_t>::pd_t::init(
-        engine_t *engine) {
+        const engine_t *engine) {
     using namespace data_type;
     using smask_t = primitive_attr_t::skip_mask_t;
 
@@ -63,6 +65,9 @@ status_t acl_gemm_convolution_fwd_t<src_t, wei_t, dst_t, bia_t>::pd_t::init(
     if (!ok) return status::unimplemented;
 
     if (weights_md_.ndims != 4) return status::unimplemented;
+
+    VDISPATCH_CONV(!(mayiuse(sve) && OC() * IC() <= 2048),
+            "brgconv:sve is faster for small OC * IC");
 
     // General Compute Library checks, memory tags are also set there
     CHECK(acl_convolution_utils::acl_init_conf(
@@ -96,6 +101,8 @@ status_t acl_gemm_convolution_fwd_t<src_t, wei_t, dst_t, bia_t>::init(
             &acp_.dst_tensor_info, acp_.padstride_info, acp_.weights_info,
             acp_.dilation_info, acp_.act_info, acp_.fast_math);
     acl_obj_->aux_mem_req = acl_obj_->conv.workspace();
+    post_ops_ = pd()->post_ops;
+    CHECK(post_ops_.init_primitives(engine));
     return status::success;
 }
 
@@ -105,7 +112,8 @@ status_t
 acl_gemm_convolution_fwd_t<src_t, wei_t, dst_t, bia_t>::execute_forward(
         const exec_ctx_t &ctx) const {
     return execute_forward_conv_acl<acl_obj_t<Op>, pd_t, src_data_t, wei_data_t,
-            dst_data_t, bia_data_t>(ctx, acl_obj_.get(), pd(), gemm_conv_keys);
+            dst_data_t, bia_data_t>(
+            ctx, acl_obj_.get(), pd(), gemm_conv_keys, post_ops_);
 }
 
 using namespace data_type;

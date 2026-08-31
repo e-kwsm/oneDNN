@@ -20,7 +20,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -28,15 +27,18 @@
 
 #include "dnn_types.hpp"
 #include "dnnl_debug.hpp"
-#include "tests/test_thread.hpp"
 #include "utils/dims.hpp"
+#include "utils/execution_mode.hpp"
 #include "utils/impl_filter.hpp"
 #include "utils/settings.hpp"
+#include "utils/stringstream.hpp"
+
+#include "tests/thread_context.hpp"
 
 namespace parser {
 
 extern bool last_parsed_is_problem;
-extern dnnl::impl::stringstream_t help_ss;
+extern stringstream_t help_ss;
 
 namespace utils {
 
@@ -69,6 +71,8 @@ attr_t::post_ops_t str2attr_post_ops(const std::string &s);
 
 bool str2bool(const std::string &s);
 
+execution_mode_t str2execution_mode(const std::string &s);
+
 } // namespace parsers
 
 // `parse_vector_str` is a heart parser routine which splits input string `str`
@@ -91,7 +95,7 @@ bool str2bool(const std::string &s);
 // treated as vector object. `process_func` should return an object of type `U`
 // in this notation.
 template <typename T, typename F>
-static bool parse_vector_str(T &vec, const T &def, F process_func,
+bool parse_vector_str(T &vec, const T &def, F process_func,
         const std::string &str, char delimiter = ',', bool allow_empty = true) {
     if (str.empty()) return vec = def, true;
 
@@ -122,10 +126,9 @@ static bool parse_vector_str(T &vec, const T &def, F process_func,
 }
 
 template <typename T, typename F>
-static bool parse_multivector_str(std::vector<T> &vec,
-        const std::vector<T> &def, F process_func, const std::string &str,
-        char vector_delim = ',', char element_delim = ':',
-        bool allow_empty = true) {
+bool parse_multivector_str(std::vector<T> &vec, const std::vector<T> &def,
+        F process_func, const std::string &str, char vector_delim = ',',
+        char element_delim = ':', bool allow_empty = true) {
     auto process_subword = [&](const char *word) {
         T v, empty_def_v; // defualt value is not expected to be set here
         // parse vector elements separated by @p element_delim
@@ -139,9 +142,8 @@ static bool parse_multivector_str(std::vector<T> &vec,
 }
 
 template <typename T, typename F>
-static bool parse_vector_option(T &vec, const T &def, F process_func,
-        const char *str, const std::string &option_name,
-        const std::string &help_message = "") {
+bool parse_vector_option(T &vec, const T &def, F process_func, const char *str,
+        const std::string &option_name, const std::string &help_message = "") {
     utils::add_option_to_help(option_name, help_message);
     const std::string pattern = utils::get_pattern(option_name);
     if (!utils::option_matched(pattern, str)) return false;
@@ -149,10 +151,10 @@ static bool parse_vector_option(T &vec, const T &def, F process_func,
 }
 
 template <typename T, typename F>
-static bool parse_multivector_option(std::vector<T> &vec,
-        const std::vector<T> &def, F process_func, const char *str,
-        const std::string &option_name, const std::string &help_message = "",
-        char vector_delim = ',', char element_delim = ':') {
+bool parse_multivector_option(std::vector<T> &vec, const std::vector<T> &def,
+        F process_func, const char *str, const std::string &option_name,
+        const std::string &help_message = "", char vector_delim = ',',
+        char element_delim = ':') {
     utils::add_option_to_help(option_name, help_message);
     const std::string pattern = utils::get_pattern(option_name);
     if (!utils::option_matched(pattern, str)) return false;
@@ -161,7 +163,7 @@ static bool parse_multivector_option(std::vector<T> &vec,
 }
 
 template <typename T, typename F>
-static bool parse_single_value_option(T &val, const T &def_val, F process_func,
+bool parse_single_value_option(T &val, const T &def_val, F process_func,
         const char *str, const std::string &option_name,
         const std::string &help_message = "") {
     utils::add_option_to_help(option_name, help_message);
@@ -173,7 +175,7 @@ static bool parse_single_value_option(T &val, const T &def_val, F process_func,
 }
 
 template <typename T, typename F>
-static bool parse_cfg(T &vec, const T &def, F process_func, const char *str,
+bool parse_cfg(T &vec, const T &def, F process_func, const char *str,
         const std::string &option_name = "cfg") {
     static const std::string help
             = "CFG    (Default: `f32`)\n    Specifies data types `CFG` for "
@@ -183,7 +185,7 @@ static bool parse_cfg(T &vec, const T &def, F process_func, const char *str,
 }
 
 template <typename T, typename F>
-static bool parse_alg(T &vec, const T &def, F process_func, const char *str,
+bool parse_alg(T &vec, const T &def, F process_func, const char *str,
         const std::string &option_name = "alg") {
     static const std::string help
             = "ALG    (Default: depends on driver)\n    Specifies operation "

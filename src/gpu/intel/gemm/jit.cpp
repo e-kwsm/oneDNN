@@ -51,14 +51,39 @@ status_t gen_t::launch_nocopy(const exec_ctx_t &ctx,
         const memory_storage_t *b_scales, const memory_storage_t *c_scales,
         const memory_storage_t *ag, const memory_storage_t *bg,
         const memory_storage_t &co, int16_t co_host_scalar,
-        const memory_storage_t *c_temp, const memory_storage_t *sround_seed,
-        int po_count, const memory_storage_t **po_srcs, int64_t offset_a,
-        int64_t offset_b, int64_t offset_c, int64_t offset_aq,
-        int64_t offset_bq, int64_t offset_co, int64_t *offset_po_src,
-        int32_t lda, int32_t ldb, int32_t ldc, int32_t m, int32_t n, int32_t k,
-        int32_t k0, float alpha, float beta, int32_t cmask, bool last_k_block,
-        bool swap_ab, bool disable_hilbert) const {
+        const memory_storage_t *c_temp,
+        const memory_storage_t *zero_buf_scratchpad,
+        const memory_storage_t *sround_seed, int po_count,
+        const memory_storage_t **po_srcs, int64_t offset_a, int64_t offset_b,
+        int64_t offset_c, int64_t offset_aq, int64_t offset_bq,
+        int64_t offset_co, int64_t *offset_po_src, int32_t lda, int32_t ldb,
+        int32_t ldc, int32_t m, int32_t n, int32_t k, int32_t k0, float alpha,
+        float beta, int32_t cmask, bool last_k_block, bool swap_ab,
+        bool disable_hilbert) const {
     if (pd()->desc()->batch() == 0) return status::success;
+
+    std::unique_ptr<memory_storage_t> zeros;
+    const memory_storage_t *zero_buf = nullptr;
+    int zp_token = 0;
+    if (nocopy_info()->fusedBeta() || nocopy_info()->fusedPostOps()) {
+        if (zero_pool) {
+            CHECK(zero_pool->claim(
+                    compute_stream, zero_buffer_bytes_, zeros, &zp_token));
+            zero_buf = zeros.get();
+        } else {
+            zero_buf = zero_buf_scratchpad;
+            auto nelems = uint32_t(zero_buffer_bytes_ / sizeof(uint32_t));
+            compute::kernel_arg_list_t zero_arg_list;
+            zero_arg_list.set(0, *zero_buf);
+            zero_arg_list.set(1, nelems);
+            compute::range_t zero_gws = {size_t(nelems)};
+            compute::range_t zero_lws
+                    = {size_t(std::min(256, (int)utils::max_pow2_div(nelems)))};
+            auto zero_nd_range = compute::nd_range_t(zero_gws, zero_lws);
+            CHECK(parallel_for(
+                    ctx, zero_nd_range, zero_fill_kernel_, zero_arg_list));
+        }
+    }
 
     uint32_t flags = 0;
     bool k_parallel_fixed
@@ -163,12 +188,8 @@ status_t gen_t::launch_nocopy(const exec_ctx_t &ctx,
             arg_list.set(argn++, int32_t(pd()->ld_binary(i)));
     }
 
-    std::unique_ptr<memory_storage_t> zeros;
-    int zp_token = 0;
     if (nocopy_info()->fusedBeta() || nocopy_info()->fusedPostOps()) {
-        CHECK(zero_pool->claim(
-                compute_stream, zero_pool_bytes_, zeros, &zp_token));
-        arg_list.set(argn++, *zeros);
+        arg_list.set(argn++, *zero_buf);
     }
 
     if (pd()->batch_dims() >= 1) {
@@ -178,12 +199,10 @@ status_t gen_t::launch_nocopy(const exec_ctx_t &ctx,
             if (swap_ab) std::swap(stride_a, stride_b);
             auto stride_c = int64_t(pd()->desc()->stride_c(i));
             if (jit::enable_generator_dsl()) {
+                auto *intel_engine = utils::downcast<intel::engine_t *>(
+                        compute_stream->engine());
                 auto hw = ngen::getCore(
-                        ((ngen::Product *)&utils::downcast<intel::engine_t *>(
-                                 compute_stream->engine())
-                                        ->device_info()
-                                        ->gpu_product())
-                                ->family);
+                        intel_engine->device_info()->product().family);
 
                 // 2d Surface pointer needs to be 64 byte aligned. When negative
                 // bounds checking is unnecessary, this restriction can be
@@ -319,9 +338,9 @@ status_t gen_t::launch_nocopy(const exec_ctx_t &ctx,
         arg_list.set(argn++, slm, nullptr);
     }
 
-    if (pd()->a_quant.zp_ndims > 0 || problem->aScale2D())
+    if (problem->aoPtrDims >= 1 || problem->aScale2D())
         arg_list.set(argn++, offset_aq);
-    if (pd()->b_quant.zp_ndims > 0 || problem->bScale2D())
+    if (problem->boPtrDims >= 1 || problem->bScale2D())
         arg_list.set(argn++, offset_bq);
 
     lws[0] *= nocopy_info()->subgroupSize;
@@ -330,7 +349,8 @@ status_t gen_t::launch_nocopy(const exec_ctx_t &ctx,
     auto nd_range = compute::nd_range_t(gws, lws);
     auto status = parallel_for(ctx, nd_range, nocopy_kernel_, arg_list);
 
-    if (nocopy_info()->fusedBeta() || nocopy_info()->fusedPostOps())
+    if (zero_pool
+            && (nocopy_info()->fusedBeta() || nocopy_info()->fusedPostOps()))
         zero_pool->async_release(zp_token, compute_stream->ctx().get_deps());
 
     return status;
@@ -342,18 +362,12 @@ status_t gen_t::execute(const exec_ctx_t &ctx) const {
     auto zero_pool = zero_pool_;
 
 #ifdef DNNL_WITH_SYCL
-    bool release_zp = false;
     const auto *sycl_stream
             = utils::downcast<const gpu::intel::sycl::stream_t *>(
                     compute_stream);
-
-    if (need_zero_pool() && sycl_stream->recording()) {
-        auto *intel_engine
-                = utils::downcast<intel::engine_t *>(compute_stream->engine());
-        CHECK(lookup_zero_pool(intel_engine, compute_stream,
-                zero_pool_chunk_size_, &zero_pool));
-        release_zp = true;
-    }
+    // The zero-pool global state management is not compatible with SYCL graph;
+    // fall back to the graph-safe zero-buffer scratchpad path.
+    if (sycl_stream->recording()) zero_pool = nullptr;
 #endif
 
     const auto d = pd()->desc();
@@ -414,6 +428,12 @@ status_t gen_t::execute(const exec_ctx_t &ctx) const {
     if (nocopy_info()->needsTempC()) {
         c_temp = ctx.get_scratchpad_grantor().get_memory_storage(
                 memory_tracking::names::key_gemm_accumulator);
+    }
+
+    std::unique_ptr<memory_storage_t> zero_buf_scratchpad;
+    if (need_zero_buffer() && !zero_pool) {
+        zero_buf_scratchpad = ctx.get_scratchpad_grantor().get_memory_storage(
+                memory_tracking::names::key_gemm_zero_buffer);
     }
 
     const memory_storage_t *po_srcs[GEMM_MAX_PO];
@@ -503,7 +523,7 @@ status_t gen_t::execute(const exec_ctx_t &ctx) const {
         }
     }
 
-    // Get host scalar zero-poins values
+    // Get host scalar zero-point values
     if (pd()->with_a_zero_points() || pd()->with_b_zero_points()) {
         ao = &GEMM_CTX_ARG_STORAGE(a_zero_point);
         bo = &GEMM_CTX_ARG_STORAGE(b_zero_point);
@@ -521,7 +541,6 @@ status_t gen_t::execute(const exec_ctx_t &ctx) const {
     if (pd()->attr()->scales_.has_host_scalars()) {
         const auto &a_scales = pd()->attr()->scales_.get(DNNL_ARG_A);
         const auto &b_scales = pd()->attr()->scales_.get(DNNL_ARG_B);
-        const auto &c_scales = pd()->attr()->scales_.get(DNNL_ARG_C);
         const auto &a_scales_storage = GEMM_CTX_ARG_STORAGE(a_scales);
         const auto &b_scales_storage = GEMM_CTX_ARG_STORAGE(b_scales);
         const auto &c_scales_storage = GEMM_CTX_ARG_STORAGE(c_scales);
@@ -536,7 +555,7 @@ status_t gen_t::execute(const exec_ctx_t &ctx) const {
             alpha *= scale_val;
         }
         // Limited support of host scalar dst scales
-        if (c_scales.is_host_scalar() && pd()->attr()->post_ops_.len() == 0) {
+        if (pd()->with_inlined_c_scale()) {
             CHECK(maybe_get_host_scalar_value(c_scales_storage, scale_val));
             gpu_assert(scale_val != 0);
             alpha /= scale_val;
@@ -597,10 +616,11 @@ status_t gen_t::execute(const exec_ctx_t &ctx) const {
                 && (k > k0 * pd()->kernel_desc()->aux_params()->wgK)) {
             status = launch_nocopy(ctx, compute_stream, zero_pool, a, b, c, ao,
                     bo, ao_host_scalar, bo_host_scalar, a_scales, b_scales,
-                    c_scales, ag, bg, *co, co_host_scalar, nullptr, sround_seed,
-                    po_count, po_srcs, off_a0, off_b0, off_c0, off_aq0, off_bq0,
-                    off_co0, po_offsets0, lda, ldb, ldc, m, n, 0, 1, 1.0f, beta,
-                    0, false, swap_ab, true);
+                    c_scales, ag, bg, *co, co_host_scalar, nullptr,
+                    zero_buf_scratchpad.get(), sround_seed, po_count, po_srcs,
+                    off_a0, off_b0, off_c0, off_aq0, off_bq0, off_co0,
+                    po_offsets0, lda, ldb, ldc, m, n, 0, 1, 1.0f, beta, 0,
+                    false, swap_ab, true);
             if (status) return status;
             beta = 1.0f;
         }
@@ -629,8 +649,8 @@ status_t gen_t::execute(const exec_ctx_t &ctx) const {
 
                 auto off_aq = off_aq0;
                 auto off_bq = off_bq0;
-                if (pd()->a_quant.zp_ndims >= 1 || a_scales) off_aq += Bm;
-                if (pd()->b_quant.zp_ndims >= 1 || b_scales) off_bq += Bn;
+                if (problem.aoPtrDims >= 1 || a_scales) off_aq += Bm;
+                if (problem.boPtrDims >= 1 || b_scales) off_bq += Bn;
 
                 auto off_co = off_co0;
                 switch (cmask & 3) {
@@ -662,21 +682,17 @@ status_t gen_t::execute(const exec_ctx_t &ctx) const {
                 status = launch_nocopy(ctx, compute_stream, zero_pool, a, b, c,
                         ao, bo, ao_host_scalar, bo_host_scalar, a_scales,
                         b_scales, c_scales, ag, bg, *co, co_host_scalar,
-                        c_temp.get(), sround_seed, po_count, po_srcs, off_a_src,
-                        off_b_src, off_c, off_aq, off_bq, off_co, po_offsets,
-                        lda, ldb, ldc, into<int32_t>(size_m),
-                        into<int32_t>(size_n), into<int32_t>(size_k), k0, alpha,
-                        eff_beta, cmask, last_k_block, swap_ab,
-                        disable_hilbert);
+                        c_temp.get(), zero_buf_scratchpad.get(), sround_seed,
+                        po_count, po_srcs, off_a_src, off_b_src, off_c, off_aq,
+                        off_bq, off_co, po_offsets, lda, ldb, ldc,
+                        into<int32_t>(size_m), into<int32_t>(size_n),
+                        into<int32_t>(size_k), k0, alpha, eff_beta, cmask,
+                        last_k_block, swap_ab, disable_hilbert);
 
                 if (status) return status;
             }
         }
     }
-
-#ifdef DNNL_WITH_SYCL
-    if (release_zp) release_zero_pool(zero_pool);
-#endif
 
     return status::success;
 }

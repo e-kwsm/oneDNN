@@ -278,7 +278,7 @@ TEST(test_sdp_decomp_execute, Int8SdpDecomp_CPU) {
                 ASSERT_EQ(g.get_ops().size(), 13U);
             else
                 ASSERT_EQ(g.get_ops().size(), 12U);
-            graph::pass::pass_base_ptr apass = get_pass("int8_sdp_fusion");
+            graph::pass::pass_base_ptr apass = get_pass("x8_sdpa_fusion");
             apass->run(g);
             ASSERT_EQ(g.get_num_partitions(), 1U);
             auto part = g.get_partitions()[0];
@@ -443,7 +443,7 @@ TEST(test_sdp_decomp_execute, Int8Bf16SdpDecomp_CPU) {
 }
 
 // Test multiple thread execute
-TEST(test_sdp_decomp_execute, MultithreaSdpDecomp_CPU) {
+TEST(test_sdp_decomp_execute, MultithreadSdpDecomp_CPU) {
     graph::engine_t *eng = get_engine();
 
     SKIP_IF(eng->kind() == graph::engine_kind::gpu, "skip on gpu");
@@ -1069,7 +1069,7 @@ TEST(test_sdp_decomp_execute, Int8SdpCorr_CPU) {
                     head_dim, transpose_b[i], attention_mask_vec[j]);
             g.finalize();
 
-            graph::pass::pass_base_ptr apass = get_pass("int8_sdp_fusion");
+            graph::pass::pass_base_ptr apass = get_pass("x8_sdpa_fusion");
             apass->run(g);
             ASSERT_EQ(g.get_num_partitions(), 1U);
             auto part = g.get_partitions()[0];
@@ -1296,7 +1296,7 @@ TEST(test_sdp_decomp_execute, Int8DistilBertSdpCorr_CPU) {
                 &g, batch_size, seq_len, num_head, head_dim, transpose_b[i]);
         g.finalize();
 
-        graph::pass::pass_base_ptr apass = get_pass("int8_sdp_fusion");
+        graph::pass::pass_base_ptr apass = get_pass("x8_sdpa_fusion");
         apass->run(g);
         ASSERT_EQ(g.get_num_partitions(), 1U);
         auto part = g.get_partitions()[0];
@@ -1486,7 +1486,7 @@ TEST(test_sdp_decomp_execute, Int8Bf16DistilBertSdpCorr_CPU) {
 }
 
 // Test correctness
-TEST(test_sdp_decomp_execute, MultithreaSdpDecompCorr_CPU) {
+TEST(test_sdp_decomp_execute, MultithreadSdpDecompCorr_CPU) {
     graph::engine_t *eng = get_engine();
     graph::stream_t *strm = get_stream();
     SKIP_IF(eng->kind() == graph::engine_kind::gpu, "skip on gpu");
@@ -1509,6 +1509,14 @@ TEST(test_sdp_decomp_execute, MultithreaSdpDecompCorr_CPU) {
             {seq_len * head_dim, size_per_head, 1, head_dim},
             {seq_len * head_dim, size_per_head * seq_len, size_per_head, 1}};
     std::vector<bool> transpose_b = {false, true};
+
+#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_OMP
+    // 4 concurrent threads will be executed below. Limiting the number of OMP
+    // threads to avoid oversubscription.
+    const int nthr = dnnl_get_current_num_threads() / 4;
+    SKIP_IF(nthr == 0, "skip as not enough threads for test");
+    omp_set_num_threads(nthr);
+#endif
 
     for (size_t i = 0; i < KEY_STRIDES.size(); ++i) {
         graph::graph_t g(eng->kind());

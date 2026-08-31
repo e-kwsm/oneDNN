@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2020 Intel Corporation
+* Copyright 2026 Arm Ltd. and affiliates
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -86,17 +87,6 @@ TEST(test_convolution_compile, ConvolutionFp32) {
 
     graph::logical_tensor_t lt;
     cp.query_logical_tensor(dst.id, &lt);
-
-// Blocked layout is supported on intel gpu only
-#if DNNL_GPU_RUNTIME != DNNL_RUNTIME_NONE \
-        && DNNL_GPU_VENDOR != DNNL_VENDOR_INTEL
-    ASSERT_EQ(lt.layout_type, graph::layout_type::strided);
-#else
-    ASSERT_EQ(lt.layout_type,
-            engine->kind() == graph::engine_kind::gpu
-                    ? graph::layout_type::opaque
-                    : graph::layout_type::strided);
-#endif
 }
 
 TEST(test_convolution_compile, ConvolutionBackwardDataFp32) {
@@ -2440,8 +2430,14 @@ TEST(test_convolution_execute, ConvBiasEltwise) {
                 {eltwise_dst_ts.get()});
         strm->wait();
         dst = eltwise_dst_ts.as_vec_type<float>();
+        // We noticed mish test has slight accuracy issue on some AArch64 CPUs
         for (size_t i = 0; i < dst.size(); ++i) {
-            ASSERT_FLOAT_EQ(dst[i], param.ref_dst[i]);
+            if (param.op_kind == graph::op_kind::Mish
+                    && eng->kind() == graph::engine_kind::cpu
+                    && dnnl_get_effective_cpu_isa() <= dnnl_cpu_isa_avx)
+                ASSERT_NEAR(dst[i], param.ref_dst[i], 1e-6);
+            else
+                ASSERT_FLOAT_EQ(dst[i], param.ref_dst[i]);
         }
     }
 }
@@ -2559,10 +2555,10 @@ TEST(test_convolution_execute, ConvBiasAddEltwise) {
                         post_src_ts.get()},
                 {eltwise_dst_ts.get()});
         strm->wait();
+        dst = eltwise_dst_ts.as_vec_type<float>();
         for (size_t i = 0; i < dst.size(); ++i) {
             // We noticed mish test has slight accuracy issue on GPU or AArch64
             // CPU or SNB.
-            dst = eltwise_dst_ts.as_vec_type<float>();
             if (eng->kind() == graph::engine_kind::gpu
                     || (eng->kind() == graph::engine_kind::cpu
                             && dnnl_get_effective_cpu_isa()

@@ -38,8 +38,19 @@ status_t brgemm_desc_init(brgemm_desc_t *brg, cpu_isa_t isa,
     if (!brg) return status::invalid_arguments;
     if (M <= 0 || K <= 0) return status::invalid_arguments;
 
-    // Only f32 → f32 supported in the MVP.
-    if (!everyone_is(data_type::f32, dt_a, dt_b)) return status::unimplemented;
+    // Supported:
+    //   f32  × f32  → f32  (always)
+    //   bf16 × bf16 → f32  (Zvfbfwma widening FMA)
+    //   f16  × f16  → f32  (Zvfh widening FMA)
+    //   s8   × s8   → s32  (always)
+    const bool is_f32 = everyone_is(data_type::f32, dt_a, dt_b);
+    const bool is_bf16
+            = everyone_is(data_type::bf16, dt_a, dt_b) && mayiuse(zvfbfwma);
+    const bool is_f16
+            = everyone_is(data_type::f16, dt_a, dt_b) && mayiuse(zvfh);
+    const bool is_int8 = everyone_is(data_type::s8, dt_a, dt_b);
+    if (!is_f32 && !is_bf16 && !is_f16 && !is_int8)
+        return status::unimplemented;
 
     *brg = utils::zero<brgemm_desc_t>();
 
@@ -57,11 +68,12 @@ status_t brgemm_desc_init(brgemm_desc_t *brg, cpu_isa_t isa,
 
     brg->dt_a = dt_a;
     brg->dt_b = dt_b;
-    brg->dt_c = data_type::f32;
+    brg->dt_c = is_int8 ? data_type::s32 : data_type::f32;
     brg->typesize_A = static_cast<int>(types::data_type_size(dt_a));
     brg->typesize_B = static_cast<int>(types::data_type_size(dt_b));
     brg->typesize_C = static_cast<int>(types::data_type_size(brg->dt_c));
-    brg->is_f32 = true;
+    brg->is_f32 = is_f32;
+    brg->is_int8 = is_int8;
 
     if (strides) {
         brg->stride_a = strides->stride_a;
@@ -89,7 +101,19 @@ status_t brgemm_kernel_create(
     if (!brg_kernel) return status::invalid_arguments;
     *brg_kernel = nullptr;
 
-    auto *kernel = new brgemm_kernel_common_t(brg);
+    // Pick the per-dtype kernel class.
+    brgemm_kernel_t *kernel = nullptr;
+    if (brg.is_f32) {
+        kernel = new brgemm_kernel_common_t(brg);
+    } else if (brg.dt_a == data_type::bf16) {
+        kernel = new brgemm_kernel_bf16_t(brg);
+    } else if (brg.dt_a == data_type::f16) {
+        kernel = new brgemm_kernel_f16_t(brg);
+    } else if (brg.is_int8) {
+        kernel = new brgemm_kernel_s8_t(brg);
+    } else {
+        return status::unimplemented;
+    }
     status_t st = kernel->create_kernel();
     if (st != status::success) {
         delete kernel;
@@ -108,10 +132,16 @@ void brgemm_kernel_execute(const brgemm_kernel_t *brg_kernel, const void *ptr_A,
         const void *ptr_bias) {
 
     const auto &brg = brg_kernel->get_brg();
-    const int ts = brg.typesize_C; // sizeof(float) = 4
+
+    // int8 A is pre-widened to s32 during packing (4 bytes/elem); dt_c is also
+    // s32, so typesize_C gives the correct packed-A stride.
+    const int ts_a = brg.is_int8 ? brg.typesize_C : brg.typesize_A;
+    const int ts_b = brg.typesize_B;
+    const int ts_c = brg.typesize_C;
+    const int ts_bias = static_cast<int>(sizeof(float)); // bias is f32
     const int bd = brg.bd_block;
     const dim_t K = brg.reduce_dim;
-    const dim_t LDA_bytes = brg.LDA * ts;
+    const dim_t LDA_bytes = brg.LDA * ts_a;
 
     const auto *A_base = reinterpret_cast<const char *>(ptr_A);
     const auto *B_base = reinterpret_cast<const char *>(ptr_B);
@@ -119,7 +149,7 @@ void brgemm_kernel_execute(const brgemm_kernel_t *brg_kernel, const void *ptr_A,
     const auto *bias_base = reinterpret_cast<const char *>(ptr_bias);
 
     // K-blocking: split the reduction dimension into chunks of BK to keep
-    // the A working-set (bd_block × BK × 4 bytes) inside the L1D cache.
+    // the A working-set inside the L1D cache.
     const dim_t BK = BRGEMM_BK;
 
     for (dim_t kb = 0; kb < K; kb += BK) {
@@ -127,7 +157,7 @@ void brgemm_kernel_execute(const brgemm_kernel_t *brg_kernel, const void *ptr_A,
         const float beta_kb = (kb == 0) ? beta : 1.0f;
 
         const char *A_kb = A_base + kb * LDA_bytes;
-        const char *B_kb = B_base + kb * ts;
+        const char *B_kb = B_base + kb * ts_b;
         const char *bias_kb = (kb == 0) ? bias_base : nullptr;
 
         brgemm_kernel_params_t p;
@@ -138,20 +168,21 @@ void brgemm_kernel_execute(const brgemm_kernel_t *brg_kernel, const void *ptr_A,
 
         // Process full bd_block tiles.
         for (int m = 0; m < brg.bdb; m++) {
-            p.ptr_A = A_kb + static_cast<dim_t>(m) * bd * ts;
-            p.ptr_C = C_base + static_cast<dim_t>(m) * bd * ts;
-            p.ptr_bias = bias_kb ? bias_kb + static_cast<dim_t>(m) * bd * ts
-                                 : nullptr;
+            p.ptr_A = A_kb + static_cast<dim_t>(m) * bd * ts_a;
+            p.ptr_C = C_base + static_cast<dim_t>(m) * bd * ts_c;
+            p.ptr_bias = bias_kb
+                    ? bias_kb + static_cast<dim_t>(m) * bd * ts_bias
+                    : nullptr;
             p.M = bd;
             (*brg_kernel)(&p);
         }
 
         // Process M tail (if any).
         if (brg.bdb_tail > 0) {
-            p.ptr_A = A_kb + static_cast<dim_t>(brg.bdb) * bd * ts;
-            p.ptr_C = C_base + static_cast<dim_t>(brg.bdb) * bd * ts;
+            p.ptr_A = A_kb + static_cast<dim_t>(brg.bdb) * bd * ts_a;
+            p.ptr_C = C_base + static_cast<dim_t>(brg.bdb) * bd * ts_c;
             p.ptr_bias = bias_kb
-                    ? bias_kb + static_cast<dim_t>(brg.bdb) * bd * ts
+                    ? bias_kb + static_cast<dim_t>(brg.bdb) * bd * ts_bias
                     : nullptr;
             p.M = brg.bdb_tail;
             (*brg_kernel)(&p);

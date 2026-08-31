@@ -92,9 +92,9 @@ static zero_point_call_params_t prepare_zp_params(const conv_gemm_conf_t &jcp,
         const auto zp_comp_size = jcp.oc * jcp.ngroups;
 
         if (jcp.zp.src_is_common) {
-            zp_src_comp = mul_zp_src_comp_from_wei_by_zp_src(zp_comp_size,
-                    zp_src_comp_scratch, zp_src_comp_from_wei,
-                    *src_zero_points);
+            zp_src_comp = mul_zp_src_comp_from_wei_by_zp_src(
+                    static_cast<int>(zp_comp_size), zp_src_comp_scratch,
+                    zp_src_comp_from_wei, *src_zero_points);
         } else
             zp_src_comp = zp_src_comp_from_wei;
 
@@ -228,19 +228,19 @@ status_t gemm_x8s8s32x_convolution_fwd_t::execute_forward_thr(const int ithr,
     status_t st = status::success;
 
     for (dim_t iwork = start; iwork < end; ++iwork) {
-        const int oh = ohb * jcp.oh_block;
-        const int ow = owb * jcp.ow_block;
+        const dim_t oh = ohb * jcp.oh_block;
+        const dim_t ow = owb * jcp.ow_block;
         const char *__restrict src
                 = src_base + n * src_mb_stride + g * src_g_stride;
         const int8_t *__restrict wei = wei_base + g * wei_g_stride;
         const int32_t *__restrict wei_comp
                 = _wei_comp ? _wei_comp + g * jcp.oc : nullptr;
-        const int h_step = nstl::min(jcp.oh_block, jcp.oh - oh);
-        const int w_step = nstl::min(jcp.ow_block, jcp.ow - ow);
+        const dim_t h_step = nstl::min(jcp.oh_block, jcp.oh - oh);
+        const dim_t w_step = nstl::min(jcp.ow_block, jcp.ow - ow);
         if (jcp.im2col_sz && is_problem_3d)
             jit_gemm_convolution_utils::transpose_dt<char>(jcp, src, imtr);
 
-        for (int od = 0; od < jcp.od; od++) {
+        for (dim_t od = 0; od < jcp.od; od++) {
             const auto dst_off = n * dst_mb_stride + g * dst_g_stride
                     + ((od * jcp.oh + oh) * jcp.ow + ow) * jcp.dst_os_stride;
             char *__restrict dst = (char *)dst_base
@@ -308,7 +308,8 @@ status_t gemm_x8s8s32x_convolution_fwd_t::execute_forward_thr(const int ithr,
                 balance211(N * jcp.oc, nthr, ithr, _start, _end);
 
                 (*pp_ker_)(dst, acc, bia_base, scales, dst_scales[0], sum_scale,
-                        1.f / wei_adj_scale, g, n, _start, _end, zp,
+                        1.f / wei_adj_scale, static_cast<int>(g),
+                        static_cast<int>(n), _start, _end, zp,
                         post_ops_binary_rhs_arg_vec, dst_base, ctx,
                         *pd()->dst_md(), chunk_desc);
             });
@@ -435,7 +436,7 @@ status_t gemm_x8s8s32x_convolution_bwd_data_t::execute_backward_data_thr(
             const int *__restrict acc_loc = acc + is * jcp.ic;
             const float *__restrict scales_loc
                     = scales + g * jcp.ic * scale_idx_mult;
-            for (int ic = 0; ic < jcp.ic; ic++) {
+            for (dim_t ic = 0; ic < jcp.ic; ic++) {
                 float d = static_cast<float>(acc_loc[ic]);
                 d *= scales_loc[ic * scale_idx_mult];
                 if (jcp.with_bias) {

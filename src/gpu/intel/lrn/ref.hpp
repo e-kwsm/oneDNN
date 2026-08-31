@@ -33,12 +33,13 @@ struct ref_fwd_t : public primitive_t {
     struct pd_t : public fwd_pd_t {
         using fwd_pd_t::fwd_pd_t;
 
-        DECLARE_COMMON_PD_T("ref:any", ref_fwd_t);
+        DECLARE_COMMON_PD_T("ocl:ref:any", ref_fwd_t);
 
-        status_t init(impl::engine_t *engine) {
+        status_t init(const impl::engine_t *engine) {
             using namespace data_type;
             assert(engine->kind() == engine_kind::gpu);
-            auto *intel_engine = utils::downcast<intel::engine_t *>(engine);
+            const auto *intel_engine
+                    = utils::downcast<const intel::engine_t *>(engine);
 
             VDISPATCH_LRN(is_fwd(), VERBOSE_BAD_PROPKIND);
             VDISPATCH_LRN(utils::one_of(src_md()->data_type, f32, f16, bf16),
@@ -162,12 +163,13 @@ struct ref_bwd_t : public primitive_t {
     struct pd_t : public bwd_pd_t {
         using bwd_pd_t::bwd_pd_t;
 
-        DECLARE_COMMON_PD_T("ref:any", ref_bwd_t);
+        DECLARE_COMMON_PD_T("ocl:ref:any", ref_bwd_t);
 
-        status_t init(impl::engine_t *engine) {
+        status_t init(const impl::engine_t *engine) {
             using namespace data_type;
             assert(engine->kind() == engine_kind::gpu);
-            auto *intel_engine = utils::downcast<intel::engine_t *>(engine);
+            const auto *intel_engine
+                    = utils::downcast<const intel::engine_t *>(engine);
             VDISPATCH_LRN(!is_fwd(), VERBOSE_BAD_PROPKIND);
             VDISPATCH_LRN(utils::one_of(src_md()->data_type, f32, bf16, f16),
                     VERBOSE_UNSUPPORTED_DT);

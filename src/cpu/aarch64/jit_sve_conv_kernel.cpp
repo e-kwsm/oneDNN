@@ -624,7 +624,7 @@ void jit_sve_conv_fwd_kernel_t<isa>::generate() {
 
     //TO DO : renaming predicate register (P_ALL_ONE)
     if (simd_w_ != cpu_sveLen / sizeof(float))
-        set_preg(P_ALL_ONE.s, simd_w_, X_TMP_0, X_TMP_1);
+        set_preg(P_ALL_ONE.s, simd_w_, X_TMP_0);
 
     ldr(reg_inp, ptr(abi_param1, GET_OFF(src)));
     ldr(reg_out, ptr(abi_param1, GET_OFF(dst)));
@@ -1971,7 +1971,7 @@ void jit_sve_conv_bwd_data_kernel_f32_t<isa>::generate() {
     preamble();
 
     if (simd_w_ != cpu_sveLen / sizeof(float))
-        set_preg(P_ALL_ONE.s, simd_w_, X_TMP_0, X_TMP_1);
+        set_preg(P_ALL_ONE.s, simd_w_, X_TMP_0);
     ldr(reg_src, ptr(param, GET_OFF(src)));
     ldr(reg_dst, ptr(param, GET_OFF(dst)));
     ldr(reg_ker, ptr(param, GET_OFF(filt)));
@@ -3950,11 +3950,11 @@ void jit_sve_conv_bwd_weights_kernel_f32_t<isa>::compute_od_loop_partial() {
 
     mov(reg_input_d_org, reg_input_d);
     mov(reg_output_d_org, reg_output_d);
-    str(reg_d_index, pre_ptr(X_SP, -8));
+    str(reg_d_index, pre_ptr(sp, -16));
 
     compute_oh_loop_common();
 
-    ldr(reg_d_index, post_ptr(X_SP, 8));
+    ldr(reg_d_index, post_ptr(sp, 16));
     mov(reg_output_d, reg_output_d_org);
     mov(reg_input_d, reg_input_d_org);
 
@@ -4055,7 +4055,7 @@ void jit_sve_conv_bwd_weights_kernel_f32_t<isa>::generate_kernel() {
     preamble();
 
     if (simd_w_ != cpu_sveLen / sizeof(float))
-        set_preg(P_ALL_ONE.s, simd_w_, X_TMP_0, X_TMP_1);
+        set_preg(P_ALL_ONE.s, simd_w_, X_TMP_0);
 
     ldr(reg_input, ptr(param, GET_OFF(src)));
     ldr(reg_output, ptr(param, GET_OFF(dst)));

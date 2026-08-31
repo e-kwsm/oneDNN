@@ -20,8 +20,10 @@
 
 #include "common/c_types_map.hpp"
 
+#include <atomic>
 #include <cstddef>
 
+#include "cpu/rv64/cpu_isa_traits.hpp"
 #include "xbyak_riscv/xbyak_riscv_util.hpp"
 
 namespace dnnl {
@@ -29,6 +31,9 @@ namespace impl {
 namespace cpu {
 namespace rv64 {
 namespace gemm_utils {
+
+extern std::atomic<dim_t> rvv_gemm_f32_m_unroll;
+extern std::atomic<dim_t> rvv_gemm_s8_m_unroll;
 
 template <typename T, bool isTransA, bool isTransB>
 struct gemm_traits_t {};
@@ -49,15 +54,34 @@ struct gemm_utils_traits<float> {
     // m = VLEN / 32 * LMUL, where LMUL = 4 for f32
     // VLEN=128 -> m=16, VLEN=256 -> m=32, VLEN=512 -> m=64
     static dim_t get_m_unroll_factor() {
-        static const dim_t m = []() -> dim_t {
+        dim_t m = rvv_gemm_f32_m_unroll.load(std::memory_order_relaxed);
+        if (m == 0) {
             const uint32_t vlen = Xbyak_riscv::CPU::getInstance().getVlen();
-            return static_cast<dim_t>(vlen / 32 * 4);
-        }();
+            m = static_cast<dim_t>(vlen / 32 * 4);
+            rvv_gemm_f32_m_unroll.store(m, std::memory_order_relaxed);
+        }
         return m;
     }
 
-    // Fixed n = 7 for the mx7 micro-kernel
-    static constexpr dim_t get_n_unroll_factor() { return 7; }
+    // Fixed n = 6 for the double-buffered mx6 micro-kernel.
+    static constexpr dim_t get_n_unroll_factor() { return 6; }
+};
+
+template <>
+struct gemm_utils_traits<int8_t> {
+    static dim_t get_m_unroll_factor() {
+        dim_t m = rvv_gemm_s8_m_unroll.load(std::memory_order_relaxed);
+        if (m == 0) {
+            const uint32_t vlen = Xbyak_riscv::CPU::getInstance().getVlen();
+            m = static_cast<dim_t>(vlen / 8);
+            rvv_gemm_s8_m_unroll.store(m, std::memory_order_relaxed);
+        }
+        return m;
+    }
+
+    // Fixed n = 6: 6 columns * m4 accumulator = 24 vector registers, leaving
+    // v24-v31 for the K-loop/C-update temporaries.
+    static constexpr dim_t get_n_unroll_factor() { return 6; }
 };
 
 // Sum the m*n values from p_src into p_dst, assuming the two-dimensional
@@ -76,15 +100,24 @@ void sum_two_matrices(dim_t m, dim_t n, data_t *__restrict p_src, dim_t ld_src,
 void calc_nthr_nocopy_rvv(dim_t m, dim_t n, dim_t k, int nthrs, int *nthrs_m,
         int *nthrs_n, int *nthrs_k, dim_t *BM, dim_t *BN, dim_t *BK);
 
+// Thread partition computed once at primitive initialization (with
+// dnnl_get_max_threads()) and reused at execution time. Passing it to the GEMM
+// drivers keeps the per-thread workspace offsets consistent with the capacity
+// booked in the scratchpad, even when init and execute run under different
+// threadpool contexts (e.g. --ctx-init=1 --ctx-exe=8). A nullptr leaves the
+// driver to recompute the partition from dnnl_get_current_num_threads() and
+// malloc its own workspace (the path used by inner_product / convolution).
+struct gemm_partition_t {
+    int nthr_m;
+    int nthr_n;
+    int nthr_k;
+    dim_t MB;
+    dim_t NB;
+    dim_t KB;
+};
+
 void partition_unit_diff(
         int ithr, int nthr, dim_t n, dim_t *t_offset, dim_t *t_block);
-
-// RVV JIT micro-kernel for f32 GEMM.
-// Computes an m x n tile of C = alpha * A * B + beta * C.
-// n_cols must be 1..7, m can be any value (handled by vsetvl).
-void jit_rvv_gemm_kernel(const float *A, const float *B, float *C, dim_t lda,
-        dim_t ldb, dim_t ldc, dim_t K, float alpha, float beta, dim_t m,
-        dim_t n_cols, bool isTransA, bool isTransB, const float *bias);
 
 } // namespace gemm_utils
 } // namespace rv64

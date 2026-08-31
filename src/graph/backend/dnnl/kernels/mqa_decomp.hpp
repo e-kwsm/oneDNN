@@ -44,9 +44,7 @@ namespace dnnl_impl {
 // int8 mqa pattern. It doesn't take any effect if quantized param is false.
 template <bool quantized = false, memory::data_type dt = memory::data_type::f32>
 struct mqa_decomp_kernel_t : public kernel_base_t {
-private:
-    allocator_t *g_alloc_ = nullptr;
-    // used for mqa internal memory planning
+private: // used for mqa internal memory planning
     registry_t mqa_registry_;
     std::shared_ptr<subgraph_t> subgraph_;
     memory_planner_t memory_planner_;
@@ -67,8 +65,7 @@ public:
         res_cache.release();
     }
 
-    status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *g_engine,
+    status_t compile_impl(const dnnl_partition_impl_t *part, engine_t *eng,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs) override;
 
@@ -76,9 +73,9 @@ public:
             const size_t block_size,
             std::unordered_map<dnnl_memory_t, std::vector<memory>> &mem_map);
 
-    status_t execute_impl(const stream_t *g_stream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs) override;
+    status_t execute_impl(stream_t *strm, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf) override;
 
     class mqa_args_set_t {
     public:
@@ -135,12 +132,13 @@ public:
     std::function<std::shared_ptr<mqa_args_set_t>()> resource_ctor_;
 
 #ifdef DNNL_WITH_SYCL
-    status_t sycl_execute_impl(const stream_t *g_stream,
+    status_t sycl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) override {
-        UNUSED(g_stream);
+        UNUSED(strm);
         UNUSED(inputs);
         UNUSED(outputs);
         UNUSED(sycl_deps);
@@ -150,12 +148,13 @@ public:
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    status_t ocl_execute_impl(const stream_t *g_stream,
+    status_t ocl_execute_impl(stream_t *strm,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &cl_deps,
-            cl_event *ret_event) override {
-        UNUSED(g_stream);
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &cl_deps,
+            ocl_event_t &ret_event) override {
+        UNUSED(strm);
         UNUSED(inputs);
         UNUSED(outputs);
         UNUSED(cl_deps);
@@ -165,6 +164,9 @@ public:
 #endif
 
     DEF_KERNEL_METHOD_STR(mqa_decomp_kernel_t)
+    size_t get_scratchpad_size() const override {
+        return mqa_registry_.size() * mqa_cfg_.nthr;
+    }
     DNNL_DISALLOW_COPY_AND_ASSIGN(mqa_decomp_kernel_t)
 };
 

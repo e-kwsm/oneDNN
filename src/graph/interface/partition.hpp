@@ -39,6 +39,8 @@
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
 #include <CL/cl.h>
+
+#include "xpu/ocl/utils.hpp"
 #endif
 
 namespace dnnl {
@@ -124,14 +126,14 @@ public:
     graph::status_t compile(graph::compiled_partition_t *compiled_partition,
             std::vector<const graph::logical_tensor_t *> &inputs,
             std::vector<const graph::logical_tensor_t *> &outputs,
-            const graph::engine_t *e = nullptr) const;
+            graph::engine_t *e = nullptr) const;
 
     graph::status_t compile(
             std::pair<graph::compiled_partition_t *, dnnl::impl::cache_state_t>
                     &compiled_partition,
             std::vector<const graph::logical_tensor_t *> &inputs,
             std::vector<const graph::logical_tensor_t *> &outputs,
-            const graph::engine_t *aengine) const;
+            graph::engine_t *aengine) const;
 
     graph::status_t infer_shape(
             std::vector<const graph::logical_tensor_t *> &inputs,
@@ -176,24 +178,34 @@ public:
         return pimpl_->get_inplace_pairs();
     }
 
-    graph::status_t execute(const graph::stream_t *astream,
-            const std::vector<graph::tensor_t> &inputs,
-            const std::vector<graph::tensor_t> &outputs) const;
-
-#ifdef DNNL_WITH_SYCL
-    graph::status_t execute_sycl(const graph::stream_t *astream,
+    graph::status_t execute(graph::stream_t *astream,
             const std::vector<graph::tensor_t> &inputs,
             const std::vector<graph::tensor_t> &outputs,
+            const graph::tensor_t *scratchpad = nullptr) const;
+
+#ifdef DNNL_WITH_SYCL
+    graph::status_t execute_sycl(graph::stream_t *astream,
+            const std::vector<graph::tensor_t> &inputs,
+            const std::vector<graph::tensor_t> &outputs,
+            const graph::tensor_t *scratchpad,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) const;
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    graph::status_t execute_ocl(const graph::stream_t *astream,
+    graph::status_t execute_ocl(graph::stream_t *astream,
             const std::vector<graph::tensor_t> &inputs,
             const std::vector<graph::tensor_t> &outputs,
-            const std::vector<cl_event> &sycl_deps, cl_event *sycl_event) const;
+            const graph::tensor_t *scratchpad,
+            const std::vector<dnnl::impl::xpu::ocl::wrapper_t<cl_event>>
+                    &ocl_deps,
+            dnnl::impl::xpu::ocl::wrapper_t<cl_event> &ocl_event) const;
 #endif
+
+    size_t get_scratchpad_size() const {
+        if (!pimpl_) return 0;
+        return pimpl_->get_scratchpad_size();
+    }
 
     graph::status_t query_logical_tensor(
             size_t tid, graph::logical_tensor_t *lt) const {
@@ -226,6 +238,21 @@ public:
         auto eng = pimpl_->get_engine();
         if (!info_.is_initialized()) info_.init(eng, this);
         return info_.c_str();
+    }
+
+    // Returns verbose info string with scratchpad mode (user/library)
+    // inserted at execution time.
+    std::string exec_info(bool user_scratchpad) const {
+        std::string s(info());
+        // Replace "scratchpad:" with "scratchpad:user:" or
+        // "scratchpad:library:" to indicate runtime management mode.
+        auto pos = s.find(",scratchpad:");
+        if (pos != std::string::npos) {
+            // Insert mode after "scratchpad:"
+            size_t insert_at = pos + sizeof(",scratchpad:") - 1;
+            s.insert(insert_at, user_scratchpad ? "user:" : "library:");
+        }
+        return s;
     }
 
 private:

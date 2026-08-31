@@ -34,9 +34,9 @@ struct ref_t : public primitive_t {
     struct pd_t : public reduction::pd_t {
         using reduction::pd_t::pd_t;
 
-        DECLARE_COMMON_PD_T("ref:any", ref_t);
+        DECLARE_COMMON_PD_T("ocl:ref:any", ref_t);
 
-        status_t init(impl::engine_t *engine) {
+        status_t init(const impl::engine_t *engine) {
             using sm = primitive_attr_t::skip_mask_t;
             const auto attr_skip_mask = sm::post_ops | sm::gpu_attr;
 
@@ -55,7 +55,7 @@ struct ref_t : public primitive_t {
             return status::success;
         }
 
-        status_t init_conf(impl::engine_t *engine);
+        status_t init_conf(const impl::engine_t *engine);
         status_t init_kernel_ctx(compute::kernel_ctx_t &kernel_ctx) const;
 
         conf_t conf;

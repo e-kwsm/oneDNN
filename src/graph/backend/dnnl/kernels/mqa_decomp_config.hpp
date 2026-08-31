@@ -76,7 +76,7 @@ public:
     memory::dim batch_size, num_head, seq_len, size_per_head;
 
     // Thread nums during the workflow
-    int nthr;
+    int nthr = 0;
 
     // Used to record the exact input offset of the MQA subgraph
     // [mm1_src, mm1_wei, mm1_add, mm2_src]
@@ -115,8 +115,7 @@ public:
     // shared memory
     memory sub_max_src1_src2, sub_max_dst1_dst2;
 
-private:
-    // Used to record the ops contained in MQA
+private: // Used to record the ops contained in MQA
     std::vector<std::shared_ptr<op_t>> mqa_op;
 
 public:

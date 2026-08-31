@@ -36,11 +36,9 @@ namespace graph {
 namespace dnnl_impl {
 
 status_t genindex_t::compile_impl(const dnnl_partition_impl_t *part,
-        const engine_t *g_engine, const std::vector<logical_tensor_t> &inputs,
+        engine_t *eng, const std::vector<logical_tensor_t> &inputs,
         const std::vector<logical_tensor_t> &outputs) {
-    p_engine_ = make_dnnl_engine(*g_engine);
-    g_alloc_
-            = reinterpret_cast<graph::allocator_t *>(g_engine->get_allocator());
+    p_engine_ = make_dnnl_engine(*eng);
 
     subgraph_ = std::make_shared<subgraph_t>(part->get_ops(), p_engine_,
             part->get_fpmath_mode(), part->get_use_blocked_layout(), true);
@@ -113,10 +111,10 @@ void genindex_t::prepare_args_set(const execution_args_set_t *res,
     }
 }
 
-status_t genindex_t::execute_impl(const stream_t *g_stream,
+status_t genindex_t::execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs) {
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf) {
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     // each thread's own local resource
     thread_local_cache_t<execution_args_set_t> res_cache;
@@ -134,15 +132,15 @@ status_t genindex_t::execute_impl(const stream_t *g_stream,
     return status::success;
 }
 #ifdef DNNL_WITH_SYCL
-status_t genindex_t::sycl_execute_impl(const stream_t *g_stream,
+status_t genindex_t::sycl_execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
         const std::vector<::sycl::event> &sycl_deps,
         ::sycl::event *sycl_event) {
     if (p_engine_.get_kind() == engine::kind::gpu) {
         auto deps = sycl_deps;
         std::optional<::sycl::event> returned_event;
-        dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+        dnnl::stream p_stream = make_dnnl_stream(*strm);
 
         thread_local_cache_t<execution_args_set_t> res_cache;
         execution_args_set_t *res = res_cache.get_or_add(
@@ -160,17 +158,17 @@ status_t genindex_t::sycl_execute_impl(const stream_t *g_stream,
 
         return status::success;
     }
-    return execute_impl(g_stream, inputs, outputs);
+    return execute_impl(strm, inputs, outputs, scratchpad_buf);
 }
 #endif
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-status_t genindex_t::ocl_execute_impl(const stream_t *g_stream,
+status_t genindex_t::ocl_execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
-        const std::vector<cl_event> &ocl_deps, cl_event *ocl_event) {
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
+        const std::vector<ocl_event_t> &ocl_deps, ocl_event_t &ocl_event) {
     auto deps = ocl_deps;
-    cl_event returned_event {};
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+    ocl_event_t returned_event;
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     // each thread's own local resource
     thread_local_cache_t<execution_args_set_t> res_cache;
@@ -183,10 +181,10 @@ status_t genindex_t::ocl_execute_impl(const stream_t *g_stream,
         if (subgraph_->is_constant_[i]) continue;
         returned_event = subgraph_->execs_[i]->execute_ocl(
                 p_stream, res->get_exec_args()[i], deps);
-        deps.assign(1, returned_event);
+        deps = {returned_event};
     }
 
-    if (ocl_event) *ocl_event = returned_event;
+    ocl_event = std::move(returned_event);
 
     return status::success;
 }

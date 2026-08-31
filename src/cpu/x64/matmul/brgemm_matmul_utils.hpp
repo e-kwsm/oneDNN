@@ -146,11 +146,15 @@ struct brgemm_matmul_conf_t {
     bool packed_sparse_weights;
     bool with_wei_decompression;
     int postops_inst_count;
+    bool is_ace {false};
 
     bool use_buffer_a;
     bool use_buffer_a_tail_only;
     bool use_buffer_b;
     bool use_buffer_c;
+    // Keep the intermediate C buffer in dst dtype (bf16/f16) when relaxed
+    // accumulation mode is enabled. AMX-only; gated on use_buffer_c and bf16/f16 dst.
+    bool is_c_buf_dst_dt = false;
     bool use_buffer_reduce;
 
     brgemm_matmul_bcast_desc_t bcast_A_desc;
@@ -179,12 +183,12 @@ struct brgemm_matmul_conf_t {
     // from FP32 implementation)
     dim_t tr_a_dt_sz, tr_b_dt_sz;
 
-    int M_chunks;
-    int N_chunks;
-    int K_chunks;
-    int num_M_blocks;
-    int num_N_blocks;
-    int num_K_blocks;
+    dim_t M_chunks;
+    dim_t N_chunks;
+    dim_t K_chunks;
+    dim_t num_M_blocks;
+    dim_t num_N_blocks;
+    dim_t num_K_blocks;
     dim_t M_chunk_elems;
     dim_t N_chunk_elems;
     dim_t K_chunk_elems;
@@ -229,20 +233,26 @@ struct brgemm_matmul_conf_t {
     // were changed.
     bool adjust_a_strides = false;
 
-    int wsp_tile_per_thr_bytes;
+    dim_t wsp_tile_per_thr_bytes;
     int brgemm_batch_element_per_thr_sz;
     bool is_amx;
 
     int required_k_granularity;
+    bool is_f8 = false;
     bool is_bf32 = false;
     bool is_bf16_with_int_wei = false;
     bool is_f16_with_int_wei = false;
     bool is_f32_with_int_wei = false;
     bool is_f32_f16 = false;
     bool is_f32_bf16 = false;
+    bool is_xf16_fp8 = false;
     bool is_int4_weights = false;
     bool is_f4_via_convert = false;
-    bool is_tf32 = false;
+    bool with_int8_grouped_quantization = false;
+    // Enables the driver-side per-(M, N) f32 compensation tile that captures
+    // the symmetric src/wei zero-point + 128-shift correction in the grouped
+    // int8 quantization path. Mirrors brgemm_desc_t::with_per_mn_compensation.
+    bool with_per_mn_compensation = false;
     bool req_wei_vnni_downconvert = false;
     bool is_runtime_M = false;
     bool is_runtime_N = false;
@@ -264,6 +274,13 @@ struct brgemm_matmul_conf_t {
     dim_t wei_scales_k_gsize = 0;
     data_type_t wei_scales_dt = data_type::undef;
 
+    // Src scales per-K
+    bool is_src_scale_per_k = false;
+    bool is_src_scale_per_m = false;
+    dim_t src_scales_k_gsize = 0;
+    data_type_t src_scales_dt = data_type::undef;
+    size_t src_scales_dt_sz = 0;
+
     // Zero points
     bool has_zero_point_a;
     bool has_zero_point_b;
@@ -274,11 +291,24 @@ struct brgemm_matmul_conf_t {
 
     data_type_t src_zp_dt = data_type::undef;
 
+    // Per-K src zero-points: stride between K-group slots (in
+    // elements). Used by the per-mn compensation src ZP gather.
+    bool is_src_zp_per_k = false;
+    bool is_src_zp_per_m = false;
+    dim_t src_zp_k_gsize = 0;
+
     dim_t wei_zp_k_gsize = 0;
     bool is_wei_zp_per_k = false;
     bool is_wei_zp_per_n = false;
     bool is_wei_zp_common = false;
     data_type_t wei_zp_dt = data_type::undef;
+
+    // Batched (3D/4D) per-batch scales/ZP plane stride (in elements).
+    // Populated when the scales/ZP mask carries batch bits.
+    dim_t src_scales_batch_stride = 0;
+    dim_t src_zp_batch_stride = 0;
+    dim_t wei_scales_batch_stride = 0;
+    dim_t wei_zp_batch_stride = 0;
 
     dim_t zp_a_comp_shift_n;
     dim_t zp_a_comp_elems_per_thr;
@@ -296,6 +326,15 @@ struct brgemm_matmul_conf_t {
         const dim_t big_stride_threshold_in_bytes = 8192;
         const dim_t big_K_threshold = big_stride_threshold_in_bytes / a_dt_sz;
         return !transposed_A && math::is_pow2(K) && K >= big_K_threshold;
+    }
+
+    inline bool calculate_compensations_in_copy_routines() const {
+        const bool need_to_calculate_compensation_for_a
+                = has_zero_point_b && !with_wei_decompression;
+        const bool need_to_calculate_compensation_for_b = !IMPLICATION(
+                (has_zero_point_a || s8s8_compensation_required), blocked_B);
+        return need_to_calculate_compensation_for_a
+                || need_to_calculate_compensation_for_b;
     }
 };
 
@@ -325,9 +364,14 @@ struct brgemm_matmul_conf_utils_t {
 
     inline bool use_buffer_b(bool use_heuristic = true) const {
         if (bgmmc.is_runtime_N) return true;
+        if (bgmmc.is_xf16_fp8) return true;
         if (bgmmc.is_bf16_with_int_wei) return true;
         if (bgmmc.is_f16_with_int_wei) return true;
         if (bgmmc.is_f32_with_int_wei) return true;
+        if (bgmmc.with_int8_grouped_quantization
+                && (bgmmc.is_int4_weights
+                        || bgmmc.wei_zp_type != brgemm_broadcast_t::none))
+            return true;
         if (bgmmc.apply_scales_in_buffer_b) return true;
         if (bgmmc.is_gemv) return false;
 
@@ -335,7 +379,6 @@ struct brgemm_matmul_conf_utils_t {
             // use b_buffer for AMX when:
             // - not bf32 && using non-blocked weights
             // - is bf32
-            // - is tf32
             return IMPLICATION(!wei_down_convert_to_vnni(), !bgmmc.blocked_B)
                     || bgmmc.packed_sparse_weights;
 
@@ -348,7 +391,7 @@ struct brgemm_matmul_conf_utils_t {
                 && !bgmmc.blocked_B;
         bool use_copy_buffer = IMPLICATION(
                 this->is_f32(), use_heuristic && (big_LDB && is_pow2));
-        return is_avx2_simd_tail
+        return is_avx2_simd_tail || (this->is_f8() && bgmmc.isa == avx10_2)
                 || (this->is_f16() && bgmmc.isa == avx512_core_fp16)
                 || (use_copy_buffer && this->check_is_plain(bgmmc.wei_tag))
                 || this->check_is_transposed(bgmmc.wei_tag)
@@ -401,13 +444,15 @@ struct brgemm_matmul_conf_utils_t {
 
     inline bool is_f8() const { return f8_dt; }
 
+    inline bool is_bf16_fp8() const { return bf16_fp8_dt; }
+
+    inline bool is_f16_fp8() const { return f16_fp8_dt; }
+
     inline bool is_bf8() const { return bf8_dt; }
 
     inline bool is_int8() const { return int8_dt; }
 
     inline bool is_bf32() const { return bf32_dt; }
-
-    inline bool is_tf32() const { return tf32_dt; }
 
     inline bool is_bf16_with_int_wei() const { return bf16_with_int_wei_dt; }
 
@@ -418,6 +463,10 @@ struct brgemm_matmul_conf_utils_t {
     inline bool is_f16_with_int_wei() const { return f16_with_int_wei_dt; }
 
     inline bool is_f32_with_int_wei() const { return f32_with_int_wei_dt; }
+
+    inline bool with_int8_grouped_quantization() const {
+        return int8_grouped_quantization_dt;
+    }
 
     inline bool with_weights_decompression() const {
         return !utils::one_of(bgmmc.src_dt, data_type::s8, data_type::u8,
@@ -430,8 +479,7 @@ struct brgemm_matmul_conf_utils_t {
     }
 
     inline bool wei_down_convert_to_vnni() const {
-        return (bf32_dt || tf32_dt || f16_with_int_wei_dt
-                       || bf16_with_int_wei_dt)
+        return (bf32_dt || f16_with_int_wei_dt || bf16_with_int_wei_dt)
                 && get_blocked_B();
     }
 
@@ -461,9 +509,10 @@ private:
     brgemm_matmul_conf_t &bgmmc;
 
     const bool f32_dt, bf16_dt, f16_dt, f4_via_convert_dt, f8_dt, bf8_dt,
-            int8_dt, bf32_dt, tf32_dt;
+            int8_dt, bf32_dt;
     const bool weights_decompression_support, bf16_with_int_wei_dt, f32_f16_dt,
-            f32_bf16_dt, f16_with_int_wei_dt, f32_with_int_wei_dt;
+            f32_bf16_dt, f16_with_int_wei_dt, f32_with_int_wei_dt,
+            int8_grouped_quantization_dt, bf16_fp8_dt, f16_fp8_dt;
     const bool A_any_layout;
     const bool B_any_layout;
     const bool C_any_layout;
@@ -500,7 +549,7 @@ int get_n_block_from_tag(format_tag_t matrix_b_tag);
 
 void mem_advice_init(brgemm_matmul_conf_t &bgmmc);
 
-bool is_batch_layout_trivial(const memory_desc_wrapper &mdw, const dim_t batch);
+bool is_batch_layout_trivial(const memory_desc_wrapper &mdw);
 
 // Returns true if logical dimension `inner_dim` is nested immediately inside
 // `outer_dim` in memory, i.e. no other dimension is physically interleaved

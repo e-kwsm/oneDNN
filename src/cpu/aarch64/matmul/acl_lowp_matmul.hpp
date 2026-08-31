@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2024-2025 Arm Ltd. and affiliates
+* Copyright 2024-2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,8 +21,8 @@
 #include "arm_compute/runtime/experimental/operators/CpuDequantize.h"
 #include "arm_compute/runtime/experimental/operators/CpuGEMMLowp.h"
 #include "arm_compute/runtime/experimental/operators/CpuQuantize.h"
-#include "cpu/aarch64/acl_post_ops.hpp"
 #include "cpu/aarch64/acl_utils.hpp"
+#include "cpu/aarch64/post_ops_fallback.hpp"
 #include "cpu/matmul/cpu_matmul_pd.hpp"
 #include "cpu/matmul/matmul_utils.hpp"
 
@@ -55,14 +56,14 @@ struct acl_lowp_matmul_t : public primitive_t {
         DECLARE_COMMON_PD_T(
                 "lowp_gemm:acl", acl_lowp_matmul_t, USE_GLOBAL_SCRATCHPAD);
 
-        status_t init(engine_t *engine);
+        status_t init(const engine_t *engine);
 
         status_t init_scratchpad(memory_tracking::registrar_t &scratchpad,
                 const arm_compute::experimental::MemoryRequirements
                         &aux_mem_req);
 
         acl_lowp_matmul_conf_t almc_ = utils::zero<decltype(almc_)>();
-        acl_post_ops_t acl_post_ops;
+        post_ops_fallback_t fallback_post_ops;
     };
 
     acl_lowp_matmul_t(const pd_t *apd) : primitive_t(apd) {}
@@ -76,6 +77,7 @@ private:
     std::unique_ptr<arm_compute::experimental::op::CpuQuantize> quant_;
     std::unique_ptr<arm_compute::experimental::op::CpuDequantize> dequant_;
     std::unique_ptr<arm_compute::experimental::op::CpuGEMMLowp> gemm_;
+    post_ops_fallback_t fallback_post_ops_;
 
     mutable std::mutex mtx_;
 };

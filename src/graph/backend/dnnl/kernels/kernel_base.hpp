@@ -31,71 +31,86 @@
 #include "oneapi/dnnl/dnnl_sycl.hpp"
 #endif
 
+#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
+#include "xpu/ocl/utils.hpp"
+#endif
+
 namespace dnnl {
 namespace impl {
 namespace graph {
 namespace dnnl_impl {
+
+#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
+using ocl_event_t = xpu::ocl::wrapper_t<cl_event>;
+#endif
 
 class dnnl_partition_impl_t;
 
 struct kernel_base_t {
     virtual ~kernel_base_t() = default;
 
-    status_t compile(const dnnl_partition_impl_t *part, const engine_t *aengine,
+    status_t compile(const dnnl_partition_impl_t *part, engine_t *aengine,
             const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs);
 
     // each subclass should implement compile_impl()
     virtual status_t compile_impl(const dnnl_partition_impl_t *part,
-            const engine_t *aengine,
-            const std::vector<logical_tensor_t> &inputs,
+            engine_t *aengine, const std::vector<logical_tensor_t> &inputs,
             const std::vector<logical_tensor_t> &outputs)
             = 0;
 
-    status_t execute(const stream_t *astream,
-            const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs);
+    status_t execute(stream_t *astream, const std::vector<tensor_t> &inputs,
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf = nullptr);
 
     // each subclass should implement execute_impl()
-    virtual status_t execute_impl(const stream_t *astream,
+    virtual status_t execute_impl(stream_t *astream,
             const std::vector<tensor_t> &inputs,
-            const std::vector<tensor_t> &outputs)
+            const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf)
             = 0;
 
 #ifdef DNNL_WITH_SYCL
-    status_t execute_sycl(const stream_t *astream,
+    status_t execute_sycl(stream_t *astream,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event) {
-        return sycl_execute_impl(
-                astream, inputs, outputs, sycl_deps, sycl_event);
+        return sycl_execute_impl(astream, inputs, outputs, scratchpad_buf,
+                sycl_deps, sycl_event);
     }
 
-    virtual status_t sycl_execute_impl(const stream_t *astream,
+    virtual status_t sycl_execute_impl(stream_t *astream,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
+            const tensor_t *scratchpad_buf,
             const std::vector<::sycl::event> &sycl_deps,
             ::sycl::event *sycl_event)
             = 0;
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    status_t execute_ocl(const stream_t *astream,
-            const std::vector<tensor_t> &inputs,
+    status_t execute_ocl(stream_t *astream, const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &ocl_deps, cl_event *ocl_event) {
-        return ocl_execute_impl(astream, inputs, outputs, ocl_deps, ocl_event);
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &ocl_deps, ocl_event_t &ocl_event) {
+        return ocl_execute_impl(
+                astream, inputs, outputs, scratchpad_buf, ocl_deps, ocl_event);
     }
 
-    virtual status_t ocl_execute_impl(const stream_t *astream,
+    virtual status_t ocl_execute_impl(stream_t *astream,
             const std::vector<tensor_t> &inputs,
             const std::vector<tensor_t> &outputs,
-            const std::vector<cl_event> &ocl_deps, cl_event *ocl_event)
+            const tensor_t *scratchpad_buf,
+            const std::vector<ocl_event_t> &ocl_deps, ocl_event_t &ocl_event)
             = 0;
 #endif
 
     virtual status_t prepare_inplace_pairs_impl() { return status::success; }
+
+    /// Returns the scratchpad size in bytes required for execution.
+    virtual size_t get_scratchpad_size() const = 0;
 
     // A string identity used in verbose indicating which kernels is dispatched
     // for a compiled partition.
@@ -119,6 +134,11 @@ using FCreateKernel = std::function<kernel_ptr(void)>;
 #define DEF_KERNEL_METHOD_STR(name) \
     std::string str() const override { \
         return #name; \
+    }
+
+#define DEF_KERNEL_METHOD_SCRATCHPAD_SIZE() \
+    size_t get_scratchpad_size() const override { \
+        return memory_planner_.total_internal_temporary_size(); \
     }
 
 } // namespace dnnl_impl

@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2020-2025 Arm Ltd. and affiliates
+* Copyright 2020-2026 Arm Ltd. and affiliates
+* Copyright 2026 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,8 +22,8 @@
 #include "cpu/cpu_convolution_pd.hpp"
 
 #include "acl_convolution_utils.hpp"
-#include "acl_post_ops.hpp"
 #include "arm_compute/runtime/experimental/operators/CpuGemmConv2d.h"
+#include "post_ops_fallback.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -41,10 +42,10 @@ struct acl_gemm_convolution_fwd_t : public primitive_t {
         DECLARE_COMMON_PD_T(
                 "gemm:acl", acl_gemm_convolution_fwd_t, USE_GLOBAL_SCRATCHPAD);
 
-        status_t init(engine_t *engine);
+        status_t init(const engine_t *engine);
 
         acl_conv_conf_t acp_ = utils::zero<decltype(acp_)>();
-        acl_post_ops_t post_ops;
+        post_ops_fallback_t post_ops;
     };
 
     acl_gemm_convolution_fwd_t(const pd_t *apd)
@@ -65,6 +66,7 @@ private:
     status_t execute_forward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
     std::unique_ptr<acl_obj_t<Op>> acl_obj_;
+    post_ops_fallback_t post_ops_;
 }; // acl_gemm_convolution_fwd_t
 
 } // namespace aarch64

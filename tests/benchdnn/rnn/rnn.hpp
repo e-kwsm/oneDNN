@@ -31,6 +31,7 @@
 #include "dnnl_debug.hpp"
 #include "utils/memory.hpp"
 #include "utils/perf_report.hpp"
+#include "utils/prb.hpp"
 #include "utils/settings.hpp"
 
 #define AOC array_offset_calculator
@@ -277,7 +278,7 @@ struct settings_t : public base_settings_t {
     }
 };
 
-struct prb_t : public desc_t {
+struct prb_t : public desc_t, public base_prb_t {
     // A ctor with common interface across all drivers.
     prb_t(const settings_t &s)
         : prb_t(s.desc, dt_conf_t::create(s.cfg[0], s.attributes.front()),
@@ -301,10 +302,10 @@ struct prb_t : public desc_t {
             const thr_ctx_t &ctx_init, const thr_ctx_t &ctx_exe,
             const impl_filter_t &impl_filter)
         : desc_t(desc)
+        , base_prb_t(prop, false, attr, ctx_init, ctx_exe, impl_filter)
         , cfg(cfg)
         , tag(tag)
         , prop(prop2prop_kind(prop))
-        , dir(prop)
         , alg(alg)
         , with_peephole(with_peephole)
         , with_projection(with_projection)
@@ -320,10 +321,6 @@ struct prb_t : public desc_t {
         , user_mb(mb)
         , ops(0.0)
         , linear_cscale(0.0f)
-        , attr(attr)
-        , ctx_init(ctx_init)
-        , ctx_exe(ctx_exe)
-        , impl_filter(impl_filter)
         , wei_nscales(0)
         , wei_scales_mask(0x0)
         , wei_proj_nscales(0)
@@ -378,7 +375,7 @@ struct prb_t : public desc_t {
         set_qparams(-1., 1.);
         repro = set_repro_line(); // must be last in ctor to collect right info
     }
-    ~prb_t() {
+    ~prb_t() override {
         zfree(wei_scales);
         zfree(wei_proj_scales);
         zfree(linear_scales);
@@ -506,19 +503,9 @@ struct prb_t : public desc_t {
         }
     }
 
-    // Used to construct memory desc when dimensions are runtime since such mds
-    // can't be used directly from query and memory objects can't be constructed.
-    benchdnn_dnnl_wrapper_t<dnnl_memory_desc_t> get_md(int arg) const {
-        assert(!"No runtime dimensions support for this driver!");
-        return make_benchdnn_dnnl_wrapper<dnnl_memory_desc_t>(nullptr);
-    }
-
-    const char *str() const { return repro.c_str(); }
-
     const dt_conf_t &cfg;
     std::vector<std::string> tag;
     dnnl_prop_kind_t prop;
-    dir_t dir; // Same as `prop`, for compatibility. TODO: remove me;
     alg_t alg;
     bool with_peephole, with_projection;
     dnnl_rnn_direction_t direction;
@@ -533,10 +520,6 @@ struct prb_t : public desc_t {
     int64_t user_mb;
     double ops;
     float linear_cscale;
-    bool inplace = false; // Lacks placement, always considered `false`.
-    attr_t attr;
-    thr_ctx_t ctx_init, ctx_exe;
-    impl_filter_t impl_filter;
 
     float data_scale, data_shift;
 
@@ -550,10 +533,17 @@ struct prb_t : public desc_t {
 
     float *linear_scales;
 
-private:
-    std::string repro;
+    static const prb_t *from(const base_prb_t *base_prb) {
+        return downcast<const prb_t *>(base_prb);
+    }
 
-    std::string set_repro_line();
+    void skip_unimplemented(res_t *res) const override;
+    void skip_invalid(res_t *res) const override;
+    std::vector<int> supported_exec_args(
+            bool override_dir_with_fwd) const override;
+
+private:
+    std::string set_repro_line() override;
 
     /* Todo: fused the two functions in set_shifts_scales */
     void set_qparams(float fp_min, float fp_max);
@@ -563,8 +553,8 @@ private:
 };
 
 struct perf_report_t : public base_perf_report_t {
-    perf_report_t(const prb_t *prb, const char *perf_template)
-        : base_perf_report_t(perf_template), p_(prb) {}
+    perf_report_t(const base_prb_t *base_prb, const char *perf_template)
+        : base_perf_report_t(perf_template), p_(prb_t::from(base_prb)) {}
 
     void dump_alg(std::ostream &s) const override { s << alg2str(p_->alg); }
 
@@ -604,27 +594,24 @@ void rnn_linear_fwd(const prb_t &prb, const args_t &args,
         const AOC<float> &ws_src_iter_c, const AOC<float> &ws_gates,
         const AOC<float> &ws_ht);
 
-dnnl_status_t init_pd(init_pd_args_t<prb_t> &init_pd_args);
-void setup_cmp(compare::compare_t &cmp, const prb_t *prb, data_kind_t kind,
-        const args_t &ref_args);
-std::vector<int> supported_exec_args(dir_t dir);
+dnnl_status_t init_pd(init_pd_args_t &init_pd_args);
+void setup_cmp(compare::compare_t &cmp, const base_prb_t *base_prb,
+        data_kind_t kind, const args_t &ref_args);
 int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
-        dnnl_primitive_t prim, const prb_t *prb, res_t *res,
+        dnnl_primitive_t prim, const base_prb_t *base_prb, res_t *res,
         dnnl_primitive_t prim_ref = nullptr);
 
-void skip_unimplemented_prb(const prb_t *prb, res_t *res);
-void skip_invalid_prb(const prb_t *prb, res_t *res);
-void compute_ref(const prb_t *prb, dir_t dir, const args_t &args,
+void compute_ref(const base_prb_t *base_prb, dir_t dir, const args_t &args,
         dnnl_primitive_t prim_ref = nullptr);
 void compute_ref_fwd(const prb_t &prb, const args_t &args);
 void compute_ref_bwd(const prb_t &prb, const args_t &args);
 
 int createit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t &prb, res_t *res);
+        const base_prb_t &base_prb, res_t *res);
 int checkit(std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t *prb, res_t *res);
+        const base_prb_t *base_prb, res_t *res);
 int doit(const std::vector<benchdnn_dnnl_wrapper_t<dnnl_primitive_t>> &v_prim,
-        const prb_t &prb, res_t *res);
+        const base_prb_t &base_prb, res_t *res);
 int bench(int argc, char **argv);
 
 } // namespace rnn

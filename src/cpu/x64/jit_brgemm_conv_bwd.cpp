@@ -101,7 +101,7 @@ status_t fwd_conv_desc_create(
 } // namespace
 
 template <cpu_isa_t isa>
-status_t brgemm_convolution_bwd_t<isa>::pd_t::init(engine_t *engine) {
+status_t brgemm_convolution_bwd_t<isa>::pd_t::init(const engine_t *engine) {
     using namespace data_type;
     using namespace utils;
 
@@ -184,6 +184,7 @@ template struct brgemm_convolution_bwd_t<avx10_2>;
 template struct brgemm_convolution_bwd_t<avx512_core_amx>;
 template struct brgemm_convolution_bwd_t<avx512_core_amx_fp16>;
 template struct brgemm_convolution_bwd_t<avx10_2_amx_2>;
+template struct brgemm_convolution_bwd_t<avx10_2_ace>;
 
 } // namespace x64
 } // namespace cpu

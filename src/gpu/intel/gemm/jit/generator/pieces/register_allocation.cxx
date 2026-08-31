@@ -492,6 +492,18 @@ void Generator<hw>::gemmAllocRegs(GEMMProblem &problem, GEMMStrategy &strategy, 
         }
     }
 
+    // Track clobbers which cannot be determined from decoded assembly.
+    auto addClobbers = [&](const std::vector<GRFMultirange> &regs) {
+        for (const auto &reg : regs) {
+            for (auto &r : reg.ranges) {
+                knownClobbers.add(r.getBase(), r.getLen());
+            }
+        }
+    };
+
+    if (strategy.A.base.getModel() != ngen::ModelInvalid) { addClobbers(state.A_regs); }
+    if (strategy.B.base.getModel() != ngen::ModelInvalid) { addClobbers(state.B_regs); }
+
     if (repackC) {
         state.Cr_regs = C_regs;
         C_regCountPerBuffer = state.C_layout.regs();
@@ -521,10 +533,16 @@ void Generator<hw>::gemmAllocRegs(GEMMProblem &problem, GEMMStrategy &strategy, 
     // Allocate registers for SLM copies.
     state.Ai_regs.resize(strategy.slmCopies);
     state.Bi_regs.resize(strategy.slmCopies);
-    if (strategy.slmA) for (int q = 0; q < strategy.slmCopies; q++)
-        state.Ai_regs[q] = state.ra.alloc_range(state.Ai_regCount);
-    if (strategy.slmB) for (int q = 0; q < strategy.slmCopies; q++)
-        state.Bi_regs[q] = state.ra.alloc_range(state.Bi_regCount);
+    if (strategy.slmA) {
+        for (int q = 0; q < strategy.slmCopies; q++)
+            state.Ai_regs[q] = state.ra.alloc_range(state.Ai_regCount);
+        addClobbers(state.Ai_regs);
+    }
+    if (strategy.slmB) {
+        for (int q = 0; q < strategy.slmCopies; q++)
+            state.Bi_regs[q] = state.ra.alloc_range(state.Bi_regCount);
+        addClobbers(state.Bi_regs);
+    }
 
     // Allocate registers for A/B sums.
     state.Asr_regs = state.ra.alloc_range(state.Asr_layout.regs());
@@ -533,17 +551,25 @@ void Generator<hw>::gemmAllocRegs(GEMMProblem &problem, GEMMStrategy &strategy, 
     state.Bs_regs = state.ra.alloc_range(state.Bs_layout.regs());
 
     // Allocate registers for A/B prefetch.
-    state.Ap_regs = state.ra.alloc_range(state.Ap_layout.regs());
-    state.Bp_regs = state.ra.alloc_range(state.Bp_layout.regs());
+    auto needsPFRegs = [](const MatrixAddressingStrategy &as) {
+        return as.prefetch && !as.newDP;
+    };
+    if (state.Ap_layout.valid() && needsPFRegs(state.Ap_layout.addressingStrategy()))
+        state.Ap_regs = state.ra.alloc_range(state.Ap_layout.regs());
+    if (state.Bp_layout.valid() && needsPFRegs(state.Bp_layout.addressingStrategy()))
+        state.Bp_regs = state.ra.alloc_range(state.Bp_layout.regs());
+
+    // bdpas has additional GRF conflict requirements: A scales must be in the same bank as A.
+    auto Ascale_hint = state.useBDPAS ? getHint(HintType::A0, strategy) : Bundle();
 
     // Allocate registers for A/B quantization parameters.
     state.A_offsetRegs = state.ra.alloc_range(state.A_offsetLayout.regs());
     state.B_offsetRegs = state.ra.alloc_range(state.B_offsetLayout.regs());
     state.Ar_offsetRegs = state.ra.alloc_range(state.Ar_offsetLayout.regs());
     state.Br_offsetRegs = state.ra.alloc_range(state.Br_offsetLayout.regs());
-    state.A_scaleRegs = state.ra.alloc_range(state.A_scaleLayout.regs());
+    state.A_scaleRegs = state.ra.alloc_range(state.A_scaleLayout.regs(), state.Ar_scaleLayout.empty() ? Ascale_hint : Bundle());
     state.B_scaleRegs = state.ra.alloc_range(state.B_scaleLayout.regs());
-    state.Ar_scaleRegs = state.ra.alloc_range(state.Ar_scaleLayout.regs());
+    state.Ar_scaleRegs = state.ra.alloc_range(state.Ar_scaleLayout.regs(), Ascale_hint);
     state.Br_scaleRegs = state.ra.alloc_range(state.Br_scaleLayout.regs());
     state.Ag_regs = state.ra.alloc_range(state.Ag_layout.regs());
     state.Bg_regs = state.ra.alloc_range(state.Bg_layout.regs());

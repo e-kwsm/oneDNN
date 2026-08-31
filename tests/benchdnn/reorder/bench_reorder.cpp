@@ -18,6 +18,7 @@
 
 #include "dnnl_common.hpp"
 #include "utils/parser.hpp"
+#include "utils/stringstream.hpp"
 #include "utils/task_executor.hpp"
 
 #include "reorder.hpp"
@@ -39,10 +40,10 @@ void check_correctness(
     for_(const auto &i_ctx_init : s.ctx_init)
     for_(const auto &i_ctx_exe : s.ctx_exe)
     for (auto i_runtime_dim_mask : s.runtime_dim_mask) {
-        const prb_t prb(s.prb_dims, i_sdt, i_ddt, i_stag, i_dtag, i_strides,
-                i_oflag, i_cross_engine, i_runtime_dim_mask, i_attr, i_ctx_init,
-                i_ctx_exe, s.impl_filter);
-        if (s.pattern && !match_regex(prb.str(), s.pattern)) return;
+        auto prb = std::make_shared<prb_t>(s.prb_dims, i_sdt, i_ddt, i_stag,
+                i_dtag, i_strides, i_oflag, i_cross_engine, i_runtime_dim_mask,
+                i_attr, i_ctx_init, i_ctx_exe, s.impl_filter);
+        if (s.pattern && !match_regex(prb->str(), s.pattern)) return;
 
         task_executor.submit(prb, s.perf_template, createit, checkit, doit);
     }
@@ -74,7 +75,7 @@ int verify_input(const settings_t &s, const settings_t &def) {
 
     for (const auto &i_strides : s.strides) {
         if (i_strides.size() != n_inputs) {
-            dnnl::impl::stringstream_t ss;
+            stringstream_t ss;
             ss << vdims2str(i_strides);
             BENCHDNN_PRINT(0,
                     "Error: `strides` option expects two inputs in format "
@@ -86,7 +87,7 @@ int verify_input(const settings_t &s, const settings_t &def) {
         for (int i = 0; i < n_inputs; i++) {
             if (i_strides[i].size() != static_cast<size_t>(s.prb_dims.ndims)
                     && !i_strides[i].empty()) {
-                dnnl::impl::stringstream_t ss;
+                stringstream_t ss;
                 ss << vdims2str(i_strides);
                 BENCHDNN_PRINT(0,
                         "Error: number of dimensions in the `strides` option "

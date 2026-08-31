@@ -17,15 +17,11 @@
 #include "ittnotify.hpp"
 #include "utils.hpp"
 
-#if defined(DNNL_ENABLE_ITT_TASKS)
-#include "dnnl_debug.h"
-#include "ittnotify/ittnotify.h"
-#endif
-
 namespace dnnl {
 namespace impl {
 namespace itt {
 
+#if defined(DNNL_ENABLE_ITT_TASKS)
 static setting_t<int> itt_task_level {__itt_task_level_high};
 
 bool get_itt(__itt_task_level level) {
@@ -42,8 +38,6 @@ __itt_id make_itt_id(const char *tname, double stamp) {
     return __itt_id_make(
             const_cast<char *>(tname), static_cast<uint64_t>(stamp));
 }
-
-#if defined(DNNL_ENABLE_ITT_TASKS)
 
 namespace {
 
@@ -118,7 +112,7 @@ void primitive_task_start(primitive_kind_t kind, const char *log_kind) {
 }
 
 void primitive_add_metadata_and_id(
-        const char *pd_info, const char *log_kind, __itt_id task_id) {
+        const char *pd_info, const char *log_kind, const __itt_id *task_id) {
     // A separate method for adding metadata and IDs to the primitive ITT tasks
     // provide the option to skip this step during primitive operation to avoid
     // performance impact from construction of very large metadata strings.
@@ -130,7 +124,7 @@ void primitive_add_metadata_and_id(
 
     // While the task ID is unique for each instance of the primitive operation,
     // it is shared across multi-threaded executions of the same instance.
-    thread_primitive_task_id = task_id;
+    thread_primitive_task_id = *task_id;
     __itt_id_create(pd_domain, thread_primitive_task_id);
 }
 
@@ -146,8 +140,8 @@ const char *primitive_task_get_current_log_kind() {
     return thread_primitive_log_kind;
 }
 
-__itt_id primitive_task_get_itt_id() {
-    return thread_primitive_task_id;
+const __itt_id *primitive_task_get_itt_id() {
+    return &thread_primitive_task_id;
 }
 
 void primitive_task_end(const char *log_kind) {
@@ -163,24 +157,7 @@ void primitive_task_end(const char *log_kind) {
         thread_primitive_task_id = __itt_null;
     }
 }
-#else
-void primitive_task_start(primitive_kind_t kind) {
-    UNUSED(kind);
-}
-primitive_kind_t primitive_task_get_current_kind() {
-    return primitive_kind::undefined;
-}
-const char *primitive_task_get_current_info() {
-    return "";
-}
-const char *primitive_task_get_current_log_kind() {
-    return "";
-}
-__itt_id primitive_task_get_itt_id() {
-    return __itt_null;
-}
-void primitive_task_end(const char *log_kind) {}
-#endif
+#endif // defined(DNNL_ENABLE_ITT_TASKS)
 
 } // namespace itt
 } // namespace impl

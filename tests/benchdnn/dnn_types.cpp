@@ -38,6 +38,8 @@
 #include "dnnl_memory.hpp"
 #include "utils/cold_cache.hpp"
 #include "utils/dims.hpp"
+#include "utils/dnnl_query.hpp"
+#include "utils/execution_mode.hpp"
 #include "utils/fill.hpp"
 #include "utils/parser.hpp"
 #include "utils/stream_kind.hpp"
@@ -763,11 +765,27 @@ std::vector<std::pair<int, int>> attr_t::post_ops_t::get_po_masks(
         assert(mask >= 0);
         v_masks.emplace_back(DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | arg, mask);
 
-        // there is no broadcasting support for the ternary src2 input, hence
-        // no mask is required.
-        if (e.is_binary_kind_with_ternary_op())
+        // Condition (src2) mask for the ternary select input, derived from its
+        // policy so a broadcast condition is filled accordingly. With no
+        // explicit src2 spec the condition spans the full dst shape (mask -1),
+        // preserving prior behavior.
+        if (e.is_binary_kind_with_ternary_op()) {
+            int src2_mask = -1;
+            switch (e.binary.src2_mask_input) {
+                case attr_t::mask_input_t::none: src2_mask = -1; break;
+                case attr_t::mask_input_t::mask:
+                    src2_mask = e.binary.src2_mask;
+                    break;
+                case attr_t::mask_input_t::policy:
+                    src2_mask = attr_t::policy2mask(DNNL_ARG_SRC_2,
+                            e.binary.src2_policy, ndims, prim_kind);
+                    break;
+                default: assert(!"unknown mask_input value"); break;
+            }
             v_masks.emplace_back(
-                    DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_2, -1);
+                    DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_2,
+                    src2_mask);
+        }
     }
     return v_masks;
 }
@@ -835,6 +853,14 @@ int attr_t::post_ops_t::prelu_index() const {
         if (entry[i].is_prelu_kind()) return i;
     }
     return -1;
+}
+
+dnnl_scratchpad_mode_t attr_t::get_default_scratchpad_mode() {
+    if (has_bench_mode_modifier(mode_modifier_t::par_create)
+            || execution_mode == execution_mode_t::native_graph) {
+        return dnnl_scratchpad_mode_user;
+    }
+    return dnnl_scratchpad_mode_library;
 }
 
 std::ostream &operator<<(std::ostream &s, const policy_t &policy) {
@@ -1146,7 +1172,8 @@ std::ostream &operator<<(std::ostream &s, memory_kind_ext_t memory_kind) {
 
 std::ostream &dump_global_params(std::ostream &s) {
     // Need to dump mode and modifiers in front of the driver name to make all
-    // updated default values take effect before parsing a state of a problem.
+    // updated default values (at least, scratchpad) take effect before parsing
+    // a state of a problem.
     if (canonical || bench_mode != default_bench_mode)
         s << "--mode=" << bench_mode << " ";
     // Don't dump modifiers if F or S mode is used to keep the repro simple.
@@ -1166,7 +1193,12 @@ std::ostream &dump_global_params(std::ostream &s) {
                     && fix_times_per_prb != default_fix_times_per_prb))
         s << "--fix-times-per-prb=" << fix_times_per_prb << " ";
 
-    s << "--" << driver_name << " ";
+    // Need to dump execution_mode in front of the driver name to make all
+    // updated default values (scratchpad) take effect before parsing a state of
+    // a problem.
+    if (canonical || execution_mode != default_execution_mode)
+        s << "--execution-mode=" << execution_mode << " ";
+
     if (canonical) s << "--canonical=" << bool2str(canonical) << " ";
     if (canonical || engine_tgt_kind != dnnl_cpu) {
         s << "--engine=" << engine_tgt_kind;
@@ -1197,8 +1229,8 @@ std::ostream &dump_global_params(std::ostream &s) {
         s << "--cold-cache=" << cold_cache_input << " ";
     if (canonical || !buffer_prefix.empty())
         s << "--buffer-prefix=" << buffer_prefix << " ";
-    if (canonical || execution_mode != execution_mode_t::direct)
-        s << "--execution-mode=" << execution_mode2str(execution_mode) << " ";
+
+    s << "--" << driver_name << " ";
 
     return s;
 }
@@ -1355,8 +1387,19 @@ int attr_args_t::prepare_post_ops_mds(const attr_t &attr, int ndims,
 
             // deduce binary, prelu dims based on input policy
             dnnl_dims_t rhs_tensor_dims = {};
-            for (auto d = 0; d < ndims; ++d)
-                rhs_tensor_dims[d] = (!(mask & (1 << d))) ? 1 : dims[d];
+            // Overload mask 0 meaning for when binary post-op is applied
+            // to grouped memory, changing it to be per-group (i.e. one value
+            // per concatenated tensor, for instance for NVFP4 global scale).
+            // The grouped dst has no explicit num_groups in dims,
+            // so form a [group_count, 1, ...] descriptor manually
+            if (grouped_count > 0 && mask == 0) {
+                for (auto d = 0; d < ndims; ++d)
+                    rhs_tensor_dims[d]
+                            = (d == grouped_var_dim_idx) ? grouped_count : 1;
+            } else {
+                for (auto d = 0; d < ndims; ++d)
+                    rhs_tensor_dims[d] = (!(mask & (1 << d))) ? 1 : dims[d];
+            }
 
             auto rhs_tensor_desc = dnn_mem_t::init_md(ndims, rhs_tensor_dims,
                     po_rhs_tensor_entry.dt, po_rhs_tensor_entry.tag,
@@ -1371,8 +1414,32 @@ int attr_args_t::prepare_post_ops_mds(const attr_t &attr, int ndims,
                     std::move(rhs_tensor_desc));
 
             if (e.is_binary_kind_with_ternary_op()) {
+                // Deduce the condition (src2) dims from its mask/policy so a
+                // broadcast condition (e.g. per_tensor, or broadcast on outer
+                // dims) is expressed as size-1 dims, mirroring src1 above.
+                // With no explicit src2 spec the condition defaults to the full
+                // dst shape (all mask bits set) to preserve prior behavior.
+                const int full_mask = (1 << ndims) - 1;
+                int src2_mask = full_mask;
+                switch (e.binary.src2_mask_input) {
+                    case attr_t::mask_input_t::none:
+                        src2_mask = full_mask;
+                        break;
+                    case attr_t::mask_input_t::mask:
+                        src2_mask = e.binary.src2_mask;
+                        break;
+                    case attr_t::mask_input_t::policy:
+                        src2_mask = attr_t::policy2mask(DNNL_ARG_SRC_2,
+                                e.binary.src2_policy, ndims, prim_kind);
+                        break;
+                    default: assert(!"unknown mask_input value"); break;
+                }
+                dnnl_dims_t src2_tensor_dims = {};
+                for (auto d = 0; d < ndims; ++d)
+                    src2_tensor_dims[d]
+                            = (!(src2_mask & (1 << d))) ? 1 : dims[d];
                 auto rhs_src2_tensor_desc = dnn_mem_t::init_md(
-                        ndims, dims, e.binary.src2_dt, tag::any);
+                        ndims, src2_tensor_dims, e.binary.src2_dt, tag::any);
                 mds.emplace(
                         (DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_2),
                         std::move(rhs_src2_tensor_desc));

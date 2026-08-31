@@ -658,6 +658,12 @@ reorder_impl_t::reorder_impl_t(ngen::HW hw, const dsl::layout_t &src_layout,
         const dsl::layout_t &dst_layout)
     : hw_(hw), src_layout_(src_layout), dst_layout_(dst_layout) {
     try_reinterpret_to_wider_type(src_layout_, dst_layout_);
+
+    if (src_layout_.type() == dst_layout_.type()) {
+        auto type = type_t::u(src_layout_.type().bitsize());
+        src_layout_ = src_layout_.with(type);
+        dst_layout_ = dst_layout_.with(type);
+    }
 }
 
 void reorder_impl_t::emit(copy_plan_t &plan, const reorder_operand_t &src,
@@ -673,7 +679,10 @@ void reorder_impl_t::emit(copy_plan_t &plan, const reorder_operand_t &src,
     };
 
     op_init_t from_temp = [&](int elems, ngen::DataType dt) {
-        return plan.newTemp(dt, elems, 1);
+        auto tmp = plan.newTemp(dt, elems, 1);
+        tmp.overwrite = true;
+        tmp.overwriteStride = true;
+        return tmp;
     };
 
     auto emit = [&](reorder_operand_t &dst, const reorder_operand_t &src) {

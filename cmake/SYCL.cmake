@@ -19,6 +19,40 @@ if(SYCL_cmake_included)
 endif()
 set(SYCL_cmake_included true)
 
+if("${DNNL_CPU_RUNTIME}" MATCHES "^(DPCPP|SYCL)$" AND NOT DNNL_GPU_RUNTIME STREQUAL DNNL_CPU_RUNTIME)
+    message(FATAL_ERROR "CPU runtime ${DNNL_CPU_RUNTIME} requires GPU runtime ${DNNL_CPU_RUNTIME}")
+endif()
+
+if(DNNL_CPU_RUNTIME STREQUAL "DPCPP" OR DNNL_CPU_RUNTIME STREQUAL "SYCL")
+    set(DNNL_CPU_SYCL true)
+else()
+    set(DNNL_CPU_SYCL false)
+endif()
+
+if(DNNL_GPU_RUNTIME STREQUAL "DPCPP" OR DNNL_GPU_RUNTIME STREQUAL "SYCL")
+    set(DNNL_GPU_SYCL true)
+    set(DNNL_SYCL_CUDA OFF)
+    set(DNNL_SYCL_HIP OFF)
+    set(DNNL_SYCL_GENERIC OFF)
+    if(DNNL_GPU_VENDOR STREQUAL "NVIDIA")
+        set(DNNL_SYCL_CUDA ON)
+    endif()
+    if(DNNL_GPU_VENDOR STREQUAL "AMD")
+        set(DNNL_SYCL_HIP ON)
+    endif()
+    if(DNNL_GPU_VENDOR STREQUAL "GENERIC")
+        set(DNNL_SYCL_GENERIC ON)
+    endif()
+else()
+    set(DNNL_GPU_SYCL false)
+endif()
+
+if(DNNL_CPU_SYCL OR DNNL_GPU_SYCL)
+    set(DNNL_WITH_SYCL true)
+else()
+    set(DNNL_WITH_SYCL false)
+endif()
+
 include("cmake/host_compiler_id.cmake")
 
 if(NOT DNNL_WITH_SYCL)
@@ -104,6 +138,11 @@ elseif(DNNL_SYCL_HIP)
     adjust_headers_priority("HIP::HIP;rocBLAS::rocBLAS;MIOpen::MIOpen")
     add_definitions_with_host_compiler("-D__HIP_PLATFORM_AMD__=1")
 
+    if(NOT "${DNNL_AMD_SYCL_KERNELS_TARGET_ARCH}" STREQUAL "")
+        add_definitions(-DDNNL_AMD_ENABLE_SYCL_KERNELS)
+        set(DNNL_AMD_ENABLE_SYCL_KERNELS TRUE)
+    endif()
+
     list(APPEND EXTRA_SHARED_LIBS HIP::HIP rocBLAS::rocBLAS MIOpen::MIOpen)
     message(STATUS "DPC++ support is enabled (HIP)")
 elseif(DNNL_SYCL_GENERIC)
@@ -116,6 +155,10 @@ else()
     # In order to support large shapes.
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-sycl-id-queries-fit-in-int")
     message(STATUS "DPC++ support is enabled (OpenCL and Level Zero)")
+endif()
+
+if(DNNL_INTERNAL_ENABLE_GENERIC_SYCL_KERNELS)
+    add_definitions(-DDNNL_ENABLE_SYCL_KERNELS)
 endif()
 
 # XXX: Suppress warning coming from SYCL headers:

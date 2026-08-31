@@ -65,6 +65,8 @@ uint64_t get_future_extensions(
     return extensions;
 }
 
+device_info_t::~device_info_t() = default;
+
 status_t device_info_t::init(
         impl::engine_t *engine, const std::vector<uint8_t> &cache_blob) {
     if (!cache_blob.empty()) {
@@ -88,25 +90,16 @@ status_t device_info_t::init(
     return status::success;
 }
 
-const ngen::Product &device_info_t::ngen_product(const gpu_product_t &product) {
-    static_assert(sizeof(ngen::Product) == sizeof(compute::gpu_product_t),
-            "Can't cast gpu_product_t to ngen::Product");
-    return reinterpret_cast<const ngen::Product &>(product);
-}
-
 ngen::HW device_info_t::ngen_hw() const {
-    ngen::Product p = jit::get_ngen_product(*this);
-    return ngen::getCore(p.family);
+    return ngen::getCore(product_->family);
 }
 
 int device_info_t::stepping_id() const {
-    ngen::Product p = jit::get_ngen_product(*this);
-    return p.stepping;
+    return product_->stepping;
 }
 
 bool device_info_t::is_integrated() const {
-    ngen::Product p = jit::get_ngen_product(*this);
-    return p.type == ngen::PlatformType::Integrated;
+    return product_->type == ngen::PlatformType::Integrated;
 }
 
 std::string device_info_t::get_cl_ext_options() const {
@@ -243,8 +236,8 @@ int device_info_t::max_subgroup_size(data_type_t type) const {
 size_t device_info_t::max_wg_size(
         int grf_per_thread, size_t subgroup_size) const {
     // max_wg_size_ implicitly assumes 128 GRF/thread - other GRF modes will vary
-    size_t thread_per_eu = threads_per_eu(gpu_arch_, grf_per_thread);
-    size_t base_thread_per_eu = threads_per_eu(gpu_arch_, 128);
+    size_t thread_per_eu = threads_per_eu(grf_per_thread);
+    size_t base_thread_per_eu = threads_per_eu(128);
     size_t device_max_wg_size
             = max_wg_size_ * thread_per_eu / base_thread_per_eu;
     if (subgroup_size > 0) {
@@ -254,27 +247,58 @@ size_t device_info_t::max_wg_size(
     return device_max_wg_size;
 }
 
-int device_info_t::grf_per_eu(gpu_arch_t gpu_arch) {
-    switch (gpu_arch) {
-        case gpu::intel::compute::gpu_arch_t::xe_lp: return 896;
-        case gpu::intel::compute::gpu_arch_t::xe_hp:
-        case gpu::intel::compute::gpu_arch_t::xe_hpg:
-        case gpu::intel::compute::gpu_arch_t::xe_hpc:
-        case gpu::intel::compute::gpu_arch_t::xe2:
-        case gpu::intel::compute::gpu_arch_t::xe3p:
-        case gpu::intel::compute::gpu_arch_t::xe3: return 1024;
-        case gpu::intel::compute::gpu_arch_t::unknown: return 896;
+namespace {
+int grf_per_eu(const ngen::Product &product) {
+    ngen::HW hw = ngen::getCore(product.family);
+    switch (hw) {
+        case ngen::HW::XeLP: return 896;
+        case ngen::HW::XeHP:
+        case ngen::HW::XeHPG:
+        case ngen::HW::XeHPC:
+        case ngen::HW::Xe2:
+        case ngen::HW::Xe3: return 1024;
+        case ngen::HW::Xe3p:
+            return product.family == ngen::ProductFamily::CRI ? 2048 : 1024;
+        case ngen::HW::Unknown: return 896;
+        default: gpu_error_not_expected();
     }
     return 1024;
 }
 
-int device_info_t::threads_per_eu(gpu_arch_t gpu_arch, int grf_per_thread) {
+int max_threads_per_eu(const ngen::Product &product) {
+    ngen::HW hw = ngen::getCore(product.family);
+    gpu_arch_t arch = jit::convert_ngen_arch_to_dnnl(hw);
+    using namespace gpu::intel::compute;
+    switch (arch) {
+        case gpu_arch_t::xe_lp: return 7;
+        case gpu_arch_t::xe_hp:
+        case gpu_arch_t::xe_hpg:
+        case gpu_arch_t::xe_hpc:
+        case gpu_arch_t::xe2:
+        case gpu_arch_t::xe3: return 8;
+        case gpu_arch_t::xe3p:
+            return product.family == ngen::ProductFamily::NVLP ? 10 : 8;
+        case gpu_arch_t::unknown: return 8;
+    }
+    gpu_error_not_expected();
+    return 8;
+}
+} // namespace
+
+int device_info_t::threads_per_eu(
+        const ngen::Product &product, int grf_per_thread) {
     gpu_assert(grf_per_thread > 0) << "Invalid GRF per thread";
-    return grf_per_eu(gpu_arch) / grf_per_thread;
+
+    // CRI has an exception: 256 GRF/thread is restricted to 4 threads/EU due to lack of accumulators
+    if (product.family == ngen::ProductFamily::CRI && grf_per_thread == 256)
+        return 4;
+
+    int hw_max = max_threads_per_eu(product);
+    return std::min(hw_max, grf_per_eu(product) / grf_per_thread);
 }
 
-int device_info_t::max_slm_size(gpu_product_t product) {
-    auto family = ngen_product(product).family;
+int device_info_t::max_slm_size(const ngen::Product &product) {
+    auto family = product.family;
     auto gpu_arch = jit::convert_ngen_arch_to_dnnl(ngen::getCore(family));
     int slm_size = 0; // SLM size per SS or DSS.
     switch (gpu_arch) {
@@ -295,9 +319,9 @@ int device_info_t::max_slm_size(gpu_product_t product) {
     return slm_size;
 }
 
-int device_info_t::max_slm_size_per_tg(gpu_product_t product) {
-    auto gpu_arch = jit::convert_ngen_arch_to_dnnl(
-            ngen::getCore(ngen_product(product).family));
+int device_info_t::max_slm_size_per_tg(const ngen::Product &product) {
+    auto gpu_arch
+            = jit::convert_ngen_arch_to_dnnl(ngen::getCore(product.family));
     switch (gpu_arch) {
         case gpu::intel::compute::gpu_arch_t::xe_hp:
         case gpu::intel::compute::gpu_arch_t::xe_hpg: return (1 << 16);
@@ -306,12 +330,12 @@ int device_info_t::max_slm_size_per_tg(gpu_product_t product) {
 }
 
 int device_info_t::max_slm_size_per_tg(
-        int tg_size, int grf_per_thread, gpu_product_t product) {
-    auto gpu_arch = jit::convert_ngen_arch_to_dnnl(
-            ngen::getCore(ngen_product(product).family));
+        int tg_size, int grf_per_thread, const ngen::Product &product) {
+    ngen::HW hw = ngen::getCore(product.family);
+    auto gpu_arch = jit::convert_ngen_arch_to_dnnl(hw);
     int eus_per_ss = max_eus_per_wg(gpu_arch);
     int tgs_per_ss
-            = eus_per_ss * threads_per_eu(gpu_arch, grf_per_thread) / tg_size;
+            = eus_per_ss * threads_per_eu(product, grf_per_thread) / tg_size;
     int slm_per_tg = max_slm_size(product) / tgs_per_ss;
     return std::min(max_slm_size_per_tg(product), slm_per_tg);
 }
@@ -354,13 +378,13 @@ status_t device_info_t::init_attributes_common(impl::engine_t *engine) {
 status_t device_info_t::init_serialized_device_info(
         const std::vector<uint8_t> &cache_blob) {
     if (!cache_blob.empty()) {
-        serialized_device_info_.append_array(
-                cache_blob.size(), cache_blob.data());
+        serialized_device_info_ = serialization_stream_t::from_data(cache_blob);
         return status::success;
     }
 
     serialized_device_info_.append(gpu_arch_);
-    serialized_device_info_.append(gpu_product_);
+    serialized_device_info_.append(product_ != nullptr);
+    if (product_) serialized_device_info_.append(*product_);
     serialized_device_info_.append(ip_version_);
     serialized_device_info_.append(runtime_version_.major);
     serialized_device_info_.append(runtime_version_.minor);
@@ -370,7 +394,11 @@ status_t device_info_t::init_serialized_device_info(
     serialized_device_info_.append(max_subgroup_size_);
     serialized_device_info_.append(max_exec_size_);
     serialized_device_info_.append(max_wg_size_);
+    serialized_device_info_.append(memory_size_);
     serialized_device_info_.append(l3_cache_size_);
+    serialized_device_info_.append(max_kernel_param_size_);
+    serialized_device_info_.append(device_address_bits_);
+    serialized_device_info_.append(max_allocation_size_);
     serialized_device_info_.append(extensions_);
     serialized_device_info_.append(native_extensions_);
     serialized_device_info_.append(mayiuse_systolic_);
@@ -379,9 +407,7 @@ status_t device_info_t::init_serialized_device_info(
     serialized_device_info_.append(mayiuse_non_uniform_work_groups_);
     serialized_device_info_.append(is_efficient_64bit_);
 
-    const size_t name_size = name_.size();
-    serialized_device_info_.append(name_size);
-    serialized_device_info_.append_array(name_size, name_.data());
+    serialized_device_info_.append(name_);
 
     return status::success;
 }
@@ -390,44 +416,38 @@ status_t device_info_t::init_from_cache_blob(
         const std::vector<uint8_t> &cache_blob) {
     if (cache_blob.empty()) return status::invalid_arguments;
 
-    size_t pos = 0;
-#define DESERIALIZE(val, expected_type) \
-    static_assert(std::is_same<std::remove_reference<decltype(val)>::type, \
-                          expected_type>::value, \
-            #val " has incorrect type"); \
-    (val) = *reinterpret_cast<const expected_type *>(cache_blob.data() + pos); \
-    pos += sizeof(expected_type);
+    auto s = serialization_stream_t::from_data(cache_blob);
+    deserializer_t d(s);
 
-    DESERIALIZE(gpu_arch_, compute::gpu_arch_t);
-    DESERIALIZE(gpu_product_, compute::gpu_product_t);
-    DESERIALIZE(ip_version_, uint32_t);
-    DESERIALIZE(runtime_version_.major, int);
-    DESERIALIZE(runtime_version_.minor, int);
-    DESERIALIZE(runtime_version_.build, int);
-    DESERIALIZE(eu_count_, int32_t);
-    DESERIALIZE(max_eus_per_wg_, int32_t);
-    DESERIALIZE(max_subgroup_size_, int32_t);
-    DESERIALIZE(max_exec_size_, int);
-    DESERIALIZE(max_wg_size_, size_t);
-    DESERIALIZE(l3_cache_size_, size_t);
-    DESERIALIZE(extensions_, uint64_t);
-    DESERIALIZE(native_extensions_, uint64_t);
-    DESERIALIZE(mayiuse_systolic_, bool);
-    DESERIALIZE(mayiuse_ngen_kernels_, bool);
-    DESERIALIZE(mayiuse_system_memory_allocators_, bool);
-    DESERIALIZE(mayiuse_non_uniform_work_groups_, bool);
-    DESERIALIZE(is_efficient_64bit_, bool);
-#undef DESERIALIZE
+    d.pop(gpu_arch_);
+    auto hadProduct = d.pop<bool>();
+    if (hadProduct) {
+        product_ = utils::make_unique<ngen::Product>(d.pop<ngen::Product>());
+    }
+    d.pop(ip_version_);
+    d.pop(runtime_version_.major);
+    d.pop(runtime_version_.minor);
+    d.pop(runtime_version_.build);
+    d.pop(eu_count_);
+    d.pop(max_eus_per_wg_);
+    d.pop(max_subgroup_size_);
+    d.pop(max_exec_size_);
+    d.pop(max_wg_size_);
+    d.pop(memory_size_);
+    d.pop(l3_cache_size_);
+    d.pop(max_kernel_param_size_);
+    d.pop(device_address_bits_);
+    d.pop(max_allocation_size_);
+    d.pop(extensions_);
+    d.pop(native_extensions_);
+    d.pop(mayiuse_systolic_);
+    d.pop(mayiuse_ngen_kernels_);
+    d.pop(mayiuse_system_memory_allocators_);
+    d.pop(mayiuse_non_uniform_work_groups_);
+    d.pop(is_efficient_64bit_);
 
-    // name_ is not trivially copyable type
-    const size_t name_size
-            = *reinterpret_cast<const size_t *>(cache_blob.data() + pos);
-    pos += sizeof(size_t);
-    name_ = std::string(
-            reinterpret_cast<const char *>(cache_blob.data() + pos), name_size);
-    pos += name_size;
-    assert(name_size == name_.size());
-    assert(pos == cache_blob.size());
+    d.pop(name_);
+    assert(d.empty());
 
     return status::success;
 }
@@ -439,11 +459,6 @@ void device_info_t::fixup_l3_cache_size() {
         l3_cache_size_ = (1 << 23);
     }
 }
-
-static_assert(std::is_trivially_copyable<ngen::Product>(),
-        "ngen::Product cannot safely be copied into gpu_product_t");
-static_assert(sizeof(ngen::Product) == sizeof(compute::gpu_product_t),
-        "ngen::Product cannot safely be copied into gpu_product_t");
 
 } // namespace compute
 } // namespace intel

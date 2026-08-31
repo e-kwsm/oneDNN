@@ -51,7 +51,6 @@ static inline gemmstone::Type convert_dnnl_to_kernel_type(data_type_t type) {
         case data_type::f8_e4m3: return Type::hf8;
         case data_type::e8m0: return Type::f8_e8m0;
         case data_type::f4_e2m1: return Type::f4_e2m1;
-        case data_type::f4_e3m0: return Type::f4_e3m0;
         case data_type::s32: return Type::s32;
         case data_type::u8: return Type::u8;
         case data_type::s8: return Type::s8;
@@ -84,7 +83,7 @@ struct gen_desc_t {
     }
     compute::gpu_arch_t arch() const { return arch_; }
 
-    bool has_entry() { return entry_ != nullptr; }
+    bool has_entry() const { return entry_ != nullptr; }
 
     const gemmstone::kcatalog::Entry &entry() const {
         assert(entry_ != nullptr);

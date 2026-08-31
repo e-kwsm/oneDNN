@@ -40,7 +40,7 @@ namespace dnnl_impl {
 
 template <bool quantized>
 status_t gated_mlp_primitive_kernel_t<quantized>::compile_impl(
-        const dnnl_partition_impl_t *part, const engine_t *eng,
+        const dnnl_partition_impl_t *part, engine_t *eng,
         const std::vector<logical_tensor_t> &inputs,
         const std::vector<logical_tensor_t> &outputs) {
 // gated_mlp_primitive_kernel_t only supports Intel GPU.
@@ -49,7 +49,6 @@ status_t gated_mlp_primitive_kernel_t<quantized>::compile_impl(
 #endif
 
     p_engine_ = make_dnnl_engine(*eng);
-    g_alloc_ = reinterpret_cast<graph::allocator_t *>(eng->get_allocator());
 
     // First, dry run on a deep copy
     subgraph_
@@ -142,19 +141,18 @@ void gated_mlp_primitive_kernel_t<quantized>::prepare_args_set(
 }
 
 template <bool quantized>
-status_t gated_mlp_primitive_kernel_t<quantized>::execute_impl(
-        const stream_t *stream, const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs) {
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *stream);
+status_t gated_mlp_primitive_kernel_t<quantized>::execute_impl(stream_t *stream,
+        const std::vector<tensor_t> &inputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf) {
+    dnnl::stream p_stream = make_dnnl_stream(*stream);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    temporary_scratchpad_t scratchpad(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    prepare_args_set(res, inputs, outputs, scratchpad);
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
+    prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         subgraph_->execs_[i]->execute(p_stream, res->get_exec_args()[i]);
@@ -166,8 +164,8 @@ status_t gated_mlp_primitive_kernel_t<quantized>::execute_impl(
 #ifdef DNNL_WITH_SYCL
 template <bool quantized>
 status_t gated_mlp_primitive_kernel_t<quantized>::sycl_execute_impl(
-        const stream_t *stream, const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
+        stream_t *stream, const std::vector<tensor_t> &inputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
         const std::vector<::sycl::event> &sycl_deps, ::sycl::event *ret_event) {
 // gated_mlp_primitive_kernel_t only supports Intel GPU.
 #if DNNL_GPU_VENDOR != DNNL_VENDOR_INTEL
@@ -176,16 +174,15 @@ status_t gated_mlp_primitive_kernel_t<quantized>::sycl_execute_impl(
     auto deps = sycl_deps;
     std::optional<::sycl::event> returned_event;
 
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *stream);
+    dnnl::stream p_stream = make_dnnl_stream(*stream);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    temporary_scratchpad_t scratchpad(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    prepare_args_set(res, inputs, outputs, scratchpad);
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
+    prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         if (subgraph_->is_constant_[i]) continue;
@@ -194,7 +191,7 @@ status_t gated_mlp_primitive_kernel_t<quantized>::sycl_execute_impl(
         if (returned_event) deps = {*returned_event};
     }
 
-    scratchpad.set_deps(returned_event ? *returned_event : ::sycl::event {});
+    scratchpad->set_deps(returned_event ? *returned_event : ::sycl::event {});
     if (ret_event)
         *ret_event = returned_event ? *returned_event : ::sycl::event {};
 
@@ -205,32 +202,31 @@ status_t gated_mlp_primitive_kernel_t<quantized>::sycl_execute_impl(
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
 template <bool quantized>
 status_t gated_mlp_primitive_kernel_t<quantized>::ocl_execute_impl(
-        const stream_t *stream, const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
-        const std::vector<cl_event> &ocl_deps, cl_event *ret_event) {
+        stream_t *stream, const std::vector<tensor_t> &inputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
+        const std::vector<ocl_event_t> &ocl_deps, ocl_event_t &ret_event) {
     auto deps = ocl_deps;
-    cl_event returned_event {};
+    ocl_event_t returned_event;
 
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *stream);
+    dnnl::stream p_stream = make_dnnl_stream(*stream);
 
     thread_local_cache_t<execution_args_set_t> res_cache;
     execution_args_set_t *res = res_cache.get_or_add(
             reinterpret_cast<size_t>(this), resource_ctor_);
 
-    temporary_scratchpad_t scratchpad(
-            memory_planner_.total_internal_temporary_size(), p_engine_,
-            *g_alloc_);
-    prepare_args_set(res, inputs, outputs, scratchpad);
+    auto scratchpad = std::make_shared<scratchpad_t>(scratchpad_buf,
+            memory_planner_.total_internal_temporary_size(), p_engine_);
+    prepare_args_set(res, inputs, outputs, *scratchpad);
 
     for (size_t i = 0; i < subgraph_->execs_.size(); i++) {
         if (subgraph_->is_constant_[i]) continue;
         returned_event = subgraph_->execs_[i]->execute_ocl(
                 p_stream, res->get_exec_args()[i], deps);
-        deps.assign(1, returned_event);
+        deps = {returned_event};
     }
 
-    scratchpad.set_deps(returned_event);
-    if (ret_event) *ret_event = returned_event;
+    scratchpad->set_deps(returned_event.get());
+    ret_event = std::move(returned_event);
 
     return status::success;
 }

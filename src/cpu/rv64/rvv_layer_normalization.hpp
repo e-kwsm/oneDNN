@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2025 Intel Corporation
+* Copyright 2026 SpacemiT Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -36,10 +37,14 @@ struct rvv_layer_normalization_fwd_t : public primitive_t {
         using cpu_layer_normalization_fwd_pd_t::
                 cpu_layer_normalization_fwd_pd_t;
 
-        DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit_lnorm:", v, ""),
+        DECLARE_COMMON_PD_T(JIT_IMPL_NAME_HELPER("jit_lnorm:", isa_, ""),
                 rvv_layer_normalization_fwd_t);
 
-        status_t init(engine_t *engine) {
+        // f16 runs the Zvfh path (vfwcvt/vfncvt); f32 stays on V. Drives the
+        // verbose impl name (jit_lnorm:rvv vs jit_lnorm:rvv_zvfh).
+        cpu_isa_t isa_ = v;
+
+        status_t init(const engine_t *engine) {
             using namespace data_type;
 
             const memory_desc_wrapper src_d(src_md());
@@ -48,16 +53,34 @@ struct rvv_layer_normalization_fwd_t : public primitive_t {
             VDISPATCH_LNORM(is_fwd(), VERBOSE_BAD_PROPKIND);
             VDISPATCH_LNORM(!has_zero_dim_memory(), VERBOSE_EMPTY_TENSOR, "");
 
-            VDISPATCH_LNORM(
-                    (src_md()->data_type == f32), VERBOSE_UNSUPPORTED_DT);
-            VDISPATCH_LNORM(
-                    (dst_md()->data_type == f32), VERBOSE_UNSUPPORTED_DT);
+            VDISPATCH_LNORM(utils::one_of(src_md()->data_type, f32, f16),
+                    VERBOSE_UNSUPPORTED_DT);
+            VDISPATCH_LNORM((dst_md()->data_type == src_md()->data_type),
+                    VERBOSE_UNSUPPORTED_DT);
             VDISPATCH_LNORM(
                     (stat_md()->data_type == f32), VERBOSE_UNSUPPORTED_DT);
 
-            VDISPATCH_LNORM((check_scale_shift_data_type()),
-                    VERBOSE_UNSUPPORTED_FEATURE,
-                    "unsupported scale or shift data type");
+            // Set the ISA that drives the impl name (jit_lnorm:rvv vs
+            // jit_lnorm:rvv_zvfh) once the dtype is validated and before any
+            // mayiuse()/has_data_type_support() rejection, so a declined f16 PD
+            // is not mislabeled jit_lnorm:rvv in the dispatch log.
+            isa_ = (src_md()->data_type == f16) ? zvfh : v;
+
+            if (src_md()->data_type == f16) {
+                VDISPATCH_LNORM(platform::has_data_type_support(f16),
+                        VERBOSE_UNSUPPORTED_DT);
+                // f16 path computes statistics in a single fused pass; it does
+                // not support externally provided (global) mean/variance.
+                VDISPATCH_LNORM(!stats_are_src(), VERBOSE_UNSUPPORTED_FEATURE,
+                        "f16 does not support global stats");
+                VDISPATCH_LNORM((check_scale_shift_data_type({f32, f16})),
+                        VERBOSE_UNSUPPORTED_FEATURE,
+                        "unsupported scale or shift data type");
+            } else if (src_md()->data_type == f32) {
+                VDISPATCH_LNORM((check_scale_shift_data_type({f32})),
+                        VERBOSE_UNSUPPORTED_FEATURE,
+                        "unsupported scale or shift data type");
+            }
 
             VDISPATCH_LNORM(
                     attr()->has_default_values(), VERBOSE_UNSUPPORTED_ATTR);
@@ -185,6 +208,7 @@ private:
     std::shared_ptr<primitive_t> reorder_;
     std::unique_ptr<jit_rvv_layernorm_fused_kernel_t> fused_kernel_;
     std::unique_ptr<jit_rvv_layernorm_data_kernel_t> data_kernel_;
+    std::unique_ptr<jit_rvv_layernorm_f16_fused_kernel_t> f16_fused_kernel_;
 };
 
 } // namespace rv64

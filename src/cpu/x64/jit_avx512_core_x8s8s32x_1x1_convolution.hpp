@@ -50,7 +50,7 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
                         ((jcp_.has_vnni) ? avx512_core_vnni : avx512_core), ""),
                 jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t);
 
-        status_t init(engine_t *engine) {
+        status_t init(const engine_t *engine) {
             using namespace data_type;
             using smask_t = primitive_attr_t::skip_mask_t;
             VDISPATCH_CONV(is_fwd(), VERBOSE_BAD_PROPKIND);
@@ -185,7 +185,7 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
             return status::success;
         }
 
-        status_t depthwise_po_init(engine_t *engine) {
+        status_t depthwise_po_init(const engine_t *engine) {
             using namespace memory_tracking;
             auto &jcp_1x1 = jcp_;
             primitive_attr_t attr_1x1(*attr());
@@ -265,8 +265,8 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
             while (jcp_1x1.nb_load_blocking % jcp_dw_->nb_ch_blocking != 0)
                 --jcp_dw_->nb_ch_blocking;
 
-            jcp_dw_->dw_conv_buffer_oc
-                    = jcp_1x1.nb_load_blocking * jcp_1x1.oc_block;
+            jcp_dw_->dw_conv_buffer_oc = static_cast<int>(
+                    jcp_1x1.nb_load_blocking * jcp_1x1.oc_block);
             jcp_1x1.bcast_loop_output_step = jcp_1x1.ur
                     * (jcp_1x1.nb_load_blocking * jcp_1x1.oc_block)
                     * jcp_1x1.typesize_out;
@@ -274,7 +274,7 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
             registrar_t scratchpad(scratchpad_registry_);
             registrar_t dw_scratchpad(scratchpad, names::prefix_fusion);
 
-            size_t dw_conv_buffer_size_ = (size_t)nthr * jcp_dw_->kh
+            dim_t dw_conv_buffer_size_ = static_cast<dim_t>(nthr) * jcp_dw_->kh
                     * jcp_dw_->iw * jcp_dw_->dw_conv_buffer_oc;
             assert(dw_conv_buffer_size_);
             dw_scratchpad.book(memory_tracking::names::key_fusion_inout_buffer,

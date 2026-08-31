@@ -26,9 +26,9 @@ namespace graph {
 namespace dnnl_impl {
 
 status_t dummy_kernel_t::compile_impl(const dnnl_partition_impl_t *part,
-        const engine_t *g_engine, const std::vector<logical_tensor_t> &inputs,
+        engine_t *eng, const std::vector<logical_tensor_t> &inputs,
         const std::vector<logical_tensor_t> &outputs) {
-    p_engine_ = make_dnnl_engine(*g_engine);
+    p_engine_ = make_dnnl_engine(*eng);
 
     subgraph_ = std::make_shared<subgraph_t>(part->get_ops(), p_engine_,
             part->get_fpmath_mode(), part->get_use_blocked_layout(), true);
@@ -55,20 +55,20 @@ status_t dummy_kernel_t::compile_impl(const dnnl_partition_impl_t *part,
     return status::success;
 }
 
-status_t dummy_kernel_t::execute_impl(const stream_t *g_stream,
+status_t dummy_kernel_t::execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs) {
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf) {
     return status::success;
 }
 
 #ifdef DNNL_WITH_SYCL
-status_t dummy_kernel_t::sycl_execute_impl(const stream_t *g_stream,
+status_t dummy_kernel_t::sycl_execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
         const std::vector<::sycl::event> &sycl_deps,
         ::sycl::event *sycl_event) {
 
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
     if (sycl_event) {
         // Fast path: if only one event, return it.
@@ -91,25 +91,28 @@ status_t dummy_kernel_t::sycl_execute_impl(const stream_t *g_stream,
 #endif
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-status_t dummy_kernel_t::ocl_execute_impl(const stream_t *g_stream,
+status_t dummy_kernel_t::ocl_execute_impl(stream_t *strm,
         const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs,
-        const std::vector<cl_event> &cl_deps, cl_event *ret_event) {
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf,
+        const std::vector<ocl_event_t> &cl_deps, ocl_event_t &ret_event) {
 
-    dnnl::stream p_stream = make_dnnl_stream(p_engine_, *g_stream);
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
-    if (ret_event) {
-        // Fast path: if only one event, return it.
+    ret_event = {};
+    if (!cl_deps.empty()) {
+        // Fast path: if only one event, return it (copy retains).
         if (cl_deps.size() == 1) {
-            *ret_event = cl_deps[0];
+            ret_event = cl_deps[0];
         } else {
             // Otherwise, gather all dependencies.
             auto q = dnnl::ocl_interop::get_command_queue(p_stream);
+            std::vector<cl_event> raw_deps(cl_deps.begin(), cl_deps.end());
+            cl_event e;
             auto err = xpu::ocl::clEnqueueMarkerWithWaitList(q,
-                    static_cast<cl_uint>(cl_deps.size()), cl_deps.data(),
-                    ret_event);
+                    static_cast<cl_uint>(raw_deps.size()), raw_deps.data(), &e);
             assert(err == CL_SUCCESS);
             if (err != CL_SUCCESS) return status::runtime_error;
+            ret_event = ocl_event_t(e);
         }
     }
 

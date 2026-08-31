@@ -582,7 +582,7 @@ struct Instruction12 {
     Opcode opcode() const         { return static_cast<Opcode>(common.opcode & 0x7F); }
     SyncFunction syncFC() const   { return static_cast<SyncFunction>(binary.cmod); }
     SharedFunction sfid() const   { return static_cast<SharedFunction>(send.sfid); }
-    bool eot() const              { return (opcode() == Opcode::send || opcode() == Opcode::sendc) && send.eot; }
+    bool eot() const              { return isSend(opcode()) && (isSendg(opcode()) ? sendg.eot : send.eot); }
     bool predicated() const       { return !common.maskCtrl || (static_cast<PredCtrl>(common.predCtrl) != PredCtrl::None); }
     bool atomic() const           { return common.atomicCtrl; }
     unsigned dstTypecode() const  { return binary.dstType; }
@@ -629,17 +629,8 @@ struct InstructionXeHPC : public Instruction12 {
         return Instruction12::getCModDepRegion<EncodingTagXeHPC>(region);
     }
 
-    bool isSendg() const {
-        return (opcode() == Opcode::sendg || opcode() == Opcode::sendgc || opcode() == Opcode::sendgx || opcode() == Opcode::sendgxc);
-    }
-
-    bool eot() const {
-        if (isSendg()) return sendg.eot;
-        return Instruction12::eot();
-    }
-
     bool atomic() const {
-        if (isSendg()) return false;    /* no atomic field */
+        if (isSendg(opcode())) return false;    /* no atomic field */
         return Instruction12::atomic();
     }
 };
@@ -926,7 +917,7 @@ static inline void encodeCommon12(Instruction12 &i, Opcode opcode, const Instruc
     i2.common.maskCtrl = mod.parts.maskCtrl;
     i2.common.atomicCtrl = mod.parts.threadCtrl;
     i2.commonXeHPC.dstExt = (dst.isIndirect() ? dst.getOffset() : dst.getByteOffset()) & 1;
-    if (opcode == Opcode::dpas)
+    if (opcode == Opcode::dpas || opcode == Opcode::bdpas)
         i2.common.accWrCtrl = mod.parts.accWrCtrl;   /* {Fwd} */
     i2.common.saturate = mod.parts.saturate;
     i.common = i2.common;
@@ -1107,9 +1098,9 @@ static inline uint8_t encodeDnsclCtrl(uint8_t mode, RoundingType rnd, RegData &d
     dst.setOffset(dst.getByteOffset() >> 2);
     src0.setOffset(src0.getByteOffset() >> 2);
     src1.setOffset(src1.getByteOffset() >> 2);
-    dst.setRegion(dst.getVS()/ 8, dst.getWidth(), dst.getHS()/ 8);
-    src0.setRegion(src0.getVS()/ 2, src0.getWidth(), src0.getHS()/ 2);
-    src1.setRegion(src1.getVS()/ 2, src1.getWidth(), src1.getHS()/ 2);
+    dst.setRegion(dst.getVS() / 8, dst.getWidth(), dst.getHS() / 8);
+    src0.setRegion(src0.getVS() / 2, src0.getWidth(), src0.getHS() / 2);
+    src1.setRegion(src1.getVS() / 2, src1.getWidth(), src1.getHS() / 2);
     dst.setType(DataType::ud);
     src0.setType(DataType::ud);
     src1.setType(DataType::ud);
@@ -1245,23 +1236,23 @@ bool Instruction12::getOperandRegion(autoswsb::DependencyRegion &region, int opN
                     break;
                 }
                 case 3: {
-                    if(op != Opcode::bdpas) return false;
-                    auto sr = bdpas.src3SubReg4_5 << 4;
-                    o.direct.regNum = bdpas.src3Reg0;
-                    o.direct.regNum |= bdpas.src3Reg1_2 << 1;
-                    o.direct.regNum |= bdpas.src3Reg3_6 << 3;
-                    o.direct.regNum |= bdpas.src3Reg7_8 << 7;
-                    rcount = 8;
-                    len = (sr + sdepth * rcount * 4 + 31) >> 5;
+                    if (op != Opcode::bdpas) return false;
+                    unsigned reg = bdpas.src3Reg0;
+                    reg |= bdpas.src3Reg1_2 << 1;
+                    reg |= bdpas.src3Reg3_6 << 3;
+                    reg |= bdpas.src3Reg7_8 << 7;
+                    o.direct.regNum = reg;      // low 8 bits
+                    regNum8 = reg >> 8;         // bit 8 routed separately
+                    len = 1;
                     break;
                 }
                 case 4: {
-                    if(op != Opcode::bdpas) return false;
-                    auto sr = bdpas.src4SubReg3_5 << 3;
-                    o.direct.regNum = bdpas.src4Reg0_3;
-                    o.direct.regNum |= bdpas.src4Reg4_8 << 4;
-                    rcount = 8;
-                    len = (sr + sdepth * rcount * 4 + 31) >> 5;
+                    if (op != Opcode::bdpas) return false;
+                    unsigned reg = bdpas.src4Reg0_3;
+                    reg |= bdpas.src4Reg4_8 << 4;
+                    o.direct.regNum = reg;      // low 8 bits
+                    regNum8 = reg >> 8;         // bit 8 routed separately
+                    len = 1;
                     break;
                 }
                 default: return false;
@@ -1312,9 +1303,10 @@ bool Instruction12::getOperandRegion(autoswsb::DependencyRegion &region, int opN
 
             if (len == 0)
                 return false;
-            else if (len == -1)
+            else if (len == -1) {
                 region = DependencyRegion(hw);
-            else
+                region.base = base;
+            } else
                 region = DependencyRegion(hw, GRFRange(base, len));
             return true;
         }
@@ -1335,9 +1327,10 @@ bool Instruction12::getOperandRegion(autoswsb::DependencyRegion &region, int opN
                 case -1: {
                     if (sendg.dstRegFile == RegFileARF) return false;
                     int dstLen = getSendgDesc().dstLen(hw, 1 << common.execSize, static_cast<SharedFunction>(sendg.sfid));
-                    if (dstLen == -1)
+                    if (dstLen == -1) {
                         region = DependencyRegion(hw);
-                    else
+                        region.base = sendg.dstReg;
+                    } else
                         region = DependencyRegion(hw, GRFRange(sendg.dstReg, dstLen));
                     break;
                 }
@@ -1392,9 +1385,10 @@ bool Instruction12::getOperandRegion(autoswsb::DependencyRegion &region, int opN
             }
             if (regNum == 0x1FF)
                 return false;
-            else if (len == -1)
+            else if (len == -1) {
                 region = DependencyRegion(hw);
-            else
+                region.base = regNum;
+            } else
                 region = DependencyRegion(hw, GRFRange(regNum, len));
             return true;
         }
@@ -1686,12 +1680,13 @@ bool Instruction12::getARFType(ARFType &arfType, int opNum, HW hw) const
 {
     if (opNum > 1) return false;
 
+    if (isSend(opcode()))
+        return false;
+
     // Only need to support unary/binary, for detecting ce/cr/sr usage.
     switch (opcode()) {
         case Opcode::nop:
         case Opcode::illegal:
-        case Opcode::send:
-        case Opcode::sendc:
         case Opcode::bfe:
         case Opcode::bfi2:
         case Opcode::csel:
@@ -1732,9 +1727,8 @@ autoswsb::DestinationMask Instruction12::destinations(int &jip, int &uip) const
     using namespace autoswsb;
 
     if (!isBranch(opcode())) {
-        if (opcode() == Opcode::send || opcode() == Opcode::sendc)
-            if (send.eot && !predicated())
-                return DestNone;
+        if (eot() && !predicated())
+            return DestNone;
         return DestNextIP;
     }
 

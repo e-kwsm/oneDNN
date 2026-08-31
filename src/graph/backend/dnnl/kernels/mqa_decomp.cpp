@@ -31,7 +31,6 @@
 
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
 #include "cpu/cpu_stream.hpp"
-#include "oneapi/dnnl/dnnl_threadpool.h"
 #endif
 
 namespace dnnl {
@@ -41,12 +40,10 @@ namespace dnnl_impl {
 
 template <bool quantized, memory::data_type dt>
 status_t mqa_decomp_kernel_t<quantized, dt>::compile_impl(
-        const dnnl_partition_impl_t *part, const engine_t *g_engine,
+        const dnnl_partition_impl_t *part, engine_t *eng,
         const std::vector<logical_tensor_t> &inputs,
         const std::vector<logical_tensor_t> &outputs) {
-    p_engine_ = make_dnnl_engine(*g_engine);
-    g_alloc_
-            = reinterpret_cast<graph::allocator_t *>(g_engine->get_allocator());
+    p_engine_ = make_dnnl_engine(*eng);
 
     // get subgraph from the deep copied partition
     subgraph_ = std::make_shared<subgraph_t>(part->get_ops(), p_engine_,
@@ -155,19 +152,15 @@ void mqa_decomp_kernel_t<quantized, dt>::prepare_sub_args(
 }
 
 template <bool quantized, memory::data_type dt>
-status_t mqa_decomp_kernel_t<quantized, dt>::execute_impl(
-        const stream_t *g_stream, const std::vector<tensor_t> &inputs,
-        const std::vector<tensor_t> &outputs) {
-    dnnl::stream strm = make_dnnl_stream(p_engine_, *g_stream);
+status_t mqa_decomp_kernel_t<quantized, dt>::execute_impl(stream_t *strm,
+        const std::vector<tensor_t> &inputs,
+        const std::vector<tensor_t> &outputs, const tensor_t *scratchpad_buf) {
+    dnnl::stream p_stream = make_dnnl_stream(*strm);
 
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
     auto *tp_stream
             = dnnl::impl::utils::downcast<dnnl::impl::cpu::cpu_stream_t *>(
-                    const_cast<stream_t *>(g_stream));
-    tp_stream->before_exec_hook();
-    int thread_num = 1;
-    dnnl_threadpool_interop_get_max_concurrency(&thread_num);
-    mqa_cfg_.nthr = thread_num;
+                    strm);
 #endif
 
     // each thread's own local resource
@@ -192,10 +185,8 @@ status_t mqa_decomp_kernel_t<quantized, dt>::execute_impl(
 
     // allocate the internal memory
     size_t block_size = mqa_registry_.size();
-    auto scratchpad = std::make_shared<temporary_scratchpad_t>(
-            block_size * mqa_cfg_.nthr, p_engine_, *g_alloc_);
-    assertm(scratchpad->size() >= mqa_registry_.size(),
-            "no enough scratchpad memory");
+    auto scratchpad = std::make_shared<scratchpad_t>(
+            scratchpad_buf, block_size * mqa_cfg_.nthr, p_engine_);
     grantor_t var_grantor = mqa_registry_.grantor(scratchpad->get_buffer());
 
     const auto get_mem_dt_size = [](const memory &m) -> size_t {
@@ -259,27 +250,27 @@ status_t mqa_decomp_kernel_t<quantized, dt>::execute_impl(
         }
 
         // in parallel region - these primitives should use single thread.
-        mqa_cfg_.sub_reorder0.execute(strm, res->sub_reorder0_args[tid]);
-        mqa_cfg_.sub_reorder1.execute(strm, res->sub_reorder1_args[tid]);
+        mqa_cfg_.sub_reorder0.execute(p_stream, res->sub_reorder0_args[tid]);
+        mqa_cfg_.sub_reorder1.execute(p_stream, res->sub_reorder1_args[tid]);
         dnnl_primitive_execute_without_tp_hook(
-                mqa_cfg_.sub_mm1_prim, strm, res->sub_mm1_args[tid]);
+                mqa_cfg_.sub_mm1_prim, p_stream, res->sub_mm1_args[tid]);
+
+        dnnl_primitive_execute_without_tp_hook(mqa_cfg_.sub_softmax_prim,
+                p_stream, res->sub_softmax_args[tid]);
+
+        mqa_cfg_.sub_reorder2.execute(p_stream, res->sub_reorder2_args[tid]);
 
         dnnl_primitive_execute_without_tp_hook(
-                mqa_cfg_.sub_softmax_prim, strm, res->sub_softmax_args[tid]);
-
-        mqa_cfg_.sub_reorder2.execute(strm, res->sub_reorder2_args[tid]);
-
-        dnnl_primitive_execute_without_tp_hook(
-                mqa_cfg_.sub_mm2_prim, strm, res->sub_mm2_args[tid]);
-        mqa_cfg_.sub_reorder3.execute(strm, res->sub_reorder3_args[tid]);
+                mqa_cfg_.sub_mm2_prim, p_stream, res->sub_mm2_args[tid]);
+        mqa_cfg_.sub_reorder3.execute(p_stream, res->sub_reorder3_args[tid]);
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
         auto tp = threadpool_utils::get_active_threadpool();
         threadpool_utils::activate_threadpool(tp);
 #endif
     };
-    // TODO: remove this when primitive new API ready
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_OMP
-    omp_set_num_threads(mqa_cfg_.nthr);
+
+#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
+    tp_stream->before_exec_hook();
 #endif
 
     parallel_nd_ext(mqa_cfg_.nthr, MBO, MBI, loop);
@@ -288,7 +279,7 @@ status_t mqa_decomp_kernel_t<quantized, dt>::execute_impl(
     tp_stream->after_exec_hook();
 #endif
 
-    prolong_temporary_scratchpad_lifetime(g_stream, scratchpad);
+    prolong_scratchpad_lifetime(strm, scratchpad);
 
     return status::success;
 }

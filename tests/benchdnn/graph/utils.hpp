@@ -17,36 +17,15 @@
 #ifndef BENCHDNN_GRAPH_UTILS_HPP
 #define BENCHDNN_GRAPH_UTILS_HPP
 
-#include <algorithm>
-#include <cctype>
-#include <cstddef>
-#include <future> // for std::promise and std::future
-#include <map>
-#include <numeric>
+#include "dnnl_memory.hpp"
+#include "utils/engine.hpp"
+#include "utils/timer.hpp"
+
+#include "oneapi/dnnl/dnnl_graph.hpp"
+
 #include <string>
 #include <utility>
 #include <vector>
-#include <unordered_map>
-#include <unordered_set>
-
-#include "oneapi/dnnl/dnnl.hpp"
-#include "oneapi/dnnl/dnnl_graph.hpp"
-
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
-#include "oneapi/dnnl/dnnl_threadpool.hpp"
-#endif
-
-#ifdef DNNL_WITH_SYCL
-#include "dnnl_sycl.hpp"
-#include "oneapi/dnnl/dnnl_graph_sycl.hpp"
-#endif
-
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-#include "oneapi/dnnl/dnnl_graph_ocl.hpp"
-#endif
-
-#include "common.hpp"
-#include "dnnl_common.hpp"
 
 namespace graph {
 
@@ -126,26 +105,27 @@ enum { CRIT = 0x001, WARN = 0x002, NEED_CLEANUP = 0x004 };
 
 using perf_function_t = std::function<void(dnnl::stream &,
         const std::vector<dnnl::graph::tensor> &inputs,
-        const std::vector<dnnl::graph::tensor> &outputs)>;
+        const std::vector<dnnl::graph::tensor> &outputs,
+        const dnnl::graph::tensor &scratchpad)>;
 
 void compiled_partition_executor(dnnl::graph::compiled_partition &cp,
         dnnl::stream &stream, const std::vector<dnnl::graph::tensor> &inputs,
-        const std::vector<dnnl::graph::tensor> &outputs);
-
-int execute_and_wait(const std::vector<dnnl::graph::compiled_partition> &cp_v,
-        const std::vector<std::vector<dnnl::graph::tensor>> &inputs_v,
-        const std::vector<std::vector<dnnl::graph::tensor>> &outputs_v,
-        res_t *res);
+        const std::vector<dnnl::graph::tensor> &outputs,
+        const dnnl::graph::tensor &scratchpad);
 
 int measure_perf(timer::timer_t &t,
         const std::vector<dnnl::graph::compiled_partition> &cp_v,
         const std::vector<std::vector<dnnl::graph::tensor>> &inputs_v,
         const std::vector<std::vector<dnnl::graph::tensor>> &outputs_v,
-        res_t *res);
+        const std::vector<dnnl::graph::tensor> &scratchpads, res_t *res);
 
 dnnl::graph::op::kind opstr2kind(const std::string &kind);
 bool is_unary(const std::string &kind);
 bool is_unary(dnnl::graph::op::kind akind);
+bool is_binary(const std::string &kind);
+bool is_binary(dnnl::graph::op::kind akind);
+bool is_backward(const std::string &kind);
+bool is_backward(dnnl::graph::op::kind akind);
 dnnl::graph::op::attr attrstr2kind(const std::string &attr_name);
 const std::string &attrstr2type(const std::string &attr_name);
 
@@ -201,46 +181,27 @@ void change_format_to_ncx(First &first, Rest &...rest) {
     change_format_to_ncx(rest...);
 }
 
-struct cpp_stream_t {
-    cpp_stream_t(const dnnl::engine &eng,
-            dnnl::stream::flags flags = dnnl::stream::flags::default_flags,
-            void *interop_obj = nullptr);
-    void wait() { stream_.wait(); }
-    operator dnnl::stream &() { return stream_; }
-    dnnl::engine get_engine() const { return stream_.get_engine(); }
+// Creates the graph engine wrapped into the common `engine_t` abstraction. The
+// graph library requires an allocator attached to the engine to allocate memory
+// for constant cache and scratchpad, hence the engine is built via
+// `make_engine_with_allocator` and adopted by `engine_t`.
+engine_t make_graph_engine(bool use_host);
 
-private:
-    BENCHDNN_DISALLOW_COPY_AND_ASSIGN(cpp_stream_t);
-    dnnl::stream stream_;
-};
-
-// engine used for graph lib, graph lib engine needs allocator to allocate
-// memory for constant cache, scratchpad.
-struct cpp_engine_t {
-    cpp_engine_t(bool use_host);
-    dnnl::engine::kind get_kind() const { return engine_.get_kind(); }
-    operator dnnl::engine &() { return engine_; }
-    operator const dnnl::engine &() const { return engine_; }
-
-private:
-    BENCHDNN_DISALLOW_COPY_AND_ASSIGN(cpp_engine_t);
-    dnnl::engine engine_;
-};
-
-// engine used for graph lib, graph lib engine needs allocator to allocate
-// memory for constant cache, scratchpad.
-inline const cpp_engine_t &get_graph_engine() {
-    static const cpp_engine_t instance(/*use_host*/ false);
+// Engine used for the graph library. It wraps a `dnnl::engine` created with an
+// allocator (see `make_graph_engine`) into the common `engine_t` abstraction so
+// that the graph driver shares the same engine type as the rest of benchdnn
+// while still exposing the C++ engine interface required by the graph API.
+inline const engine_t &get_graph_engine() {
+    static const engine_t instance(make_graph_engine(/*use_host*/ false));
     return instance;
 }
 
-inline const cpp_engine_t &get_graph_host_engine() {
+inline const engine_t &get_graph_host_engine() {
     // return `get_graph_engine` for `is_cpu` to avoid different engine instances.
-    const dnnl::engine &g_eng
-            = get_graph_engine().operator const dnnl::engine &();
+    const dnnl::engine &g_eng = get_graph_engine();
     if (is_cpu(g_eng.get())) { return get_graph_engine(); }
 
-    static const cpp_engine_t instance(/*use_host*/ true);
+    static const engine_t instance(make_graph_engine(/*use_host*/ true));
     return instance;
 }
 
@@ -270,114 +231,5 @@ struct graph_fpmath_mode_t {
     bool override_json_value_ = false;
 };
 
-struct stream_staller_t {
-    // Enqueue tasks to stall a primitive execution tasks for asynchronous
-    // threadpool runtime. For rest runtimes does nothing.
-    stream_staller_t(graph::cpp_stream_t &stream);
-
-    // A signal the submission has completed and ready for execution.
-    void release();
-
-private:
-    std::promise<void> prom_;
-};
-
-// RAII guard that temporarily overrides `execution_mode` and restores the
-// original value when the guard goes out of scope.
-struct execution_mode_guard_t {
-    execution_mode_guard_t(execution_mode_t mode)
-        : saved_mode_(execution_mode) {
-        execution_mode = mode;
-    }
-    ~execution_mode_guard_t() { execution_mode = saved_mode_; }
-
-    execution_mode_guard_t(const execution_mode_guard_t &) = delete;
-    execution_mode_guard_t &operator=(const execution_mode_guard_t &) = delete;
-
-private:
-    execution_mode_t saved_mode_;
-};
-
-// Returns true if SYCL command graph execution mode is active.
-inline bool use_sycl_graph_exec() {
-    return is_sycl_engine() && execution_mode == execution_mode_t::graph;
-}
-
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_SYCL
-// TODO(xxx): Consolidate the SYCL graph utilities under a single umbrella and
-// reuse them across benchdnn (eg. dnnl_common.cpp).
-namespace sycl_graph_ctx {
-namespace syclex = ::sycl::ext::oneapi::experimental;
-using sycl_exec_graph_t
-        = syclex::command_graph<syclex::graph_state::executable>;
-
-// Validate that the queue supports SYCL command graph (Level Zero backend).
-// Returns OK on success, FAIL on error (with res->state set to FAILED).
-inline int validate_backend(const ::sycl::queue &queue, res_t *res) {
-    if (queue.get_device().get_backend()
-            != ::sycl::backend::ext_oneapi_level_zero) {
-        BENCHDNN_PRINT(0, "%s %s\n",
-                "[ERROR] SYCL graph execution is only available on Level "
-                "Zero backend; currently using:",
-                ::sycl::detail::get_backend_name_no_vendor(
-                        queue.get_device().get_backend())
-                        .data());
-        res->state = FAILED;
-        return FAIL;
-    }
-    return OK;
-}
-
-// Record operations into a SYCL command graph and return the finalized
-// executable. `record_func` is called while the queue is in recording state.
-// Returns nullptr on failure (with res->state set to FAILED).
-inline std::unique_ptr<sycl_exec_graph_t> record_and_finalize(
-        cpp_stream_t &stream, ::sycl::queue &queue,
-        std::function<void()> &record_func, res_t *res) {
-    BENCHDNN_PRINT(
-            2, "%s\n", "[INFO] Using experimental SYCL graph execution.");
-
-    // Drain the queue to clear any pending events before recording.
-    stream.wait();
-    queue.wait_and_throw();
-
-    syclex::command_graph sycl_graph {queue.get_context(), queue.get_device(),
-            {syclex::property::graph::assume_buffer_outlives_graph {}}};
-
-    try {
-        sycl_graph.begin_recording(queue);
-        record_func();
-        sycl_graph.end_recording(queue);
-        return std::unique_ptr<sycl_exec_graph_t>(
-                new sycl_exec_graph_t(sycl_graph.finalize()));
-    } catch (const std::exception &e) {
-        // Ensure recording is stopped.
-        try {
-            sycl_graph.end_recording(queue);
-        } catch (...) {}
-        BENCHDNN_PRINT(0, "%s %s\n",
-                "[ERROR] SYCL graph execution exception:", e.what());
-        res->state = FAILED;
-        return nullptr;
-    }
-}
-
-// Replay a finalized executable graph. Returns OK on success, FAIL on error.
-inline int replay(::sycl::queue &queue, const sycl_exec_graph_t &exec_graph,
-        res_t *res, bool wait = true) {
-    try {
-        auto event = queue.ext_oneapi_graph(exec_graph);
-        if (wait) event.wait();
-        return OK;
-    } catch (const std::exception &e) {
-        BENCHDNN_PRINT(
-                0, "%s %s\n", "[ERROR] SYCL graph replay exception:", e.what());
-        res->state = FAILED;
-        return FAIL;
-    }
-}
-
-} // namespace sycl_graph_ctx
-#endif // DNNL_GPU_RUNTIME == DNNL_RUNTIME_SYCL
 } // namespace graph
 #endif

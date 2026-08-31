@@ -29,6 +29,7 @@
 
 #include "tests/test_isa_common.hpp"
 
+#include "utils/dnnl_query.hpp"
 #include "utils/parallel.hpp"
 #include "utils/parser.hpp"
 
@@ -142,6 +143,10 @@ dnnl_status_t brgemm_attr_init(
         // PROCESS_KEY_VAL(bd_mask_level);
         PROCESS_KEY_VAL(use_uker);
         PROCESS_KEY_VAL(use_interleave_stores);
+#if defined(brg_x64)
+        // ACE is an x64-only compute path.
+        PROCESS_KEY_VAL(use_ace);
+#endif
         PROCESS_KEY_VAL(b_is_vnni);
         PROCESS_KEY_VAL(postops_only);
         PROCESS_KEY_VAL(hint_bd_block);
@@ -218,7 +223,7 @@ int fill_data(data_kind_t kind, int exec_arg, const prb_t *prb,
 
     const auto nelems = mem_dt.nelems();
     if (nelems == 0) return OK;
-    if (fill_from_file(exec_arg, mem_dt, mem_fp)) return OK;
+    if (fill_from_file(exec_arg, mem_dt, mem_fp, res)) return OK;
 
     assert(mem_dt.nelems() == mem_fp.nelems());
 
@@ -274,14 +279,14 @@ int fill_data(data_kind_t kind, int exec_arg, const prb_t *prb,
         }
     });
 
-    SAFE(mem_dt.reorder(mem_fp), WARN);
+    SAFE(mem_dt.reorder(mem_fp, res), WARN);
 
     return OK;
 }
 
 // An object to pass information between different modules of the flow.
 struct kernel_args_t {
-    kernel_args_t(const prb_t *prb, res_t *res)
+    kernel_args_t(const prb_t *prb)
         :
 #if !defined(DNNL_EXPERIMENTAL_UKERNEL)
         brgemm_kernel_(nullptr)
@@ -296,8 +301,7 @@ struct kernel_args_t {
 #endif
         , scratchpad_size_(0)
         , generate_skip_accumulation_(false)
-        , prb_(prb)
-        , res_(res) {
+        , prb_(prb) {
     }
 
     // Output members
@@ -317,12 +321,10 @@ struct kernel_args_t {
 
     // Input members
     const prb_t *prb_;
-    res_t *res_;
 };
 
-int init_kernel(kernel_args_t &kernel_args) {
+int init_kernel(kernel_args_t &kernel_args, res_t *res) {
     const prb_t *prb = kernel_args.prb_;
-    res_t *res = kernel_args.res_;
 
 #if !defined(DNNL_EXPERIMENTAL_UKERNEL)
     using namespace namespace_impl;
@@ -384,9 +386,13 @@ int init_kernel(kernel_args_t &kernel_args) {
     // Create BRGeMM kernel, analogous to primitive creation.
     // ctx_init can here be used to select core type on hetero ISA with TBB.
     brgemm_kernel_t **brgemm_kernel_addr = &kernel_args.brgemm_kernel_;
-    DNN_SAFE(create_in_thr_ctx(prb->ctx_init, brgemm_kernel_create,
-                     brgemm_kernel_addr, brgemm_desc),
-            WARN);
+    // The lambda performs the return type conversion (dnnl_status_t -> int)
+    // required by create_in_thr_ctx.
+    std::function<int()> brgemm_kernel_create_fn = [&] {
+        DNN_SAFE(brgemm_kernel_create(brgemm_kernel_addr, brgemm_desc), WARN);
+        return OK;
+    };
+    SAFE(create_in_thr_ctx(prb->ctx_init, brgemm_kernel_create_fn), WARN);
 
 #if defined(brg_x64)
     // Palette configuration is required here to have `kernel_args`
@@ -489,145 +495,9 @@ int init_kernel(kernel_args_t &kernel_args) {
     return OK;
 }
 
-void skip_unimplemented_prb(const prb_t *prb, res_t *res) {
-    auto is_xf16 = [](dnnl_data_type_t dt) {
-        return dt == dnnl_bf16 || dt == dnnl_f16;
-    };
-    if (!IMPLICATION(is_xf16(prb->bia_dt) || is_xf16(prb->dst_dt()),
-                is_xf16(prb->wei_dt()))) {
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-    skip_unimplemented_data_type(
-            {prb->src_dt(), prb->wei_dt(), prb->bia_dt, prb->dst_dt()},
-            prb->dir, res);
-    skip_unimplemented_sum_po(
-            prb->attr, res, dnnl_gemm, prb->src_dt(), prb->dst_dt());
-    skip_unimplemented_binary_po(prb->attr, res);
-    skip_unimplemented_prelu_po(prb->attr, res, dnnl_gemm);
-
-    // Unconditionally skip remaining unimplemented cases.
-    // TODO: stop doing it.
-    BENCHDNN_PRINT(
-            2, "%s\n", "The kernel return unimplemented by some reason.");
-    res->state = SKIPPED;
-    res->reason = reason_t::skip_not_supported;
-}
-
-void skip_invalid_prb(const prb_t *prb, res_t *res) {
-#if !defined(DNNL_EXPERIMENTAL_UKERNEL)
-    // Reorder does not support s8 and zp compensations for arbitrary shapes,
-    // so skip unsupported cases.
-    // Note: this check must be done here to avoid runtime error in benchdnn due
-    // to failed reorder creation.
-    // TODO: enable this support and remove this check.
-    const bool is_bad_ldb = prb->get_ldb() % 16 > 0 || prb->get_ldb() > 64;
-    const bool req_s8_comp = prb->src_dt() == dnnl_s8;
-    const bool req_zp_comp = !prb->attr.zero_points.is_def(DNNL_ARG_SRC);
-    if (is_bad_ldb && (req_s8_comp || req_zp_comp)) {
-        BENCHDNN_PRINT(2, "%s\n",
-                "Reorder with compensation is not supported for a given LDB");
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-
-    if (!prb->attr.zero_points.is_def(DNNL_ARG_WEIGHTS)) {
-        // TODO: weights zero point is not supported yet.
-        // It requires enabling f32 -> u8 reorder with compensation on the
-        // library side. When enabled, it produces incorrect results for cases
-        // with K=1. Likely there's a bug inside. Postpone supporting it.
-        BENCHDNN_PRINT(2, "%s\n",
-                "Reorder with compensation is not supported for u8 destination "
-                "data type");
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-
-    if (prb->wtag != tag::abx) {
-        BENCHDNN_PRINT(
-                2, "%s\n", "`wtag` option is supported for ukernel API only.");
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-
-    if (!prb->strides[STRIDES_WEI].empty()) {
-        BENCHDNN_PRINT(2, "%s\n",
-                "`strides` option for weights is supported for ukernel API "
-                "only.");
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-#else
-    if (!prb->attr.is_def()) {
-        bool non_def_zps = !prb->attr.zero_points.is_def();
-        bool non_def_fpmath = !prb->attr.fpmath_mode.is_def();
-        if (non_def_zps || non_def_fpmath) {
-            BENCHDNN_PRINT(2, "%s\n",
-                    "Non-default scales/zero-points/fpmath attributes are not "
-                    "supported");
-            res->state = SKIPPED;
-            res->reason = reason_t::skip_not_supported;
-            return;
-        }
-
-        bool non_def_po = !prb->attr.post_ops.is_def();
-        if (non_def_po) {
-            const auto &po = prb->attr.post_ops;
-            bool has_sum = po.find(attr_t::post_ops_t::kind_t::SUM) != -1;
-            if (has_sum) {
-                BENCHDNN_PRINT(2, "%s\n", "Sum post-op is not supported");
-                res->state = SKIPPED;
-                res->reason = reason_t::skip_not_supported;
-                return;
-            }
-        }
-    }
-
-    const bool ldb_ok = prb->get_ldb() == 16 || prb->get_ldb() == 32
-            || prb->get_ldb() == 48 || prb->get_ldb() == 64;
-    if (!ldb_ok) {
-        BENCHDNN_PRINT(2,
-                "Unsupported leading B dimension. Only 16, 32, 48, and 64 are "
-                "supported. Actual value is \'%zu\'.\n",
-                (size_t)prb->get_ldb());
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-
-    if (prb->bia_dt != dnnl_data_type_undef) {
-        BENCHDNN_PRINT(2, "%s\n", "Bias is not supported");
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-
-    if (prb->src_dt() == dnnl_s8 && prb->wei_dt() == dnnl_s8) {
-        // Pre-AMX ISAs require s8s8 compensation buffer passed. The internals
-        // should check if it was supplied and don't blow up if it wasn't
-        // provided.
-        BENCHDNN_PRINT(2, "%s\n", "s8s8 support is temporary disabled");
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-
-    if (prb->alpha != 1.f) {
-        BENCHDNN_PRINT(2, "%s\n", "Alpha is purposely not supported");
-        res->state = SKIPPED;
-        res->reason = reason_t::skip_not_supported;
-        return;
-    }
-#endif
-}
-
-void setup_cmp(compare::compare_t &cmp, const prb_t *prb, data_kind_t kind,
-        const args_t &ref_args) {
+void setup_cmp(compare::compare_t &cmp, const base_prb_t *base_prb,
+        data_kind_t kind, const args_t &ref_args) {
+    const prb_t *prb = prb_t::from(base_prb);
     const auto dt = prb->get_dt(kind);
     const float trh = dt == dnnl_f32 ? 1e-6f : epsilon_dt(dt);
     cmp.set_threshold(trh);
@@ -983,8 +853,8 @@ int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
             auto &dst_fp = ref_mem_map.at(DNNL_ARG_DST);
             auto &dst_dt = mem_map.at(DNNL_ARG_DST);
 
-            SAFE(dst_fp.reorder(acc_fp), WARN);
-            SAFE(dst_dt.reorder(dst_fp), WARN);
+            SAFE(dst_fp.reorder(acc_fp, res), WARN);
+            SAFE(dst_dt.reorder(dst_fp, res), WARN);
         }
     }
 
@@ -1158,11 +1028,11 @@ int doit(const prb_t *prb, res_t *res) {
     if (res->state == SKIPPED) return OK;
 
     // Need this here as brgemm has no primitive creation step
-    skip_invalid_prb(prb, res);
+    prb->skip_invalid(res);
     if (res->state == SKIPPED) return OK;
 
-    kernel_args_t kernel_args(prb, res);
-    SAFE(init_kernel(kernel_args), WARN);
+    kernel_args_t kernel_args(prb);
+    SAFE(init_kernel(kernel_args, res), WARN);
     if (res->state == SKIPPED) return OK;
     if (bench_mode == bench_mode_t::init) return res->state = INITIALIZED, OK;
 
@@ -1326,7 +1196,7 @@ int doit(const prb_t *prb, res_t *res) {
     } else {
         const auto &wei_dt = mem_map.at(DNNL_ARG_WEIGHTS);
         auto &wei_packed_dt = mem_map.at(DNNL_ARG_WEIGHTS_1);
-        SAFE(wei_packed_dt.reorder(wei_dt), WARN);
+        SAFE(wei_packed_dt.reorder(wei_dt, res), WARN);
     }
 
     std::vector<dnnl_dim_t> offsets(2 * prb->batch_size);
@@ -1374,7 +1244,8 @@ int doit(const prb_t *prb, res_t *res) {
                 WARN);
 #endif
         res->state = EXECUTED;
-        check_correctness(prb, {DST}, args, ref_args, setup_cmp, res, prb->dir);
+        check_correctness(prb, {DST}, args, ref_args, compute_ref, setup_cmp,
+                res, prb->dir);
     }
 
     // Create a bind to match internals to run performance measurements.

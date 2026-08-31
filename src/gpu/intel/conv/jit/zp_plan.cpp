@@ -341,7 +341,7 @@ public:
             auto off = offset_bytes<int>(b_layout_, start);
             auto mask = (small_ic) ? kw_var < simd_bcast(kw - start.get(kw_idx))
                                    : expr_t();
-            for (int i = 0; i < tile.elems(); i += sdepth_size)
+            for (int64_t i = 0; i < tile.elems(); i += sdepth_size)
                 stmt = stmt.append(store_t::make(dpas_buf, off + i, wei_load,
                         store_t::default_stride, mask, true));
         }
@@ -462,7 +462,7 @@ public:
                 dpas_buf, 0, -load_t::make(dsl::type_t::s8(), src_buf, 0)));
         stmt = stmt.append(int8_bcast4(dpas_buf));
         auto fill = simd_bcast(load_t::make(dsl::type_t::u32(), dpas_buf, 0));
-        for (int i = 0; i < size_bytes(src_layout_); i += simd_ * 4)
+        for (dim_t i = 0; i < size_bytes(src_layout_); i += simd_ * 4)
             stmt = stmt.append(store_t::make(dpas_buf, i, fill));
         return stmt;
     }
@@ -498,7 +498,8 @@ public:
         for (auto &start : comp_layout_.iter(get_simd_tile())) {
             if (!in_subtile(start, subtile_idx)) continue;
             auto comp = comp_buf[get_comp_off(start)];
-            for (int ck = 0; ck < wei_layout_.elems(ck_idx_); ck += ck_blk) {
+            for (int64_t ck = 0; ck < wei_layout_.elems(ck_idx_);
+                    ck += ck_blk) {
                 auto zp = zp_buf[get_zp_off(start, ck)];
                 auto wei = wei_buf[get_wei_off(start, ck)];
                 stmt = stmt.append(create_tile_stmt(zp, wei, comp, buf_mgr));
@@ -638,14 +639,14 @@ private:
         return ret;
     }
 
-    int get_wei_off(const icoord_t &_start, int ck) const {
+    int get_wei_off(const icoord_t &_start, dim_t ck) const {
         auto start = _start;
         start[ck_idx_] = ck;
         int off = offset_bytes<int>(wei_layout_, start);
         return off % wei_reg_buf_size();
     }
 
-    int get_zp_off(const icoord_t &_start, int ck) const {
+    int get_zp_off(const icoord_t &_start, dim_t ck) const {
         icoord_t start(2);
         if (_start.has(g_idx_)) start[0] = _start[g_idx_];
         start[1] = is_zp_common() ? 0 : ck;
@@ -1254,7 +1255,7 @@ public:
         std::vector<int> mask_off;
         for (auto &start : c_layout_.iter(sd.get_simd_tile())) {
             if (!sd.in_subtile(start, subtile_idx)) continue;
-            for (int kw = 0; kw < kw_dim; kw++) {
+            for (dim_t kw = 0; kw < kw_dim; kw++) {
                 comp_off.emplace_back(get_comp_off(start, kw, sd));
                 mask_off.emplace_back(
                         (mask_buf.is_empty()) ? -1 : get_mask_off(start, kw));
@@ -1330,7 +1331,7 @@ public:
         } else {
             for (auto &start : c_layout_.iter(sd.get_simd_tile())) {
                 if (!sd.in_subtile(start, subtile_idx)) continue;
-                for (int kw = 0; kw < kw_dim; kw++) {
+                for (dim_t kw = 0; kw < kw_dim; kw++) {
                     auto comp = comp_buf[get_comp_off(start, kw, sd)];
                     auto mask = mask_buf.is_empty()
                             ? expr_t()
@@ -1380,7 +1381,7 @@ private:
         return utils::rnd_up(ret, grf_size());
     }
 
-    int get_comp_off(const icoord_t &_start, int kw,
+    int get_comp_off(const icoord_t &_start, dim_t kw,
             const split_dispatcher_t &sd) const {
         auto start = sd.c_to_comp(_start);
         start[comp_kw_idx_] = kw;
@@ -1388,7 +1389,7 @@ private:
         return off % comp_reg_buf_size(sd);
     }
 
-    int get_mask_off(const icoord_t &_start, int kw) const {
+    int get_mask_off(const icoord_t &_start, dim_t kw) const {
         // c:    ngcdhw or ngc[osp]
         // mask: ngcdhw[kd][kh][kw] or ngc[osp][kd][kh][kw]
         auto start = _start;
@@ -1398,7 +1399,8 @@ private:
         return off;
     }
 
-    int get_c_off(const icoord_t &start, int kw) const {
+    int get_c_off(const icoord_t &start, dim_t kw) const {
+        UNUSED(kw);
         int off = offset_bytes<int>(c_layout_, start);
         return off;
     }

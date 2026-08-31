@@ -53,7 +53,17 @@ struct stream_t : public intel::stream_t {
         return status::success;
     }
 
-    status_t wait() override { return impl()->wait(); }
+    status_t wait() override {
+        auto status = impl()->wait();
+        // A verbose profiler polling call cannot be added here since sporadic
+        // wait() calls outside the normal primitive execution flow may
+        // interrupt in-flight primitives before all their events are complete.
+        // This causes the profiler to incorrectly log incomplete execution
+        // times and invalidate event storage for pending operations. Unlogged
+        // primitives are instead captured at the next after_exec_hook()
+        // polling cycle or during profiler destruction.
+        return status;
+    }
 
     void before_exec_hook() override;
     void after_exec_hook() override;
@@ -76,6 +86,9 @@ struct stream_t : public intel::stream_t {
         return profiler_->get_info(data_kind, num_entries, data);
     }
 
+    status_t run_verbose_profiler(const std::string &pd_info, double start_ms,
+            uint64_t component) override;
+
     cl_command_queue queue() const { return impl()->queue(); }
 
     const mdapi_helper_t &mdapi_helper() const { return *mdapi_helper_; }
@@ -91,10 +104,8 @@ struct stream_t : public intel::stream_t {
 
     ~stream_t() override = default;
 
-    const xpu::ocl::context_t &ocl_ctx() const { return impl()->ocl_ctx(); }
     xpu::ocl::context_t &ocl_ctx() { return impl()->ocl_ctx(); }
     xpu::context_t &ctx() override { return impl()->ocl_ctx(); }
-    const xpu::context_t &ctx() const override { return impl()->ocl_ctx(); }
 
     const xpu::ocl::wrapper_t<cl_event> &get_output_event() const {
         return impl()->get_output_event();

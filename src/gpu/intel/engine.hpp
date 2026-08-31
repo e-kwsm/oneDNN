@@ -128,16 +128,6 @@ public:
         return result != nullptr ? status::success : status::unimplemented;
     }
 
-    bool mayiuse_f16_accumulator_with_f16() const override {
-        // XeHPC+ must use f32 accumulation with f16 operations as documented.
-        switch (device_info_->gpu_arch()) {
-            case compute::gpu_arch_t::xe_lp:
-            case compute::gpu_arch_t::xe_hp:
-            case compute::gpu_arch_t::xe_hpg: return true;
-            default: return false;
-        }
-    }
-
     bool mayiuse(compute::device_ext_t ext) const {
         return device_info_->has(ext);
     }
@@ -219,5 +209,6 @@ extern "C" bool DNNL_API dnnl_impl_gpu_intel_mayiuse_ngen_kernels(
         dnnl::impl::engine_t *engine);
 extern "C" DNNL_API const char *dnnl_impl_gpu_intel_get_isa_name(
         dnnl::impl::engine_t *engine);
+extern "C" void DNNL_API dnnl_impl_gpu_intel_clear_device_info_cache();
 
 #endif

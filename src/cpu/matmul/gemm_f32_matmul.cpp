@@ -42,21 +42,22 @@ namespace matmul {
 
 using namespace data_type;
 
-status_t gemm_f32_matmul_t::pd_t::init(engine_t *engine) {
+status_t gemm_f32_matmul_t::pd_t::init(const engine_t *engine) {
     auto check_bias = [&]() -> bool {
         return !with_bias()
                 || (weights_md(1)->data_type == f32 && is_bias_1xN());
     };
 
-    auto check_attr_scales = [&]() -> bool {
-        bool ok = attr_scales_ok();
+    auto check_attr_scales = [&]() -> status_t {
+        CHECK(attr_scales_ok(engine));
         if (!attr()->scales_.has_default_values(DNNL_ARG_SRC)
                 && !attr()->scales_.has_default_values(DNNL_ARG_WEIGHTS)
                 && attr()->scales_.get_mask(DNNL_ARG_WEIGHTS) > 0) {
             // This case requires scratchpad with unknown size
-            if (is_runtime_value(N())) ok = false;
+            VDISPATCH_MATMUL(
+                    !is_runtime_value(N()), VERBOSE_UNSUPPORTED_SCALES_CFG);
         }
-        return ok;
+        return status::success;
     };
 
     auto check_attr_post_ops = [&]() -> bool {
@@ -76,6 +77,8 @@ status_t gemm_f32_matmul_t::pd_t::init(engine_t *engine) {
                                 post_ops.entry_, dst_md()),
                         broadcasting_strategy_t::per_oc);
         const bool has_prelu = post_ops.find(prelu) != -1;
+        for (const auto &entry : post_ops.entry_)
+            if (entry.is_binary_with_ternary_op()) return false;
         return cpu::inner_product_utils::post_ops_ok(
                        post_ops, dst_md(), enabled_bcast_strategy)
                 && IMPLICATION(is_binary_po_per_oc,
@@ -103,7 +106,7 @@ status_t gemm_f32_matmul_t::pd_t::init(engine_t *engine) {
     VDISPATCH_MATMUL(attr()->post_ops_.check_sum_consistency(dst_type,
                              /* is_int8 */ false),
             VERBOSE_UNSUPPORTED_POSTOP);
-    VDISPATCH_MATMUL(check_attr_scales(), VERBOSE_UNSUPPORTED_SCALES_CFG);
+    CHECK(check_attr_scales());
     VDISPATCH_MATMUL(check_bias(), VERBOSE_UNSUPPORTED_BIAS_CFG);
     VDISPATCH_MATMUL(set_default_formats(), VERBOSE_UNSUPPORTED_TAG);
     // Should be followed by `set_default_formats`.
@@ -253,7 +256,10 @@ status_t gemm_f32_matmul_t::execute_ref(const exec_ctx_t &ctx) const {
         need_free_acc = true;
     }
 
-    const dim_t acc_ldc = dst_is_acc ? ldc : N;
+    // `ldc` is the destination row stride. When `M == 1`, a degenerate stride
+    // (e.g. `acb` gives `ldc == 1`) can violate the `ldc >= N` requirement.
+    // Clamp `ldc` to `N`. This is safe for `M == 1` and has no effect for `M > 1`.
+    const dim_t acc_ldc = dst_is_acc ? nstl::max(ldc, N) : N;
     const int scale_idx_mult
             = this->pd()->attr()->scales_.get_mask(DNNL_ARG_WEIGHTS)
             == (1 << (ndims - 1));

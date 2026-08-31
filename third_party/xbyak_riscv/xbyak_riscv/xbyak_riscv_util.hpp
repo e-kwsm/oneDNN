@@ -67,6 +67,22 @@ namespace Xbyak_riscv {
 #define RISCV_HWPROBE_IMA_V (1ULL << 2)
 #endif
 
+#ifndef RISCV_HWPROBE_EXT_ZBA
+#define RISCV_HWPROBE_EXT_ZBA (1ULL << 3)
+#endif
+
+#ifndef RISCV_HWPROBE_EXT_ZBB
+#define RISCV_HWPROBE_EXT_ZBB (1ULL << 4)
+#endif
+
+#ifndef RISCV_HWPROBE_EXT_ZBS
+#define RISCV_HWPROBE_EXT_ZBS (1ULL << 5)
+#endif
+
+#ifndef RISCV_HWPROBE_EXT_ZBC
+#define RISCV_HWPROBE_EXT_ZBC (1ULL << 7)
+#endif
+
 #ifndef RISCV_HWPROBE_EXT_ZVBB
 #define RISCV_HWPROBE_EXT_ZVBB (1ULL << 17)
 #endif
@@ -81,6 +97,10 @@ namespace Xbyak_riscv {
 
 #ifndef RISCV_HWPROBE_EXT_ZVFH
 #define RISCV_HWPROBE_EXT_ZVFH (1ULL << 30)
+#endif
+
+#ifndef RISCV_HWPROBE_EXT_ZVFBFWMA
+#define RISCV_HWPROBE_EXT_ZVFBFWMA (1ULL << 54)
 #endif
 
 struct riscv_hwprobe {
@@ -104,7 +124,12 @@ enum class RISCVExtension : uint64_t {
     Zvfh = 1ULL << 26,
     Zvbb = 1ULL << 27,
     Zvbc = 1ULL << 28,
-    Zvkg = 1ULL << 29
+    Zvkg = 1ULL << 29,
+    Zvfbfwma = 1ULL << 30,
+    Zba = 1ULL << 31,
+    Zbb = 1ULL << 32,
+    Zbc = 1ULL << 33,
+    Zbs = 1ULL << 34
 };
 
 template <CSR csr>
@@ -165,7 +190,12 @@ public:
                 { RISCVExtension::Zvfh, RISCV_HWPROBE_EXT_ZVFH },
                 { RISCVExtension::Zvbb, RISCV_HWPROBE_EXT_ZVBB },
                 { RISCVExtension::Zvbc, RISCV_HWPROBE_EXT_ZVBC },
-                { RISCVExtension::Zvkg, RISCV_HWPROBE_EXT_ZVKG }
+                { RISCVExtension::Zvkg, RISCV_HWPROBE_EXT_ZVKG },
+                { RISCVExtension::Zvfbfwma, RISCV_HWPROBE_EXT_ZVFBFWMA },
+                { RISCVExtension::Zba, RISCV_HWPROBE_EXT_ZBA },
+                { RISCVExtension::Zbb, RISCV_HWPROBE_EXT_ZBB },
+                { RISCVExtension::Zbc, RISCV_HWPROBE_EXT_ZBC },
+                { RISCVExtension::Zbs, RISCV_HWPROBE_EXT_ZBS }
             };
             for (const auto& entry : table) {
                 if (v & entry.hwprobe_bit) {

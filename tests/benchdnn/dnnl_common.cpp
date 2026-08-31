@@ -37,7 +37,7 @@
 #endif
 
 #if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-#include "oneapi/dnnl/dnnl_threadpool.h"
+#include "oneapi/dnnl/dnnl_threadpool.hpp"
 #endif
 
 // Uses only publicly available types.
@@ -45,88 +45,100 @@
 
 #include "cpu/platform.hpp"
 
-#include "tests/test_thread.hpp"
-
 #include "dnnl_common.hpp"
 #include "dnnl_memory.hpp"
 
 #include "utils/cold_cache.hpp"
 #include "utils/dnnl_query.hpp"
+#include "utils/execution_mode.hpp"
 #include "utils/fill.hpp"
+#include "utils/parallel.hpp"
 #include "utils/stream_kind.hpp"
+
+#include "tests/test_thread_decl.hpp"
+
+namespace {
+// `fetch_impl` is responsible to provide a valid `pd` under certain conditions:
+// 1. Either valid `pd` or `pd_it` were provided.
+// 2a. It's a service primitive (fwd-for-bwd or cpu-for-gpu or
+//     simple-prims-of-complex-prim).
+// 2b. It's a tested primitive and not all implementations hit skip-impl option
+//     values.
+//
+// Note: `res` can be empty when fetching impl for prim_ref support.
+int fetch_impl(benchdnn_dnnl_wrapper_t<dnnl_primitive_desc_t> &pdw,
+        init_pd_args_t &init_pd_args, const impl_filter_t &impl_filter,
+        res_t *res, bool is_service_prim) {
+    if (!init_pd_args.pd) return FAIL;
+
+    // Wrapper is expected to come empty.
+    assert(!pdw);
+
+    pdw.reset(init_pd_args.pd);
+
+    // Service primitive is not supposed to utilize further logic.
+    if (is_service_prim) return OK;
+
+    while (true) {
+        const auto impl_name = query_impl_info(pdw);
+        if (!need_next_impl(impl_name, impl_filter)) return OK;
+
+        BENCHDNN_PRINT(6, "[IMPL_FILTER] Implementation skipped: %s\n",
+                impl_name.c_str());
+
+        // Iterator is not supported, further logic is not applicable.
+        if (!init_pd_args.is_iterator_supported) {
+            if (res) res->state = SKIPPED;
+            if (res) res->reason = reason_t::skip_impl_hit;
+            return OK;
+        }
+
+        auto status = dnnl_primitive_desc_next_impl(pdw);
+        if (status == dnnl_last_impl_reached) {
+            BENCHDNN_PRINT(2, "%s\n",
+                    "[IMPL_FILTER] All implementations were skipped!");
+            if (res) res->state = SKIPPED;
+            if (res) res->reason = reason_t::skip_impl_hit;
+            pdw.reset(nullptr);
+            return OK;
+        } else if (status == dnnl_success) {
+            continue;
+        } else {
+            BENCHDNN_PRINT(0, "%s\n",
+                    "[IMPL_FILTER] Unexpected status from pd iterator.");
+            return FAIL;
+        }
+    }
+
+    // Unreached fail status.
+    return FAIL;
+}
+
+int check_pd_w_and_wo_attr(dnnl_engine_t engine,
+        const init_pd_func_t &init_pd_func, const base_prb_t *base_prb,
+        res_t *res, dir_t dir, const_dnnl_primitive_desc_t hint) {
+    if (!attr_same_pd_check || base_prb->attr.is_def()) return OK;
+
+    if (base_prb->attr.post_ops.convolution_index() != -1) return OK;
+
+    // Check that adding attributes doesn't cause a fall back to another impl.
+    auto *prb_mutable = const_cast<base_prb_t *>(base_prb);
+    auto old_attr = prb_mutable->attr;
+    prb_mutable->attr = attr_t();
+    init_pd_args_t init_pd_args_without_attr(
+            res, engine, prb_mutable, dir, hint, /* src_md = */ nullptr);
+    DNN_SAFE(init_pd_func(init_pd_args_without_attr), WARN);
+    benchdnn_dnnl_wrapper_t<dnnl_primitive_desc_t> pdw(
+            init_pd_args_without_attr.pd);
+    prb_mutable->attr = old_attr;
+    SAFE(check_same_pd(pdw, res), WARN);
+    return OK;
+}
+
+} // namespace
 
 extern "C" dnnl_status_t dnnl_impl_notify_profiling_complete(
         dnnl_stream_t stream);
-
-bool is_cpu(const dnnl_engine_t &engine) {
-    return query_engine_kind(engine) == dnnl_cpu;
-}
-
-bool is_gpu(const dnnl_engine_t &engine) {
-    return query_engine_kind(engine) == dnnl_gpu;
-}
-
-bool is_async(const dnnl_engine_t &engine) {
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
-    if (is_cpu(engine))
-        return dnnl::testing::get_threadpool()->get_flags()
-                & dnnl::threadpool_interop::threadpool_iface::ASYNCHRONOUS;
-#else
-    if (is_cpu(engine)) return DNNL_CPU_RUNTIME == DNNL_RUNTIME_DPCPP;
-#endif
-    // all supported GPU runtimes are async
-    return is_gpu(engine);
-}
-
-bool is_sycl_engine(const dnnl_engine_t &engine) {
-    if (is_cpu(engine)) return DNNL_CPU_RUNTIME == DNNL_RUNTIME_DPCPP;
-    if (is_gpu(engine)) return DNNL_GPU_RUNTIME == DNNL_RUNTIME_DPCPP;
-    return false;
-}
-
-bool is_opencl_engine(const dnnl_engine_t &engine) {
-    if (is_gpu(engine)) return DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL;
-    return false;
-}
-
-bool is_ze_engine(const dnnl_engine_t &engine) {
-    if (is_gpu(engine)) return DNNL_GPU_RUNTIME == DNNL_RUNTIME_ZE;
-    return false;
-}
-
-bool is_nvidia_gpu(const dnnl_engine_t &engine) {
-#if defined(DNNL_WITH_SYCL) && DNNL_GPU_VENDOR == DNNL_VENDOR_NVIDIA
-    if (!is_gpu(engine)) return false;
-    constexpr int nvidia_vendor_id = 0x10DE;
-    auto eng = dnnl::engine(engine, true);
-    auto device = dnnl::sycl_interop::get_device(eng);
-    const auto eng_vendor_id
-            = device.get_info<::sycl::info::device::vendor_id>();
-    return eng_vendor_id == nvidia_vendor_id;
-#endif
-    return false;
-}
-
-bool is_amd_gpu(const dnnl_engine_t &engine) {
-#if defined(DNNL_WITH_SYCL) && DNNL_GPU_VENDOR == DNNL_VENDOR_AMD
-    if (!is_gpu(engine)) return false;
-    constexpr int amd_vendor_id = 0x1002;
-    auto eng = dnnl::engine(engine, true);
-    auto device = dnnl::sycl_interop::get_device(eng);
-    const auto eng_vendor_id
-            = device.get_info<::sycl::info::device::vendor_id>();
-    return eng_vendor_id == amd_vendor_id;
-#endif
-    return false;
-}
-
-bool is_generic_gpu(const dnnl_engine_t &engine) {
-#if defined(DNNL_WITH_SYCL) && DNNL_GPU_VENDOR == DNNL_VENDOR_GENERIC
-    return is_gpu(engine);
-#endif
-
-    return false;
-}
 
 int check_pd_cache(const_dnnl_primitive_desc_t pd, res_t *res) {
     // Disable this check for threadpool. A threadpool is always defined in
@@ -344,10 +356,6 @@ int test_persistent_cache_api(
     return OK;
 }
 
-// Engine kind used to run oneDNN primitives for testing
-dnnl_engine_kind_t engine_tgt_kind = dnnl_cpu;
-// Engine index used to run oneDNN primitives for testing
-size_t engine_index = 0;
 // CPU ISA specific hints : none by default
 isa_hints_t hints {isa_hints_t::none};
 
@@ -430,49 +438,6 @@ void args_t::replace(int arg, const dnn_mem_t *mem) {
     }
 }
 
-stream_staller_t::stream_staller_t(stream_t &stream) {
-#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-    auto eng = query_engine(stream);
-    auto eng_kind = query_engine_kind(eng);
-    if (eng_kind != dnnl_cpu) return;
-
-    void *tp_ptr;
-    dnnl_threadpool_interop_stream_get_threadpool(stream, &tp_ptr);
-    auto tp = static_cast<dnnl::threadpool_interop::threadpool_iface *>(tp_ptr);
-
-    // `tp` is not expected to be empty for CPU streams with threadpol runtime.
-    if (!tp) SAFE_V(FAIL);
-
-    // Only relevant for asynchronous threadpool, synchronous will
-    // deadlock.
-    if (tp->get_flags()
-            != dnnl::threadpool_interop::threadpool_iface::ASYNCHRONOUS)
-        return;
-
-    // Each thread from the threadpool should get the task to be stalled.
-    const int num_tasks = tp->get_num_threads();
-
-    // The main thread must be let through, otherwise it deadlocks as
-    // task submission won't happen.
-    std::thread::id main_thr_id = std::this_thread::get_id();
-
-    // Shared future allows to pass all waiting threads at once inside the
-    // palallel call.
-    std::shared_future<void> fut(prom_.get_future());
-
-    tp->parallel_for(num_tasks, [=](int, int) {
-        std::thread::id id_thr = std::this_thread::get_id();
-        if (id_thr != main_thr_id) fut.wait();
-    });
-#endif
-}
-
-void stream_staller_t::release() {
-#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-    prom_.set_value();
-#endif
-}
-
 // Unmap before passing the memory to execute
 void execute_unmap_args(
         const args_t &args, std::vector<dnnl_exec_arg_t> &dnnl_args) {
@@ -501,51 +466,13 @@ int execute_and_wait(perf_function_t &exec_func, const dnnl_engine_t &engine,
     TIME_EXECUTE(execute_unmap_args(args, dnnl_args));
 
     dnnl_status_t status = dnnl_runtime_error;
-    if (is_gpu(engine) && execution_mode == execution_mode_t::graph) {
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_DPCPP
-        void *queue_ptr;
-        DNN_SAFE(dnnl_sycl_interop_stream_get_queue(stream, &queue_ptr), CRIT);
-        ::sycl::queue queue = *static_cast<::sycl::queue *>(queue_ptr);
-        if (queue.get_device().get_backend()
-                != ::sycl::backend::ext_oneapi_level_zero) {
-            BENCHDNN_PRINT(0, "%s %s\n",
-                    "[ERROR] SYCL graph execution is only available on Level "
-                    "Zero backend; currently using:",
-                    ::sycl::detail::get_backend_name_no_vendor(
-                            queue.get_device().get_backend())
-                            .data());
-            if (res) res->state = FAILED;
-            return FAIL;
-        }
-
-        BENCHDNN_PRINT(
-                2, "%s\n", "[INFO] Using experimental SYCL graph execution.");
-        ::sycl::ext::oneapi::experimental::command_graph graph {
-                queue.get_context(), queue.get_device(),
-                {::sycl::ext::oneapi::experimental::property::graph::
-                                assume_buffer_outlives_graph {}}};
-
-        try {
-            graph.begin_recording(queue);
-            status = exec_func(stream, dnnl_args);
-            graph.end_recording(queue);
-            DNN_SAFE(dnnl_stream_wait(stream), CRIT);
-
-            auto exec = graph.finalize();
-            TIME_EXECUTE(queue.ext_oneapi_graph(exec).wait());
-        } catch (const std::exception &e) {
-            BENCHDNN_PRINT(0, "%s %s\n",
-                    "[ERROR] SYCL graph execution exception:", e.what());
-            if (res) res->state = FAILED;
-            return FAIL;
-        }
-#else
-        BENCHDNN_PRINT(0, "%s\n",
-                "[ERROR] Graph execution is only available on SYCL runtime "
-                "with Level Zero backend.");
-        if (res) res->state = FAILED;
-        return FAIL;
-#endif
+    if (use_sycl_graph_exec(engine)) {
+        std::function<void()> record_fn
+                = std::bind(exec_func, std::ref(stream), std::cref(dnnl_args));
+        // TIME_EXECUTE is done inside this call.
+        int st = execute_in_graph_mode(stream, record_fn, res);
+        // Update status only on success.
+        if (st == OK) status = dnnl_success;
     } else {
         stream_staller_t staller(stream);
         TIME_EXECUTE(status = exec_func(stream, dnnl_args));
@@ -817,7 +744,7 @@ int measure_perf(const thr_ctx_t &ctx, res_t *res, perf_function_t &perf_func,
             // numbers.
             mem_map[j].emplace(
                     arg, dnn_mem_t(m.md_, engine, /* prefill = */ true));
-            SAFE(mem_map[j].at(arg).reorder(m), WARN);
+            SAFE(mem_map[j].at(arg).reorder(m, res), WARN);
         }
         v_args[j] = args_t(mem_map[j]);
         execute_unmap_args(v_args[j], dnnl_args[j]);
@@ -831,11 +758,15 @@ int measure_perf(const thr_ctx_t &ctx, res_t *res, perf_function_t &perf_func,
     // For async threadpool CPU: use aggregate as well, similar to DPCPP CPU.
     int ret = OK;
     if (is_async(engine)) {
-        ret = execute_in_thr_ctx(
-                ctx, measure_perf_aggregate, t, v_stream, perf_func, dnnl_args);
+        std::function<int()> measure_perf_aggregate_fn = std::bind(
+                measure_perf_aggregate, std::ref(t), std::cref(v_stream),
+                std::ref(perf_func), std::ref(dnnl_args));
+        ret = execute_in_thr_ctx(ctx, measure_perf_aggregate_fn);
     } else {
-        ret = execute_in_thr_ctx(ctx, measure_perf_individual, t, v_stream[0],
-                perf_func, dnnl_args[0]);
+        std::function<int()> measure_perf_individual_fn = std::bind(
+                measure_perf_individual, std::ref(t), std::ref(v_stream[0]),
+                std::ref(perf_func), std::ref(dnnl_args[0]));
+        ret = execute_in_thr_ctx(ctx, measure_perf_individual_fn);
     }
 
     res->state = (ret == OK ? EXECUTED : FAILED);
@@ -857,13 +788,19 @@ int measure_perf(
 
 std::vector<float> prepare_po_vals(const dnn_mem_t &dst_m, const args_t &args,
         const std::vector<std::pair<int, int>> &v_po_masks,
-        const size_t dst_off) {
+        const size_t dst_off, int64_t group_id) {
     if (v_po_masks.empty()) return std::vector<float>();
 
     std::vector<float> v_vals(v_po_masks.size());
 
     for (size_t d = 0; d < v_po_masks.size(); ++d) {
-        const auto po_offset = dst_m.get_idx(dst_off, v_po_masks[d].second);
+        // For grouped memory, mask == 0 is overloaded to mean per-group:
+        // a single value per concatenated group, indexed by group_id
+        //
+        // Note, that group_id is 0 for non-grouped use
+        const auto po_offset = v_po_masks[d].second == 0
+                ? group_id
+                : dst_m.get_idx(dst_off, v_po_masks[d].second);
         const float val
                 = args.find(v_po_masks[d].first).get_f32_elem(po_offset);
         v_vals[d] = val;
@@ -903,10 +840,12 @@ void skip_unimplemented_data_type(
             = is_gpu() || (is_cpu() && has_data_type_support(dnnl_f4_e2m1));
     const bool has_f8_e5m2_support = is_gpu()
             || (is_cpu() && has_data_type_support(dnnl_f8_e5m2)
-                    && (dir & FLAG_INF));
+                    && IMPLICATION(!(dir & FLAG_INF),
+                            has_training_support(dnnl_f8_e5m2)));
     const bool has_f8_e4m3_support = is_gpu()
             || (is_cpu() && has_data_type_support(dnnl_f8_e4m3)
-                    && (dir & FLAG_INF));
+                    && IMPLICATION(!(dir & FLAG_INF),
+                            has_training_support(dnnl_f8_e4m3)));
 #else
     const bool has_bf16_support = is_gpu();
     // f16 is supported on GPU for inference only.
@@ -1001,14 +940,15 @@ void skip_unimplemented_binary_po(const attr_t &attr, res_t *res) {
     const auto &po = attr.post_ops;
     if (po.is_def()) return;
 
-    if (is_gpu()) {
-        const int select_idx = po.find(attr_t::post_ops_t::kind_t::SELECT);
-        if (select_idx != -1) {
-            res->state = SKIPPED;
-            res->reason = reason_t::skip_not_supported;
-            return;
-        }
+    std::vector<dnnl_data_type_t> dts;
+    for (int i = 0; i < po.len(); i++) {
+        const auto &e = po.entry[i];
+        if (!e.is_binary_kind()) continue;
+
+        dts.push_back(e.binary.src1_dt);
+        if (e.is_binary_kind_with_ternary_op()) dts.push_back(e.binary.src2_dt);
     }
+    skip_unimplemented_data_type(dts, FLAG_INF, res);
 }
 
 void skip_unimplemented_prelu_po(
@@ -1094,7 +1034,7 @@ int check_ref_impl_hit(res_t *res) {
     return OK;
 }
 
-bool is_f64_supported(const dnnl_engine_t &engine) {
+bool is_f64_supported(const engine_t &engine) {
     if (!is_gpu(engine)) return false;
     if (is_nvidia_gpu(engine) || is_amd_gpu(engine)) return false;
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_DPCPP
@@ -1346,8 +1286,12 @@ int check_total_size(res_t *res, dnnl_primitive_t prim_ref) {
     const check_mem_size_args_t &check_mem_size_args = res->mem_size_args;
 
     if (is_gpu()) {
-        const bool fits_device_ram = check_mem_size_args.total_size_device
-                <= benchdnn_device_limit;
+        // Mapped host buffers are live together with device allocations at peak
+        // (and on some runtimes become device-resident while accessed), so
+        // account for them in the device peak used for the device RAM fit check.
+        const size_t device_peak_size = check_mem_size_args.total_size_device
+                + check_mem_size_args.total_size_mapped;
+        const bool fits_device_ram = device_peak_size <= benchdnn_device_limit;
         if (!fits_device_ram) {
             BENCHDNN_PRINT(1,
                     "[CHECK_MEM][%s]: Not enough device RAM for a problem.\n",
@@ -1375,10 +1319,12 @@ int check_total_size(res_t *res, dnnl_primitive_t prim_ref) {
         }
 
         BENCHDNN_PRINT((!fits_device_ram ? 1 : 6),
-                "[CHECK_MEM][%s]: Requested: %s; benchdnn_device_limit: %s; "
-                "device_RAM_capacity: %s; gpu_max_alloc: %s;\n",
-                dir_c_str(),
+                "[CHECK_MEM][%s]: Requested: %s (device: %s; mapped: %s); "
+                "benchdnn_device_limit: %s; device_RAM_capacity: %s; "
+                "gpu_max_alloc: %s;\n",
+                dir_c_str(), smart_bytes(device_peak_size).c_str(),
                 smart_bytes(check_mem_size_args.total_size_device).c_str(),
+                smart_bytes(check_mem_size_args.total_size_mapped).c_str(),
                 smart_bytes(benchdnn_device_limit).c_str(),
                 smart_bytes(gpu_device_capacity).c_str(),
                 smart_bytes(gpu_max_alloc_capacity).c_str());
@@ -1809,158 +1755,6 @@ memory_kind_ext_t str2memory_kind(const char *str) {
     return memory_kind_ext_t::usm;
 }
 
-const char *execution_mode2str(execution_mode_t mode) {
-#define EXECUTION_MODE_TO_STR(name, ...) \
-    if (execution_mode_t::name == mode) return #name;
-
-    EXECUTION_MODE_TO_STR(direct);
-    EXECUTION_MODE_TO_STR(graph);
-#undef EXECUTION_MODE_STR
-
-    BENCHDNN_PRINT(0, "%s", "Error: execution mode value is not recognized.\n");
-    SAFE_V(FAIL);
-    return "";
-}
-
-execution_mode_t str2execution_mode(const char *str) {
-#define STR_TO_EXECUTION_MODE(name, ...) \
-    if (!strcasecmp(#name, str)) return execution_mode_t::name;
-
-    STR_TO_EXECUTION_MODE(direct);
-    STR_TO_EXECUTION_MODE(graph);
-#undef STR_TO_EXECUTION_MODE
-
-    BENCHDNN_PRINT(0, "%s", "Error: execution mode value is not recognized.\n");
-    SAFE_V(FAIL);
-    return execution_mode_t::direct;
-}
-
-static void maybe_print_cpu_engine_error_message() {
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_SYCL
-    fprintf(stderr,
-            "ERROR: can't create CPU engine. Possible reasons for this error:\n"
-            "- Incorrect SYCL_DEVICE_FILTER. The filter must be either unset "
-            "or include 'opencl:cpu' devices.\n"
-            "- Missing TBB library which is required for OpenCL CPU runtime. "
-            "Check that TBB library is available in the system.\n"
-            "- Missing OpenCL CPU runtime or other issues with OpenCL CPU "
-            "runtime. Check that output from `sycl-ls` or `clinfo -l` commands "
-            "include any CPU devices.\n");
-#endif
-}
-
-engine_t::engine_t(dnnl_engine_kind_t engine_kind) : is_owner_(true) {
-    size_t idx = engine_kind == dnnl_cpu ? 0 : engine_index;
-    dnnl_status_t status = dnnl_engine_create(&engine_, engine_kind, idx);
-    if (engine_kind == dnnl_cpu && status != dnnl_success)
-        maybe_print_cpu_engine_error_message();
-    if (has_bench_mode_modifier(mode_modifier_t::no_ref_memory)) {
-        if (has_bench_mode_bit(mode_bit_t::corr)) {
-            BENCHDNN_PRINT(0, "%s\n",
-                    "Error: the modifier to disable host memory usage "
-                    "cannot be used for correctness testing.");
-            status = dnnl_invalid_arguments;
-        }
-    }
-    // Temporary workaround.
-    // TODO: make mode-modifier=M by default for perf on GPU.
-    // TODO-TODO: make mode-modifier=M by default (including CPU).
-    if (has_bench_mode_bit(mode_bit_t::perf) && engine_kind == dnnl_gpu) {
-        bench_mode_modifier |= mode_modifier_t::no_ref_memory;
-    }
-    DNN_SAFE_V(status);
-}
-
-engine_t::engine_t(dnnl_engine_t engine) : engine_(engine), is_owner_(false) {}
-
-engine_t::engine_t(const engine_t &other) : is_owner_(other.is_owner_) {
-    if (!is_owner_) {
-        engine_ = other.engine_;
-        return;
-    }
-
-    dnnl_engine_kind_t engine_kind;
-    DNN_SAFE_V(dnnl_engine_get_kind(other.engine_, &engine_kind));
-
-    if (engine_kind == dnnl_cpu) {
-#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_SYCL
-        void *dev;
-        void *ctx;
-        DNN_SAFE_V(dnnl_sycl_interop_engine_get_device(other.engine_, &dev));
-        DNN_SAFE_V(dnnl_sycl_interop_engine_get_context(other.engine_, &ctx));
-        DNN_SAFE_V(dnnl_sycl_interop_engine_create(&engine_, dev, ctx));
-#else
-        DNN_SAFE_V(dnnl_engine_create(&engine_, dnnl_cpu, 0));
-#endif
-    } else if (engine_kind == dnnl_gpu) {
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-        cl_device_id dev;
-        cl_context ctx;
-        DNN_SAFE_V(dnnl_ocl_interop_get_device(other.engine_, &dev));
-        DNN_SAFE_V(dnnl_ocl_interop_engine_get_context(other.engine_, &ctx));
-        DNN_SAFE_V(dnnl_ocl_interop_engine_create(&engine_, dev, ctx));
-#elif DNNL_GPU_RUNTIME == DNNL_RUNTIME_SYCL
-        void *dev;
-        void *ctx;
-        DNN_SAFE_V(dnnl_sycl_interop_engine_get_device(other.engine_, &dev));
-        DNN_SAFE_V(dnnl_sycl_interop_engine_get_context(other.engine_, &ctx));
-        DNN_SAFE_V(dnnl_sycl_interop_engine_create(&engine_, dev, ctx));
-#elif DNNL_GPU_RUNTIME == DNNL_RUNTIME_ZE
-        ze_driver_handle_t drv;
-        ze_device_handle_t dev;
-        ze_context_handle_t ctx;
-        DNN_SAFE_V(dnnl_ze_interop_engine_get_driver(other.engine_, &drv));
-        DNN_SAFE_V(dnnl_ze_interop_engine_get_device(other.engine_, &dev));
-        DNN_SAFE_V(dnnl_ze_interop_engine_get_context(other.engine_, &ctx));
-        DNN_SAFE_V(dnnl_ze_interop_engine_create(&engine_, drv, dev, ctx));
-#else
-        assert(!"unsupported GPU runtime");
-#endif
-    } else {
-        assert(!"unsupported engine kind");
-    }
-}
-
-engine_t::~engine_t() {
-    if (is_owner_) DNN_SAFE_V(dnnl_engine_destroy(engine_));
-}
-
-dnnl_engine_kind_t engine_t::get_kind() const {
-    return query_engine_kind(engine_);
-}
-
-stream_t::stream_t(dnnl_engine_t engine, void *interop_obj) : is_owner_(true) {
-#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-    if (is_cpu(engine)) {
-        auto tp = static_cast<dnnl::threadpool_interop::threadpool_iface *>(
-                interop_obj);
-        if (tp == nullptr) tp = dnnl::testing::get_threadpool();
-        SAFE_V(dnnl_threadpool_interop_stream_create(&stream_, engine, tp));
-        return;
-    }
-#endif
-
-    const bool use_profiling = has_bench_mode_bit(mode_bit_t::perf)
-            && is_gpu(engine) && !is_nvidia_gpu(engine) && !is_amd_gpu(engine);
-    dnnl_stream_flags_t flags
-            = stream_kind2stream_flags(stream_kind, use_profiling);
-    DNN_SAFE_V(dnnl_stream_create(&stream_, engine, flags));
-}
-
-stream_t::~stream_t() {
-    if (is_owner_) DNN_SAFE_V(dnnl_stream_destroy(stream_));
-}
-
-stream_t &stream_t::operator=(stream_t &&rhs) {
-    if (&rhs == this) return *this;
-
-    stream_ = rhs.stream_;
-    is_owner_ = rhs.is_owner_;
-
-    rhs.is_owner_ = false;
-    return *this;
-}
-
 float reorder_rescale_factor() {
     float factor = 1.f;
 #if DNNL_CPU_RUNTIME != DNNL_RUNTIME_NONE
@@ -2071,7 +1865,7 @@ void get_kinds_to_check_shared(
 // consider passing `cfg` directly.
 int update_ref_mem_map_from_prim(dnnl_primitive_t prim_ref,
         const dnn_mem_t &library_mem, dnn_mem_map_t &ref_mem_map, int exec_arg,
-        dnnl_data_type_t swapped_dt) {
+        dnnl_data_type_t swapped_dt, res_t *res) {
     if (!prim_ref) return OK;
 
     const auto &ref_mem = ref_mem_map.at(exec_arg);
@@ -2137,7 +1931,7 @@ int update_ref_mem_map_from_prim(dnnl_primitive_t prim_ref,
         const auto prim_ref_swapped_dt = query_md_data_type(ref_md) == dnnl_f32
                 ? dnnl_data_type_undef
                 : swapped_dt;
-        SAFE(prim_ref_mem.reorder(ref_mem, prim_ref_swapped_dt), WARN);
+        SAFE(prim_ref_mem.reorder(ref_mem, res, prim_ref_swapped_dt), WARN);
     }
     ref_mem_map[exec_arg] = std::move(prim_ref_mem);
 
@@ -2156,7 +1950,7 @@ int init_ref_memory_args_default_case(int exec_arg, dnn_mem_t &mem,
         dnn_mem_t &ref_mem, const attr_t &attr, res_t *res,
         const std::unordered_map<int, fill_cfg_t> &fill_cfg_map) {
     assert(exec_arg > 0); // Negative values will produce false-positive `true`.
-    if (fill_from_file(exec_arg, mem, ref_mem)) return OK;
+    if (fill_from_file(exec_arg, mem, ref_mem, res)) return OK;
 
     const int post_ops_range = DNNL_ARG_ATTR_MULTIPLE_POST_OP(31)
             - DNNL_ARG_ATTR_MULTIPLE_POST_OP(0);
@@ -2217,11 +2011,13 @@ int init_ref_memory_args_default_case(int exec_arg, dnn_mem_t &mem,
         }
     } else if (is_scales_arg) {
         int local_exec_arg = exec_arg ^ DNNL_ARG_ATTR_SCALES;
-        TIME_FILL(SAFE(fill_scales(attr, local_exec_arg, mem, ref_mem), WARN));
+        TIME_FILL(SAFE(
+                fill_scales(attr, local_exec_arg, mem, ref_mem, res), WARN));
     } else if (is_zero_point_arg) {
         int local_exec_arg = exec_arg ^ DNNL_ARG_ATTR_ZERO_POINTS;
-        TIME_FILL(SAFE(
-                fill_zero_points(attr, local_exec_arg, mem, ref_mem), WARN));
+        TIME_FILL(
+                SAFE(fill_zero_points(attr, local_exec_arg, mem, ref_mem, res),
+                        WARN));
     } else if (is_dropout_p) {
         ref_mem.set_f32_elem(0, attr.dropout.p);
         mem.set_elem(0, attr.dropout.p);
@@ -2239,7 +2035,7 @@ int init_ref_memory_args_default_case(int exec_arg, dnn_mem_t &mem,
         mem.set_s64_elem(0, attr.dropout.offset);
     } else if (is_rounding_seed) {
         ref_mem.set_elem(0, attr.rounding_mode.seed);
-        TIME_FILL(SAFE(mem.reorder(ref_mem), WARN));
+        TIME_FILL(SAFE(mem.reorder(ref_mem, res), WARN));
     }
 
     return OK;
@@ -2288,7 +2084,7 @@ int check_bitwise(dnnl_primitive_t prim, const std::vector<data_kind_t> &kinds,
         run1_mem_map.emplace(arg,
                 dnn_mem_t(mem.md_, dnnl_f32, tag::abx, get_cpu_engine(),
                         /* prefill = */ false));
-        SAFE(run1_mem_map.at(arg).reorder(mem), WARN);
+        SAFE(run1_mem_map.at(arg).reorder(mem, res), WARN);
     }
 
     // Put original data into DST tensor if sum post-op is present.
@@ -2297,7 +2093,7 @@ int check_bitwise(dnnl_primitive_t prim, const std::vector<data_kind_t> &kinds,
         auto &dst_mem = const_cast<dnn_mem_t &>(args.find(query_arg));
         const auto &orig_dst_mem = args.find(-query_arg);
         SAFE_V(bool(orig_dst_mem) && bool(dst_mem) ? OK : FAIL);
-        SAFE(dst_mem.reorder(orig_dst_mem), WARN);
+        SAFE(dst_mem.reorder(orig_dst_mem, res), WARN);
     }
 
     // Put original data into SRC if inplace mode was specified.
@@ -2322,7 +2118,7 @@ int check_bitwise(dnnl_primitive_t prim, const std::vector<data_kind_t> &kinds,
             res->state = FAILED;
             return FAIL;
         }
-        SAFE(in_mem.reorder(orig_in_mem), WARN);
+        SAFE(in_mem.reorder(orig_in_mem, res), WARN);
     }
 
     // Perform a second run.
@@ -2343,5 +2139,789 @@ int check_bitwise(dnnl_primitive_t prim, const std::vector<data_kind_t> &kinds,
         TIME_COMPARE(cmp.compare(run1_mem, mem, attr, res));
     }
 
+    return OK;
+}
+
+bool should_stop(const timer::timer_t &t) {
+    const bool stop = false
+            || (fix_times_per_prb
+                    && t.times() >= static_cast<size_t>(fix_times_per_prb))
+            || (!fix_times_per_prb && t.total_ms() >= max_ms_per_prb
+                    && t.times() >= static_cast<size_t>(min_times_per_prb));
+    return stop;
+}
+
+int check_caches(benchdnn_dnnl_wrapper_t<dnnl_primitive_t> &primw,
+        const thr_ctx_t &ctx_init, res_t *res) {
+    if (!primw) return OK;
+
+    // Under assumption of a limited cache capacity, which is usually the case,
+    // any check that rely on primitive (descriptor) resides in cache fails for
+    // parallel creation modifier. There's no guarantee in a general case that
+    // primitive stays in cache till the the moment the check happens. Even with
+    // primitive saving a state of picked from cache or not, there's a time gap
+    // between creation of two same primitives over different engines where
+    // first instance could be evicted. This approach may work under assumption
+    // of infinite cache though.
+    if (!has_bench_mode_modifier(mode_modifier_t::par_create)) {
+        const_dnnl_primitive_desc_t pd = query_pd(primw);
+        std::function<int()> pd_cache_fn = std::bind(check_pd_cache, pd, res);
+        SAFE(create_in_thr_ctx(ctx_init, pd_cache_fn), WARN);
+        // Check primitive is picked up from the cache if applicable.
+        std::function<int()> prim_cache_fn
+                = std::bind(check_primitive_cache, std::ref(primw), res);
+        SAFE(create_in_thr_ctx(ctx_init, prim_cache_fn), WARN);
+    }
+
+    // Check primitive is picked up from the persistent cache if applicable.
+    // Note: primw get re-written here to put a primitive from cache blob, if
+    // GPU backend is OCL.
+    SAFE(test_persistent_cache_api(primw, res), WARN);
+
+    return OK;
+}
+
+int check_dnnl_status(
+        dnnl_status_t status, const base_prb_t *base_prb, res_t *res) {
+    if (!res || status == dnnl_success) return OK;
+
+    switch (status) {
+        case dnnl_invalid_arguments: res->state = INVALID_ARGUMENTS; break;
+        case dnnl_unimplemented: {
+            // Unconditionally set all Nvidia backend unimplemented cases as
+            // not supported.
+            if (is_nvidia_gpu() || is_amd_gpu()) {
+                res->state = SKIPPED;
+                res->reason = reason_t::skip_not_supported;
+                return OK;
+            }
+
+            // Check driver specific cases of unimplemented functionality.
+            // It means that the case is valid from API perspective but not
+            // supported by any implementation for a specific backend.
+            //
+            // Note: since it's done post pd creation, code in these
+            // driver-defined functions can end up being dead.
+            base_prb->skip_unimplemented(res);
+            if (res->state == SKIPPED || res->state == DEFERRED) return OK;
+
+            // If the case is not known to be skipped, it is unimplemented.
+            res->state = UNIMPLEMENTED;
+        } break;
+        default: assert(!"unexpected");
+    }
+    DNN_SAFE(status, WARN);
+    return OK;
+}
+
+int create_primitive(benchdnn_dnnl_wrapper_t<dnnl_primitive_t> &primw,
+        dnnl_engine_t engine, const init_pd_func_t &init_pd_func,
+        const base_prb_t *base_prb, res_t *res, dir_t dir,
+        const_dnnl_primitive_desc_t hint, bool is_service_prim,
+        const_dnnl_memory_desc_t src_md, bool force_f32_dt, bool is_graph_ref) {
+    dnnl_status_t status = dnnl_success;
+    dnnl_primitive_t prim {};
+
+    benchdnn_dnnl_wrapper_t<dnnl_primitive_desc_t> pdw;
+
+    init_pd_args_t init_pd_args(
+            res, engine, base_prb, dir, hint, src_md, force_f32_dt);
+    status = init_pd_func(init_pd_args);
+
+    SAFE(check_dnnl_status(status, base_prb, res), WARN);
+    if (res->state == SKIPPED) return OK;
+    if (is_graph_ref && res->state == DEFERRED) return OK;
+
+    // Fetch also checks if user requested to skip certain implementations.
+    SAFE(fetch_impl(pdw, init_pd_args, base_prb->impl_filter, res,
+                 is_service_prim),
+            WARN);
+    if (res->state == SKIPPED) return OK;
+
+    // Note: Graph may contain more than one operation with identical `dir`.
+    //   It's required to collect all memory sizes regardless of `dir`.
+    SAFE(collect_mem_size(res->mem_size_args, pdw, dir,
+                 /* need_skip = */ !is_graph_ref),
+            WARN);
+
+    // The library scratchpad is allocated at create_primitive stage. The memory
+    // check is moved after the creation stage. It's necessary to check the
+    // library scratchpad size against gpu_max_alloc, otherwise, out_of_memory
+    // would be issued by the library.
+    if (res->mem_size_args.scratchpad_size > 0 && is_gpu()
+            && query_scratchpad_mode(query_attr(pdw))
+                    == dnnl_scratchpad_mode_library) {
+        static size_t gpu_device_capacity = 0;
+        static size_t gpu_max_alloc_capacity = 0;
+        SAFE(get_gpu_ram_sizes(gpu_device_capacity, gpu_max_alloc_capacity),
+                WARN);
+        const bool fit
+                = res->mem_size_args.scratchpad_size < gpu_max_alloc_capacity;
+        if (!fit) {
+            BENCHDNN_PRINT(1,
+                    "[CHECK_MEM]: Size of the scratchpad %s "
+                    "doesn't fit the allocation limit of %s.\n",
+                    smart_bytes(res->mem_size_args.scratchpad_size).c_str(),
+                    smart_bytes(gpu_max_alloc_capacity).c_str());
+            res->state = SKIPPED;
+            res->reason = reason_t::skip_not_enough_ram;
+            return OK;
+        }
+    }
+
+    TIME_C_PRIM(DNN_SAFE(dnnl_primitive_create(&prim, pdw), WARN));
+    primw.reset(prim);
+
+    return OK;
+}
+
+int init_prim(benchdnn_dnnl_wrapper_t<dnnl_primitive_t> &user_prim,
+        const init_pd_func_t &init_pd_func, const base_prb_t *base_prb,
+        res_t *res, dir_t dir, const_dnnl_primitive_desc_t hint,
+        bool is_service_prim) {
+    benchdnn_dnnl_wrapper_t<dnnl_primitive_t> primw;
+
+    // Verify that the problem is formed correctly. `invalid` means that there
+    // might be incompatible settings that the library can verify only in
+    // runtime, and it usually doesn't do that leading to unexpected results
+    // which is hard to debug, e.g., inplace mode with different-sized data
+    // types - it will lead to a crash or incorrect result.
+    //
+    // This function MUST NOT take care of cases that return `invalid_arguments`
+    // status. The library must return this status for all incorrect API calls
+    // and such cases must be updated on the user side.
+    base_prb->skip_invalid(res);
+    if (res->state == SKIPPED) return OK;
+#ifndef DNNL_DISABLE_PRIMITIVE_CACHE
+
+    int capacity = 0;
+    DNN_SAFE(dnnl_get_primitive_cache_capacity(&capacity), FAIL);
+    if (capacity > 0) {
+        // The idea is to create the requested primitive twice using different
+        // engines but the same device and context in the case of OpenCL and DPCPP.
+        // Rationale: make sure that the primitive cache is robust in the case
+        // where CPU and GPU engines are re-created because this is a commonly
+        // used scenario in the frameworks.
+        // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+        engine_t engine(get_test_engine(), /* recreate_on_copy = */ true);
+
+        // The first primitive creation using a temporary engine.
+        SAFE(create_primitive(primw, engine, init_pd_func, base_prb, res, dir,
+                     hint, is_service_prim, /* src_md = */ nullptr,
+                     /* force_f32_dt = */ false),
+                WARN);
+        if (res->state == SKIPPED) return OK;
+    }
+
+#endif
+    // The second (if the cache is enabled) primitive creation using the global
+    // test engine. This primitive is expected to come from the cache.
+    SAFE(create_primitive(primw, get_test_engine(), init_pd_func, base_prb, res,
+                 dir, hint, is_service_prim, /* src_md = */ nullptr,
+                 /* force_f32_dt = */ false),
+            WARN);
+    if (res->state == SKIPPED) return OK;
+
+    // Further checks are only for tested primitives.
+    if (is_service_prim) {
+        user_prim.reset(primw.release());
+        return OK;
+    }
+
+    auto pd = query_pd(primw);
+    res->impl_name = query_impl_info(pd);
+    BENCHDNN_PRINT(5, "oneDNN implementation: %s\n", res->impl_name.c_str());
+    // Collect memory footprint (perf report) for a given primitive descriptor.
+    SAFE(get_memory_footprint(pd, res), WARN);
+
+    if (has_bench_mode_bit(mode_bit_t::corr)) {
+        // Check if adding attributes doesn't cause a fall back to another impl.
+        SAFE(check_pd_w_and_wo_attr(
+                     get_test_engine(), init_pd_func, base_prb, res, dir, hint),
+                WARN);
+        // Check if unexpected ref impl was hit.
+        SAFE(check_ref_impl_hit(res), WARN);
+    }
+
+    user_prim.reset(primw.release());
+    return res->state = INITIALIZED, OK;
+}
+
+int init_prim(const thr_ctx_t &thr_ctx,
+        benchdnn_dnnl_wrapper_t<dnnl_primitive_t> &user_prim,
+        const init_pd_func_t &init_pd_func, const base_prb_t *base_prb,
+        res_t *res, dir_t dir, const_dnnl_primitive_desc_t hint,
+        bool is_service_prim) {
+    int (*f)(benchdnn_dnnl_wrapper_t<dnnl_primitive_t> &,
+            const init_pd_func_t &, const base_prb_t *, res_t *, dir_t,
+            const_dnnl_primitive_desc_t, bool)
+            = init_prim;
+    std::function<int()> call_fn = std::bind(f, std::ref(user_prim),
+            init_pd_func, base_prb, res, dir, hint, is_service_prim);
+    return create_in_thr_ctx(thr_ctx, call_fn);
+}
+
+void check_correctness(const base_prb_t *base_prb,
+        const std::vector<data_kind_t> &kinds, const args_t &args,
+        const args_t &ref_args, const compute_ref_func_t &compute_ref_func,
+        const setup_cmp_func_t &setup_cmp_func, res_t *res, dir_t dir,
+        dnnl_primitive_t prim_ref) {
+    // Fast exit for any modes but correctness.
+    if (!has_bench_mode_bit(mode_bit_t::corr)) return;
+
+    // Report prim_ref run status for easier distinguishing between GPU failures
+    // and ref CPU failures.
+    if (prim_ref) {
+        BENCHDNN_PRINT(1, "run ref: %s\n", res->prim_ref_repro.c_str());
+    } else {
+        BENCHDNN_PRINT(8, "%s\n", "[NAIVE_REF]: Start");
+    }
+
+    TIME_REF(compute_ref_func(base_prb, dir, ref_args, prim_ref));
+
+    // Forward-for-backward service primitives define `kinds` as empty to skip
+    // validation. This is to avoid extra checks on higher level.
+    if (kinds.empty()) return;
+
+    for (int i = 0; i < args.size(); ++i) {
+        TIME_COMPARE(check_zero_padding(args.dnn_mem(i), args.arg(i), res));
+        TIME_COMPARE(check_buffer_overwrite(args.dnn_mem(i), args.arg(i), res));
+    }
+
+    for (const auto &kind : kinds) {
+        compare::compare_t cmp;
+        cmp.set_data_kind(kind);
+        cmp.set_has_prim_ref(bool(prim_ref));
+        setup_cmp_func(cmp, base_prb, kind, ref_args);
+
+        int arg = data_kind2exec_arg(kind);
+        assert(arg > 0);
+
+        const auto &mem_dt = args.find(arg);
+        const auto &mem_fp = ref_args.find(arg);
+
+        TIME_COMPARE(cmp.compare(mem_fp, mem_dt, base_prb->attr, res));
+    }
+
+    if (prim_ref && res->state == FAILED) {
+        static cpu_cache_args_t cpu_cache_args {};
+        SAFE_V(get_cpu_cache_size(cpu_cache_args));
+
+        BENCHDNN_PRINT(0,
+                "[PRIM_REF][INFO]: L2_size:%zu bytes; per_core_L3_size:%zu "
+                "bytes; nthr:%d; impl_name:%s\n",
+                cpu_cache_args.L2_size, cpu_cache_args.L3_size,
+                benchdnn_get_max_threads(),
+                query_impl_info(query_pd(prim_ref)).c_str());
+    }
+}
+
+void init_memory_args(dnn_mem_map_t &mem_map, const base_prb_t *base_prb,
+        dnnl_primitive_t prim, res_t *res, bool override_dir_with_fwd,
+        const engine_t &test_engine) {
+    const std::vector<int> supported_exec_args
+            = base_prb->supported_exec_args(override_dir_with_fwd);
+
+    // Backward case when forward is required will have mem_map not empty.
+    // Remove all memories that are not in `supported_exec_args` to save on
+    // initializing reference memories.
+    //
+    // Note: this code is pretty similar to the one in `erase_unused_args` but
+    // with a slight change where the key is checked and bitwise correction.
+    if (!mem_map.empty()) {
+        // Collection of keys is required as evicting members along the way
+        // invalidates references and makes traversing over the object
+        // undefined behavior.
+        std::vector<int> keys_to_erase;
+        for (const auto &pair : mem_map) {
+            const auto key = pair.first;
+            bool key_found_in_exec_args = false;
+            for (const auto &arg : supported_exec_args) {
+                if (arg == key) {
+                    key_found_in_exec_args = true;
+                    break;
+                }
+            }
+            // Don't remove stashed memory for bitwise validation.
+            const bool bitwise_stash
+                    = has_bench_mode_bit(mode_bit_t::bitwise) && key < 0;
+            bool add_key_to_erase = !key_found_in_exec_args && !bitwise_stash;
+            if (add_key_to_erase) keys_to_erase.push_back(key);
+        }
+        for (const auto &k : keys_to_erase) {
+            mem_map.erase(k);
+        }
+    }
+
+    auto const_pd = query_pd(prim);
+    auto const_po = query_post_ops(const_pd);
+    const auto prim_kind = query_prim_kind(const_pd);
+    const auto prop_kind = query_prop_kind(const_pd);
+
+    const auto has_runtime_dims = [](const_dnnl_memory_desc_t md) -> bool {
+        for (int d = 0; d < query_md_ndims(md); ++d)
+            if (query_md_dims(md)[d] == DNNL_RUNTIME_DIM_VAL) return true;
+        return false;
+    };
+
+    if (prim_kind == dnnl_reorder) {
+        auto src_engine = query_engine(const_pd, dnnl_query_reorder_src_engine);
+        auto dst_engine = query_engine(const_pd, dnnl_query_reorder_dst_engine);
+        const auto &src_md = query_md(const_pd, DNNL_ARG_FROM);
+        const auto &dst_md = query_md(const_pd, DNNL_ARG_TO);
+        if (has_runtime_dims(src_md)) {
+            mem_map.emplace(DNNL_ARG_FROM,
+                    dnn_mem_t(base_prb->get_md(DNNL_ARG_FROM), src_engine,
+                            /* prefill = */ true));
+            mem_map.emplace(DNNL_ARG_TO,
+                    dnn_mem_t(base_prb->get_md(DNNL_ARG_TO), dst_engine,
+                            /* prefill = */ true));
+        } else {
+            mem_map.emplace(DNNL_ARG_FROM,
+                    dnn_mem_t(src_md, src_engine, /* prefill = */ true));
+            mem_map.emplace(DNNL_ARG_TO,
+                    dnn_mem_t(dst_md, dst_engine, /* prefill = */ true));
+        }
+    } else {
+        for (const auto &exec_arg : supported_exec_args) {
+            if (exec_arg == DNNL_ARG_MULTIPLE_SRC) {
+                // `DNNL_ARG_MULTIPLE_SRC` corresponds to a pack of inputs.
+                const auto n_inputs = query_n_inputs(const_pd);
+                for (int i = 0; i < n_inputs; i++) {
+                    const auto &md = query_md(const_pd, exec_arg + i);
+                    mem_map.emplace(exec_arg + i,
+                            dnn_mem_t(md, test_engine, /* prefill = */ true));
+                }
+            } else {
+                const bool is_arg_in_map
+                        = mem_map.find(exec_arg) != mem_map.end();
+                const auto &md = query_md(const_pd, exec_arg);
+                // Check for ndims is needed when the driver supported args map
+                // contains extra arguments for other purposes.
+                const int ndims = query_md_ndims(md);
+                if (is_arg_in_map) {
+                    // It may happen that the map already has the argument but
+                    // the library requires it in a different format, e.g., RNN
+                    // BWD support on GPU (for better performance). It may also
+                    // happen in a combination with `no_ref_memory` modifier,
+                    // which requires the library memories map to handle such
+                    // cases.
+                    if (ndims > 0
+                            && dnnl_memory_desc_equal(
+                                       md, mem_map.at(exec_arg).md_)
+                                    == 0) {
+                        assert(!has_runtime_dims(md));
+                        dnn_mem_t new_mem(
+                                md, test_engine, /* prefill = */ true);
+                        // Reorder user's data from the old memory to the new one.
+                        auto st = new_mem.reorder(mem_map.at(exec_arg), res);
+                        assert(st == OK);
+                        if (st != OK) return;
+                        mem_map[exec_arg] = std::move(new_mem);
+                    }
+                } else {
+                    if (has_runtime_dims(md)) {
+                        mem_map.emplace(exec_arg,
+                                dnn_mem_t(base_prb->get_md(exec_arg),
+                                        test_engine,
+                                        /* prefill = */ true));
+                    } else {
+                        // In case when arguments get updated on backward when
+                        // forward is required, `emplace` guarantees newly
+                        // constructed element will be destroyed if an element
+                        // with a key already present in the map. C++17 could
+                        // use try_emplace instead to mitigate
+                        // construction/destruction overhead.
+                        mem_map.emplace(exec_arg,
+                                dnn_mem_t(
+                                        md, test_engine, /* prefill = */ true));
+                    }
+                }
+            }
+        }
+    }
+
+    // Drop "destination" memory for in-place case. `args` will take care of
+    // setting proper pointers to make in-place mode happen.
+    // Note: must precede bitwise stash memory insertion to keep numbers
+    // estimated by memory checker correct.
+    if (base_prb->inplace) {
+        const bool inplace_fwd = (base_prb->dir & FLAG_FWD);
+        const bool inplace_bwd
+                = (base_prb->dir & FLAG_BWD) && !is_fwd_prop_kind(prop_kind);
+        if (inplace_fwd || inplace_bwd) {
+            const int inplace_dst_arg = (base_prb->dir & FLAG_FWD)
+                    ? DNNL_ARG_DST
+                    : DNNL_ARG_DIFF_SRC;
+            mem_map[inplace_dst_arg] = dnn_mem_t();
+        }
+    }
+
+    // Bitwise mode demands exactly the same inputs between two runs. There are
+    // certain scenarios that affect original memory objects content. When such
+    // scenarios occur, memory objects have their original content overwritten.
+    // The logic below stashes additional memory objects for a copy of data
+    // which will get reordered before the second run.
+    //
+    // An implementation detail:
+    // All such memory objects' counterparts are created with the same arg value
+    // but with a negative sign. This is the only guaranteed value that is not
+    // used by the library.
+    if (has_bench_mode_bit(mode_bit_t::bitwise)) {
+        // A sum post-op has the destination memory data overwritten by the
+        // accumulation memory.
+        if (query_post_ops_has_kind(const_po, dnnl_sum)) {
+            const int query_arg = DNNL_ARG_DST;
+            const int insert_arg = -query_arg;
+            const auto &md = query_md(const_pd, query_arg);
+            if (has_runtime_dims(md)) {
+                mem_map.emplace(insert_arg,
+                        dnn_mem_t(base_prb->get_md(query_arg), test_engine,
+                                /* prefill = */ true));
+            } else {
+                mem_map.emplace(insert_arg,
+                        dnn_mem_t(md, test_engine, /* prefill = */ true));
+            }
+        }
+
+        // An inplace mode uses the source memory object as the destination one.
+        // It results in the source is overwritten after the operation is done.
+        if (base_prb->inplace) {
+            const bool has_multiple_args = std::any_of(
+                    supported_exec_args.begin(), supported_exec_args.end(),
+                    [](int arg) { return arg == DNNL_ARG_MULTIPLE_SRC; });
+            const auto query_arg = is_fwd_prop_kind(prop_kind)
+                    ? (has_multiple_args ? DNNL_ARG_MULTIPLE_SRC : DNNL_ARG_SRC)
+                    : DNNL_ARG_DIFF_DST;
+            const int insert_arg = -query_arg;
+            const auto &md = query_md(const_pd, query_arg);
+            if (has_runtime_dims(md)) {
+                mem_map.emplace(insert_arg,
+                        dnn_mem_t(base_prb->get_md(query_arg), test_engine,
+                                /* prefill = */ true));
+            } else {
+                mem_map.emplace(insert_arg,
+                        dnn_mem_t(md, test_engine, /* prefill = */ true));
+            }
+        }
+    }
+
+    const auto &scratch_md = query_md(const_pd, DNNL_ARG_SCRATCHPAD);
+    mem_map.emplace(DNNL_ARG_SCRATCHPAD,
+            dnn_mem_t(scratch_md, test_engine, /* prefill = */ true));
+
+#if DNNL_EXPERIMENTAL_GROUPED_MEMORY
+    // Grouped max variable dim hint
+    // Optional host scalar, created when src is a grouped descriptor
+    if (has_grouped_encoding(query_md(const_pd, DNNL_ARG_SRC))) {
+        auto hint_md = dnn_mem_t::init_host_scalar_md(dnnl_s32);
+        mem_map.emplace(DNNL_ARG_HINT_MAX_GROUP_SIZE, dnn_mem_t(hint_md));
+    }
+#endif
+
+    // Binary post-op.
+    // TODO: currently run-time dimensions are not supported in binary post-op.
+    for (int idx = 0; idx < dnnl_post_ops_len(const_po); ++idx) {
+        if (dnnl_post_ops_get_kind(const_po, idx) != dnnl_binary) continue;
+
+        int po_arg1 = DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_1;
+        const auto &po_md1 = query_md(const_pd, po_arg1);
+        mem_map.emplace(
+                po_arg1, dnn_mem_t(po_md1, test_engine, /* prefill = */ true));
+
+        if (!query_post_ops_has_binary_alg_kind(
+                    const_po, idx, dnnl_binary_select))
+            continue;
+        int po_arg2 = DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_SRC_2;
+        const auto &po_md2 = query_md(const_pd, po_arg2);
+        mem_map.emplace(
+                po_arg2, dnn_mem_t(po_md2, test_engine, /* prefill = */ true));
+    }
+
+    // Prelu post-op.
+    for (int idx = 0; idx < dnnl_post_ops_len(const_po); ++idx) {
+        if (dnnl_post_ops_get_kind(const_po, idx) != dnnl_prelu) continue;
+
+        const auto &orig_dst_md = query_md(const_pd, DNNL_ARG_DST);
+        benchdnn_dnnl_wrapper_t<dnnl_memory_desc_t> prb_dst_md;
+        if (has_runtime_dims(orig_dst_md)) {
+            prb_dst_md = base_prb->get_md(DNNL_ARG_DST);
+        }
+        const auto &dst_md = prb_dst_md ? prb_dst_md : orig_dst_md;
+
+        const auto ndims = query_md_ndims(dst_md);
+        int mask = 0;
+        dnnl_post_ops_get_params_prelu(const_po, idx, &mask);
+
+        // Deduce prelu weights dims based on input policy.
+        dims_t dims = md2dims(dst_md, mask);
+
+        int po_arg = DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx) | DNNL_ARG_WEIGHTS;
+        mem_map.emplace(po_arg,
+                dnn_mem_t(ndims, dims.data(), dnnl_f32, tag::axb, test_engine,
+                        /* prefill = */ true));
+    }
+
+    // Dropout
+    if (is_fwd_training(prop_kind) && !base_prb->attr.dropout.is_def()) {
+        const auto &dropout_md = query_md(const_pd, DNNL_ARG_ATTR_DROPOUT_MASK);
+        mem_map.emplace(DNNL_ARG_ATTR_DROPOUT_MASK,
+                dnn_mem_t(dropout_md, test_engine, /* prefill = */ true));
+
+        if (base_prb->attr.dropout.use_host_scalars) {
+            auto prob_md = dnn_mem_t::init_host_scalar_md(dnnl_f32);
+            mem_map.emplace(
+                    DNNL_ARG_ATTR_DROPOUT_PROBABILITY, dnn_mem_t(prob_md));
+            auto seed_md = dnn_mem_t::init_host_scalar_md(dnnl_s64);
+            mem_map.emplace(DNNL_ARG_ATTR_DROPOUT_SEED, dnn_mem_t(seed_md));
+            if (base_prb->attr.dropout.offset != 0) {
+                auto offset_md = dnn_mem_t::init_host_scalar_md(dnnl_s64);
+                mem_map.emplace(
+                        DNNL_ARG_ATTR_DROPOUT_OFFSET, dnn_mem_t(offset_md));
+            }
+        } else {
+            int64_t count = 1;
+            auto prob_md = dnn_mem_t::init_md(1, &count, dnnl_f32, tag::abx);
+            mem_map.emplace(DNNL_ARG_ATTR_DROPOUT_PROBABILITY,
+                    dnn_mem_t(prob_md, test_engine, /* prefill = */ true));
+            auto seed_md = dnn_mem_t::init_md(1, &count, dnnl_s64, tag::abx);
+            mem_map.emplace(DNNL_ARG_ATTR_DROPOUT_SEED,
+                    dnn_mem_t(seed_md, test_engine, /* prefill = */ true));
+            if (base_prb->attr.dropout.offset != 0) {
+                auto offset_md
+                        = dnn_mem_t::init_md(1, &count, dnnl_s64, tag::abx);
+                mem_map.emplace(DNNL_ARG_ATTR_DROPOUT_OFFSET,
+                        dnn_mem_t(
+                                offset_md, test_engine, /* prefill = */ true));
+            }
+        }
+    }
+
+    // Scales.
+    if (!base_prb->attr.scales.is_def()) {
+        const auto &sc = base_prb->attr.scales;
+
+        const auto &src_md = query_md(const_pd, DNNL_ARG_SRC);
+        const auto &wei_md = query_md(const_pd, DNNL_ARG_WEIGHTS);
+        const bool has_channel_groups
+                = (query_md_ndims(src_md) + 1) == query_md_ndims(wei_md);
+
+        const auto append_scales = [&](int exec_arg) {
+            const int exec_sc_arg = DNNL_ARG_ATTR_SCALES | exec_arg;
+            dims_t dims = {};
+            int64_t ndims = 1;
+            const auto &arg_md = query_md(const_pd, exec_arg);
+            const auto mask = sc.get_mask(exec_arg, prim_kind,
+                    query_md_ndims(arg_md), has_channel_groups);
+            const auto &groups = sc.get(exec_arg).groups;
+
+            if (mask > 0) {
+                const auto &md = query_md(const_pd, exec_arg);
+                if (has_runtime_dims(md)) {
+                    const auto prb_md = base_prb->get_md(exec_arg);
+                    dims = md2dims(prb_md, mask, false, groups);
+                    ndims = static_cast<int>(dims.size());
+                } else {
+                    dims = md2dims(md, mask, false, groups);
+                    ndims = static_cast<int>(dims.size());
+                }
+            } else {
+                dims = {1};
+                ndims = 1;
+            }
+
+            const auto dt = sc.get(exec_arg).dt;
+            const auto policy = sc.get(exec_arg).policy;
+
+            if (policy == attr_t::policy_t::HOST_SCALAR) {
+                auto scales_md = dnn_mem_t::init_host_scalar_md(dt);
+                mem_map.emplace(exec_sc_arg, dnn_mem_t(scales_md));
+                return;
+            }
+
+            auto scales_md
+                    = dnn_mem_t::init_md(ndims, dims.data(), dt, tag::abx);
+            mem_map.emplace(exec_sc_arg,
+                    dnn_mem_t(scales_md, test_engine, /* prefill = */ true));
+        };
+
+        for (const auto &exec_arg : supported_exec_args) {
+            if (exec_arg == DNNL_ARG_MULTIPLE_SRC) {
+                // `DNNL_ARG_MULTIPLE_SRC` corresponds to a pack of inputs.
+                const auto n_inputs = query_n_inputs(const_pd);
+                for (int i = 0; i < n_inputs; i++) {
+                    const auto i_exec_arg = exec_arg + i;
+                    if (!sc.is_def(i_exec_arg)) append_scales(i_exec_arg);
+                }
+            } else {
+                if (!sc.is_def(exec_arg)) append_scales(exec_arg);
+            }
+        }
+    }
+
+    // Zero points.
+    if (!base_prb->attr.zero_points.is_def()) {
+        const auto &zp = base_prb->attr.zero_points;
+
+        const auto append_zero_points = [&](int exec_arg) {
+            const int exec_zp_arg = DNNL_ARG_ATTR_ZERO_POINTS | exec_arg;
+            const auto &e = zp.get(exec_arg);
+            int64_t ndims = 1;
+            dims_t dims = {};
+            const auto &arg_md = query_md(const_pd, exec_arg);
+            const auto mask
+                    = zp.get_mask(exec_arg, prim_kind, query_md_ndims(arg_md));
+            const auto &groups = e.groups;
+
+            if (mask > 0) {
+                const auto &md = query_md(const_pd, exec_arg);
+                if (has_runtime_dims(md)) {
+                    const auto prb_md = base_prb->get_md(exec_arg);
+                    dims = md2dims(prb_md, mask, false, groups);
+                    ndims = static_cast<int>(dims.size());
+                } else {
+                    dims = md2dims(md, mask, false, groups);
+                    ndims = static_cast<int>(dims.size());
+                }
+            } else {
+                dims = {1};
+                ndims = 1;
+            }
+
+            if (e.policy == attr_t::policy_t::HOST_SCALAR) {
+                auto zp_md = dnn_mem_t::init_host_scalar_md(e.dt);
+                mem_map.emplace(exec_zp_arg, dnn_mem_t(zp_md));
+                return;
+            }
+
+            auto zp_md = dnn_mem_t::init_md(ndims, dims.data(), e.dt, tag::abx);
+            mem_map.emplace(exec_zp_arg,
+                    dnn_mem_t(zp_md, test_engine, /* prefill = */ true));
+        };
+
+        for (const auto &exec_arg : supported_exec_args) {
+            if (exec_arg == DNNL_ARG_MULTIPLE_SRC) {
+                // `DNNL_ARG_MULTIPLE_SRC` corresponds to a pack of inputs.
+                const auto n_inputs = query_n_inputs(const_pd);
+                for (int i = 0; i < n_inputs; i++) {
+                    const auto i_exec_arg = exec_arg + i;
+                    if (!zp.is_def(i_exec_arg)) append_zero_points(i_exec_arg);
+                }
+            } else {
+                if (!zp.is_def(exec_arg)) append_zero_points(exec_arg);
+            }
+        }
+    }
+
+    // Precomputed reductions.
+    if (!base_prb->attr.precomputed_reductions.is_def()) {
+        const auto &pr = base_prb->attr.precomputed_reductions;
+
+        const auto append_precomputed_reductions = [&](int exec_arg) {
+            const int exec_pr_arg
+                    = DNNL_ARG_ATTR_PRECOMPUTED_REDUCTIONS | exec_arg;
+            const auto &e = pr.get(exec_arg);
+            int64_t ndims = 1;
+            dims_t dims = {};
+            const auto &arg_md = query_md(const_pd, exec_arg);
+            const auto mask
+                    = pr.get_mask(exec_arg, prim_kind, query_md_ndims(arg_md));
+            const auto &groups = e.groups;
+
+            if (mask > 0) {
+                const auto &md = query_md(const_pd, exec_arg);
+                if (has_runtime_dims(md)) {
+                    const auto prb_md = base_prb->get_md(exec_arg);
+                    dims = md2dims(prb_md, mask, false, groups);
+                    ndims = static_cast<int>(dims.size());
+                } else {
+                    dims = md2dims(md, mask, false, groups);
+                    ndims = static_cast<int>(dims.size());
+                }
+            } else {
+                dims = {1};
+                ndims = 1;
+            }
+            auto pr_md = dnn_mem_t::init_md(ndims, dims.data(), e.dt, tag::abx);
+            mem_map.emplace(exec_pr_arg,
+                    dnn_mem_t(pr_md, test_engine, /* prefill = */ true));
+        };
+
+        for (const auto &exec_arg : supported_exec_args) {
+            if (exec_arg == DNNL_ARG_MULTIPLE_SRC) {
+                // `DNNL_ARG_MULTIPLE_SRC` corresponds to a pack of inputs.
+                const auto n_inputs = query_n_inputs(const_pd);
+                for (int i = 0; i < n_inputs; i++) {
+                    const auto i_exec_arg = exec_arg + i;
+                    if (!pr.is_def(i_exec_arg))
+                        append_precomputed_reductions(i_exec_arg);
+                }
+            } else {
+                if (!pr.is_def(exec_arg))
+                    append_precomputed_reductions(exec_arg);
+            }
+        }
+    }
+
+    // rounding mode
+    if (!base_prb->attr.rounding_mode.is_def()) {
+        int64_t count = 1;
+        auto seed_md = dnn_mem_t::init_md(1, &count, dnnl_s32, tag::abx);
+        mem_map.emplace(DNNL_ARG_ATTR_ROUNDING_SEED,
+                dnn_mem_t(seed_md, test_engine, /* prefill = */ true));
+    }
+}
+
+int init_prim_ref_common(benchdnn_dnnl_wrapper_t<dnnl_primitive_t> &prim_ref,
+        const base_prb_t *base_prb_cpu, res_t *res,
+        const init_pd_func_t &init_pd_func) {
+
+    init_pd_args_t init_pd_args(
+            /* res = */ nullptr, get_cpu_engine(), base_prb_cpu,
+            base_prb_cpu->dir,
+            /* hint = */ nullptr, /* src_md = */ nullptr);
+    init_pd_func(init_pd_args);
+
+    benchdnn_dnnl_wrapper_t<dnnl_primitive_desc_t> pdw;
+    // `is_service_prim=true` prevents from filtering the implementation
+    // by name which is intended through a `get_prim_ref_impl_filter()`.
+    // As `fetch_impl` doesn't have any further logic related to it, it's
+    // safe to set it to `false`.
+    fetch_impl(pdw, init_pd_args, get_prim_ref_impl_filter(),
+            /* res = */ nullptr,
+            /* is_service_prim = */ false);
+
+    // Prim desc wasn't created - try the next set...
+    if (!pdw) return FAIL;
+
+    dnnl_primitive_t prim_ref_ptr {};
+    auto st = dnnl_primitive_create(&prim_ref_ptr, pdw);
+    // Primitive wasn't created - try the next set...
+    if (st != dnnl_success) return FAIL;
+
+    BENCHDNN_PRINT(5, "CPU reference oneDNN implementation: %s\n",
+            query_impl_info(pdw).c_str());
+
+    res->prim_ref_repro = base_prb_cpu->str();
+    // Replace engine kind for repro line from GPU to CPU.
+    const auto eng_pos = res->prim_ref_repro.find("engine=gpu");
+    if (eng_pos != std::string::npos) {
+        // Replace `g` in `gpu` with `c`
+        res->prim_ref_repro[eng_pos + 7] = 'c';
+    }
+
+    // Remove `--impl=XXX` as it doesn't affect prim_ref.
+    const auto impl_pos = res->prim_ref_repro.find("--impl=");
+    if (impl_pos != std::string::npos) {
+        // Search for the next space starting from `impl_pos` as names' length
+        // is variadic.
+        const auto end_impl_pos
+                = res->prim_ref_repro.find_first_of(" ", impl_pos);
+        assert(end_impl_pos != std::string::npos);
+        // `+ 1` is for extra space.
+        res->prim_ref_repro.erase(impl_pos, end_impl_pos - impl_pos + 1);
+    }
+
+    prim_ref.reset(prim_ref_ptr);
     return OK;
 }
